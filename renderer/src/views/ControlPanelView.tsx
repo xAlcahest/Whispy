@@ -7,8 +7,10 @@ import {
   Link,
   Lock,
   Mic,
+  Minus,
   Moon,
   PanelRight,
+  Plus,
   Search,
   Settings,
   Shield,
@@ -18,6 +20,7 @@ import {
   Trash2,
   UserRound,
   Wrench,
+  X,
 } from 'lucide-react'
 import {
   useEffect,
@@ -2314,10 +2317,25 @@ const ControlPanelScene = () => {
     <div className="flex h-screen flex-col bg-[radial-gradient(circle_at_top_right,rgba(99,102,241,0.16),transparent_42%),radial-gradient(circle_at_bottom_left,rgba(37,99,235,0.14),transparent_38%)] text-foreground">
       <header className="app-drag flex h-12 shrink-0 items-center justify-between border-b border-border-subtle bg-surface-1/90 px-4">
         <div className="flex items-center gap-2">
-          <div className="flex items-center gap-1.5 pl-1">
-            <span className="h-3 w-3 rounded-full bg-[#ff5f57]" />
-            <span className="h-3 w-3 rounded-full bg-[#febc2e]" />
-            <span className="h-3 w-3 rounded-full bg-[#28c840]" />
+          <div className="group app-no-drag flex items-center gap-1.5 pl-1">
+            {[
+              { id: 'close', color: '#ff5f57', icon: X },
+              { id: 'minimize', color: '#febc2e', icon: Minus },
+              { id: 'zoom', color: '#28c840', icon: Plus },
+            ].map((control) => {
+              const Icon = control.icon
+              return (
+                <button
+                  key={control.id}
+                  type="button"
+                  aria-label={control.id}
+                  className="relative h-3 w-3 rounded-full border border-black/10 transition-transform duration-150 hover:scale-105"
+                  style={{ backgroundColor: control.color }}
+                >
+                  <Icon className="pointer-events-none absolute inset-0 m-auto h-2 w-2 text-black/60 opacity-0 transition-opacity duration-150 group-hover:opacity-95" />
+                </button>
+              )
+            })}
           </div>
           <div className="ml-3 flex items-center gap-2 text-sm font-medium text-muted-foreground">
             <Sparkles className="h-4 w-4 text-primary" />

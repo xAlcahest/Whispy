@@ -410,10 +410,6 @@ interface SettingsSectionProps {
 }
 
 const SettingsSection = ({ settings, autoDetectSupported, onChange }: SettingsSectionProps) => {
-  const translationComboHotkey = buildTranslationComboHotkey(settings.hotkey)
-  const translationHotkey =
-    settings.translationHotkeyMode === 'combo' ? translationComboHotkey : settings.translationCustomHotkey
-
   return (
   <div className="space-y-4">
     <Card className="scroll-mt-6">
@@ -555,95 +551,113 @@ const SettingsSection = ({ settings, autoDetectSupported, onChange }: SettingsSe
       </CardContent>
     </Card>
 
-    <Card id="settings-node-general.translation" className="scroll-mt-6">
-      <CardHeader>
-        <CardTitle>Translation mode</CardTitle>
-        <CardDescription>
-          Dedicated translation controls separated from the rest of General settings.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <p className="text-sm font-medium">Enable translation mode</p>
-            <p className="text-xs text-muted-foreground">When enabled, translation route can be triggered with its own hotkey.</p>
-          </div>
-          <Switch
-            checked={settings.translationModeEnabled}
-            onCheckedChange={(checked) => {
-              onChange({ translationModeEnabled: checked })
-            }}
-          />
-        </div>
-
-        <Tabs
-          value={settings.translationHotkeyMode}
-          onValueChange={(value) => {
-            onChange({ translationHotkeyMode: value as AppSettings['translationHotkeyMode'] })
-          }}
-        >
-          <TabsList>
-            <TabsTrigger value="combo">Use combo with main hotkey</TabsTrigger>
-            <TabsTrigger value="custom">Use custom hotkey</TabsTrigger>
-          </TabsList>
-          <TabsContent value="combo" className="mt-3">
-            <div className="rounded-md border border-border-subtle bg-surface-1 px-3 py-2 text-sm">
-              Translation hotkey: <span className="font-semibold">{translationComboHotkey}</span>
-            </div>
-          </TabsContent>
-          <TabsContent value="custom" className="mt-3">
-            <HotkeyInput
-              value={settings.translationCustomHotkey}
-              onChange={(hotkey) => {
-                onChange({ translationCustomHotkey: hotkey })
-              }}
-            />
-          </TabsContent>
-        </Tabs>
-
-        <div className="grid gap-3 md:grid-cols-2">
-          <div className="space-y-1.5">
-            <p className="text-sm font-medium">Source language</p>
-            <select
-              className="app-no-drag h-9 w-full rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 px-2.5 text-sm"
-              value={settings.translationSourceLanguage}
-              onChange={(event) => {
-                onChange({ translationSourceLanguage: event.target.value })
-              }}
-            >
-              {TRANSCRIPTION_LANGUAGE_OPTIONS.map((language) => (
-                <option key={language} value={language}>
-                  {languageLabelWithFlag(language)}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="space-y-1.5">
-            <p className="text-sm font-medium">Target language</p>
-            <select
-              className="app-no-drag h-9 w-full rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 px-2.5 text-sm"
-              value={settings.translationTargetLanguage}
-              onChange={(event) => {
-                onChange({ translationTargetLanguage: event.target.value })
-              }}
-            >
-              {LANGUAGES.map((language) => (
-                <option key={language} value={language}>
-                  {languageLabelWithFlag(language)}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        <div className="rounded-md border border-border-subtle bg-surface-0 px-3 py-2 text-sm text-muted-foreground">
-          Active translation hotkey: <span className="font-semibold text-foreground">{translationHotkey}</span>
-        </div>
-      </CardContent>
-    </Card>
   </div>
 )
+}
+
+interface TranslationModeSectionProps {
+  settings: AppSettings
+  onChange: (next: Partial<AppSettings>) => void
+}
+
+const TranslationModeSection = ({ settings, onChange }: TranslationModeSectionProps) => {
+  const translationComboHotkey = buildTranslationComboHotkey(settings.hotkey)
+  const translationHotkey =
+    settings.translationHotkeyMode === 'combo' ? translationComboHotkey : settings.translationCustomHotkey
+
+  return (
+    <div className="space-y-4">
+      <Card id="settings-node-translation" className="scroll-mt-6">
+        <CardHeader>
+          <CardTitle>Translation mode</CardTitle>
+          <CardDescription>
+            Dedicated translation controls isolated from the General section.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-medium">Enable translation mode</p>
+              <p className="text-xs text-muted-foreground">
+                When enabled, translation route can be triggered with its own hotkey.
+              </p>
+            </div>
+            <Switch
+              checked={settings.translationModeEnabled}
+              onCheckedChange={(checked) => {
+                onChange({ translationModeEnabled: checked })
+              }}
+            />
+          </div>
+
+          <Tabs
+            value={settings.translationHotkeyMode}
+            onValueChange={(value) => {
+              onChange({ translationHotkeyMode: value as AppSettings['translationHotkeyMode'] })
+            }}
+          >
+            <TabsList>
+              <TabsTrigger value="combo">Use combo with main hotkey</TabsTrigger>
+              <TabsTrigger value="custom">Use custom hotkey</TabsTrigger>
+            </TabsList>
+            <TabsContent value="combo" className="mt-3">
+              <div className="rounded-md border border-border-subtle bg-surface-1 px-3 py-2 text-sm">
+                Translation hotkey: <span className="font-semibold">{translationComboHotkey}</span>
+              </div>
+            </TabsContent>
+            <TabsContent value="custom" className="mt-3">
+              <HotkeyInput
+                value={settings.translationCustomHotkey}
+                onChange={(hotkey) => {
+                  onChange({ translationCustomHotkey: hotkey })
+                }}
+              />
+            </TabsContent>
+          </Tabs>
+
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="space-y-1.5">
+              <p className="text-sm font-medium">Source language</p>
+              <select
+                className="app-no-drag h-9 w-full rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 px-2.5 text-sm"
+                value={settings.translationSourceLanguage}
+                onChange={(event) => {
+                  onChange({ translationSourceLanguage: event.target.value })
+                }}
+              >
+                {TRANSCRIPTION_LANGUAGE_OPTIONS.map((language) => (
+                  <option key={language} value={language}>
+                    {languageLabelWithFlag(language)}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="space-y-1.5">
+              <p className="text-sm font-medium">Target language</p>
+              <select
+                className="app-no-drag h-9 w-full rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 px-2.5 text-sm"
+                value={settings.translationTargetLanguage}
+                onChange={(event) => {
+                  onChange({ translationTargetLanguage: event.target.value })
+                }}
+              >
+                {LANGUAGES.map((language) => (
+                  <option key={language} value={language}>
+                    {languageLabelWithFlag(language)}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="rounded-md border border-border-subtle bg-surface-0 px-3 py-2 text-sm text-muted-foreground">
+            Active translation hotkey: <span className="font-semibold text-foreground">{translationHotkey}</span>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  )
 }
 
 interface ModelsSectionProps {
@@ -1646,7 +1660,7 @@ type SettingsNodeId =
   | 'general.activation'
   | 'general.behavior'
   | 'general.privacy'
-  | 'general.translation'
+  | 'translation'
   | 'models.transcriptions.cloud'
   | 'models.transcriptions.local'
   | 'models.post.cloud'
@@ -1702,6 +1716,8 @@ const SettingsWorkspace = ({
       ? 'models.transcriptions'
       : activeNode.startsWith('models.post.')
         ? 'models.post'
+      : activeNode === 'translation'
+        ? 'translation'
       : activeNode === 'prompts'
         ? 'prompts'
         : activeNode.startsWith('agent.')
@@ -1713,6 +1729,7 @@ const SettingsWorkspace = ({
       currentRoot !== 'general' &&
       currentRoot !== 'models.transcriptions' &&
       currentRoot !== 'models.post' &&
+      currentRoot !== 'translation' &&
       currentRoot !== 'agent'
     ) {
       return
@@ -1758,6 +1775,10 @@ const SettingsWorkspace = ({
           onPostModelsChange={onPostModelsChange}
         />
       )
+    }
+
+    if (currentRoot === 'translation') {
+      return <TranslationModeSection settings={settings} onChange={onSettingsChange} />
     }
 
     if (currentRoot === 'prompts') {
@@ -1813,17 +1834,12 @@ const SettingsWorkspace = ({
               <button type="button" className={leafClass('general.privacy')} onClick={() => setActiveNode('general.privacy')}>
                 Privacy / Local
               </button>
-              <div className="mt-1 border-t border-border-subtle pt-1">
-                <button
-                  type="button"
-                  className={leafClass('general.translation')}
-                  onClick={() => setActiveNode('general.translation')}
-                >
-                  Translation mode
-                </button>
-              </div>
             </div>
           ) : null}
+
+          <button type="button" className={leafClass('translation')} onClick={() => setActiveNode('translation')}>
+            Translation mode
+          </button>
 
           <button
             type="button"

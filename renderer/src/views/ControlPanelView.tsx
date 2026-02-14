@@ -546,18 +546,34 @@ interface ModelsSectionProps {
 
 const renderProviderIcon = (providerId: string) => {
   if (providerId === 'openai') {
-    return <SiOpenaigym className="h-4 w-4" />
+    return (
+      <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-[#10a37f]/35 bg-[#10a37f]/10">
+        <SiOpenaigym className="h-3.5 w-3.5 text-[#10a37f]" />
+      </span>
+    )
   }
 
   if (providerId === 'grok') {
-    return <SiX className="h-4 w-4" />
+    return (
+      <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-[#7c3aed]/35 bg-[#7c3aed]/10">
+        <SiX className="h-3.5 w-3.5 text-[#7c3aed]" />
+      </span>
+    )
   }
 
   if (providerId === 'meta') {
-    return <SiMeta className="h-4 w-4" />
+    return (
+      <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-[#0866ff]/35 bg-[#0866ff]/10">
+        <SiMeta className="h-3.5 w-3.5 text-[#0866ff]" />
+      </span>
+    )
   }
 
-  return <Settings className="h-4 w-4" />
+  return (
+    <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-primary/35 bg-primary/10">
+      <Settings className="h-3.5 w-3.5 text-primary" />
+    </span>
+  )
 }
 
 const ModelsSection = ({
@@ -662,10 +678,10 @@ const ModelsSection = ({
 
   const providerButtonClass = (active: boolean) =>
     cn(
-      'app-no-drag inline-flex h-10 items-center gap-2 rounded-md px-3 text-sm transition-colors whitespace-nowrap',
+      'app-no-drag inline-flex h-10 items-center gap-2 px-4 text-sm font-medium transition-colors whitespace-nowrap',
       active
-        ? 'bg-primary/15 text-primary ring-1 ring-primary/30'
-        : 'text-muted-foreground hover:bg-surface-2 hover:text-foreground',
+        ? 'bg-primary/12 text-foreground'
+        : 'text-muted-foreground hover:bg-surface-2/70 hover:text-foreground',
     )
 
   const modelItemClass = (active: boolean) =>
@@ -683,35 +699,39 @@ const ModelsSection = ({
         <CardHeader>
           <CardTitle>Transcriptions | Cloud</CardTitle>
           <CardDescription>
-            Provider tabs are listed horizontally. Model choices remain listed one below another.
+            Centered provider tabs with visible separators. Model choices remain listed one below another.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="flex flex-wrap gap-2 rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 p-2">
-            {CLOUD_TRANSCRIPTION_CATALOG.map((provider) => {
-              const active = selectedTranscriptionProvider.providerId === provider.providerId
+          <div className="flex justify-center">
+            <div className="max-w-full overflow-x-auto rounded-[var(--radius-premium)] border border-border-hover bg-surface-0/90 p-1">
+              <div className="inline-flex min-w-max items-stretch divide-x divide-border-hover rounded-[calc(var(--radius-premium)-2px)] border border-border-subtle bg-surface-1/70">
+                {CLOUD_TRANSCRIPTION_CATALOG.map((provider) => {
+                  const active = selectedTranscriptionProvider.providerId === provider.providerId
 
-              return (
-                <button
-                  key={provider.providerId}
-                  type="button"
-                  className={providerButtonClass(active)}
-                  onClick={() => {
-                    onSettingsChange({
-                      transcriptionRuntime: 'cloud',
-                      transcriptionCloudProvider: provider.providerId,
-                      transcriptionCloudModelId:
-                        provider.providerId === 'custom'
-                          ? settings.transcriptionCustomModel || provider.models[0]?.id || ''
-                          : provider.models[0]?.id || '',
-                    })
-                  }}
-                >
-                  {renderProviderIcon(provider.providerId)}
-                  {provider.providerLabel}
-                </button>
-              )
-            })}
+                  return (
+                    <button
+                      key={provider.providerId}
+                      type="button"
+                      className={providerButtonClass(active)}
+                      onClick={() => {
+                        onSettingsChange({
+                          transcriptionRuntime: 'cloud',
+                          transcriptionCloudProvider: provider.providerId,
+                          transcriptionCloudModelId:
+                            provider.providerId === 'custom'
+                              ? settings.transcriptionCustomModel || provider.models[0]?.id || ''
+                              : provider.models[0]?.id || '',
+                        })
+                      }}
+                    >
+                      {renderProviderIcon(provider.providerId)}
+                      {provider.providerLabel}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
           </div>
 
           <div className="rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 p-3">
@@ -889,35 +909,39 @@ const ModelsSection = ({
         <CardHeader>
           <CardTitle>Post-processing | Cloud</CardTitle>
           <CardDescription>
-            Provider tabs are listed horizontally. Model choices remain listed one below another.
+            Centered provider tabs with visible separators. Model choices remain listed one below another.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="flex flex-wrap gap-2 rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 p-2">
-            {CLOUD_POST_PROCESSING_CATALOG.map((provider) => {
-              const active = selectedPostProcessingProvider.providerId === provider.providerId
+          <div className="flex justify-center">
+            <div className="max-w-full overflow-x-auto rounded-[var(--radius-premium)] border border-border-hover bg-surface-0/90 p-1">
+              <div className="inline-flex min-w-max items-stretch divide-x divide-border-hover rounded-[calc(var(--radius-premium)-2px)] border border-border-subtle bg-surface-1/70">
+                {CLOUD_POST_PROCESSING_CATALOG.map((provider) => {
+                  const active = selectedPostProcessingProvider.providerId === provider.providerId
 
-              return (
-                <button
-                  key={provider.providerId}
-                  type="button"
-                  className={providerButtonClass(active)}
-                  onClick={() => {
-                    onSettingsChange({
-                      postProcessingRuntime: 'cloud',
-                      postProcessingCloudProvider: provider.providerId,
-                      postProcessingCloudModelId:
-                        provider.providerId === 'custom'
-                          ? settings.postProcessingCustomModel || provider.models[0]?.id || ''
-                          : provider.models[0]?.id || '',
-                    })
-                  }}
-                >
-                  {renderProviderIcon(provider.providerId)}
-                  {provider.providerLabel}
-                </button>
-              )
-            })}
+                  return (
+                    <button
+                      key={provider.providerId}
+                      type="button"
+                      className={providerButtonClass(active)}
+                      onClick={() => {
+                        onSettingsChange({
+                          postProcessingRuntime: 'cloud',
+                          postProcessingCloudProvider: provider.providerId,
+                          postProcessingCloudModelId:
+                            provider.providerId === 'custom'
+                              ? settings.postProcessingCustomModel || provider.models[0]?.id || ''
+                              : provider.models[0]?.id || '',
+                        })
+                      }}
+                    >
+                      {renderProviderIcon(provider.providerId)}
+                      {provider.providerLabel}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
           </div>
 
           <div className="rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 p-3">

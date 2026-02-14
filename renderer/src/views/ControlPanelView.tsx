@@ -1,17 +1,23 @@
 import {
+  Bot,
+  BrainCircuit,
   BookOpen,
-  ChevronDown,
-  ChevronRight,
   Cloud,
   Copy,
   Link,
+  Lock,
+  Mic,
   Moon,
   PanelRight,
   Search,
   Settings,
+  Shield,
+  SlidersHorizontal,
   Sparkles,
   Sun,
   Trash2,
+  UserRound,
+  Wrench,
 } from 'lucide-react'
 import {
   useEffect,
@@ -409,152 +415,6 @@ interface SettingsSectionProps {
   onChange: (next: Partial<AppSettings>) => void
 }
 
-const SettingsSection = ({ settings, autoDetectSupported, onChange }: SettingsSectionProps) => {
-  return (
-  <div className="space-y-4">
-    <Card className="scroll-mt-6">
-      <CardHeader>
-        <CardTitle>General settings</CardTitle>
-        <CardDescription>Core behavior, activation, and privacy controls.</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-6">
-        <section id="settings-node-general.activation" className="scroll-mt-6 space-y-4">
-          <div>
-            <p className="text-sm font-semibold">Activation</p>
-            <p className="text-xs text-muted-foreground">Configure global hotkey and activation mode.</p>
-          </div>
-
-          <div className="space-y-2">
-            <p className="text-sm font-medium">Hotkey</p>
-            <HotkeyInput
-              value={settings.hotkey}
-              onChange={(hotkey) => {
-                onChange({ hotkey })
-              }}
-            />
-          </div>
-
-          <Tabs
-            value={settings.activationMode}
-            onValueChange={(value) => {
-              onChange({ activationMode: value as AppSettings['activationMode'] })
-            }}
-          >
-            <TabsList>
-              <TabsTrigger value="tap">Tap to talk</TabsTrigger>
-              <TabsTrigger value="hold">Hold to talk</TabsTrigger>
-            </TabsList>
-            <TabsContent value="tap">
-              <p className="rounded-md border border-border-subtle bg-surface-0 p-3 text-sm text-muted-foreground">
-                Press {settings.hotkey} to start and press again to stop.
-              </p>
-            </TabsContent>
-            <TabsContent value="hold">
-              <p className="rounded-md border border-border-subtle bg-surface-0 p-3 text-sm text-muted-foreground">
-                Hold {settings.hotkey} while speaking. Release to send.
-              </p>
-            </TabsContent>
-          </Tabs>
-        </section>
-
-        <div className="h-px bg-border-subtle" />
-
-        <section id="settings-node-general.behavior" className="scroll-mt-6 space-y-3">
-          <p className="text-sm font-semibold">Behavior</p>
-
-          <div className="rounded-md border border-border-subtle bg-surface-0 px-3 py-2.5">
-            <p className="mb-2 text-sm">Interface language</p>
-            <select
-              className="app-no-drag h-9 w-full rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 px-2.5 text-sm"
-              value={settings.uiLanguage}
-              onChange={(event) => {
-                onChange({ uiLanguage: event.target.value })
-              }}
-            >
-              {UI_LANGUAGES.map((language) => (
-                <option key={language.id} value={language.id}>
-                  {language.label}
-                </option>
-              ))}
-            </select>
-            <p className="mt-1 text-xs text-muted-foreground">More interface languages can be added later.</p>
-          </div>
-
-          <div className="rounded-md border border-border-subtle bg-surface-0 px-3 py-2.5">
-            <p className="mb-2 text-sm">Transcription language</p>
-            <select
-              className="app-no-drag h-9 w-full rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 px-2.5 text-sm"
-              value={settings.preferredLanguage}
-              onChange={(event) => {
-                onChange({ preferredLanguage: event.target.value })
-              }}
-            >
-              {TRANSCRIPTION_LANGUAGE_OPTIONS.map((language) => (
-                <option
-                  key={language}
-                  value={language}
-                  disabled={language === AUTO_DETECT_LANGUAGE && !autoDetectSupported}
-                >
-                  {language}
-                </option>
-              ))}
-            </select>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {autoDetectSupported
-                ? 'Auto-detect is available for the currently selected transcription model.'
-                : 'Auto-detect is not available for the current transcription model.'}
-            </p>
-          </div>
-
-          {[
-            {
-              label: 'Auto-paste (mock)',
-              key: 'autoPaste',
-              value: settings.autoPaste,
-            },
-            {
-              label: 'Auto-hide floating icon',
-              key: 'autoHideFloatingIcon',
-              value: settings.autoHideFloatingIcon,
-            },
-            {
-              label: 'Launch at login',
-              key: 'launchAtLogin',
-              value: settings.launchAtLogin,
-            },
-            {
-              label: 'Sounds',
-              key: 'sounds',
-              value: settings.sounds,
-            },
-          ].map((item) => (
-            <div key={item.key} className="flex items-center justify-between rounded-md border border-border-subtle bg-surface-0 px-3 py-2.5">
-              <p className="text-sm">{item.label}</p>
-              <Switch
-                checked={item.value}
-                onCheckedChange={(checked) => {
-                  onChange({ [item.key]: checked } as Partial<AppSettings>)
-                }}
-              />
-            </div>
-          ))}
-        </section>
-
-        <div className="h-px bg-border-subtle" />
-
-        <section id="settings-node-general.privacy" className="scroll-mt-6 space-y-2">
-          <p className="text-sm font-semibold">Privacy / Local</p>
-          <div className="rounded-[var(--radius-premium)] border border-primary/30 bg-primary/10 p-4 text-sm text-primary">
-            Local processing: voice data is never uploaded online in this mock mode.
-          </div>
-        </section>
-      </CardContent>
-    </Card>
-
-  </div>
-)
-}
-
 interface TranslationModeSectionProps {
   settings: AppSettings
   onChange: (next: Partial<AppSettings>) => void
@@ -657,6 +517,188 @@ const TranslationModeSection = ({ settings, onChange }: TranslationModeSectionPr
         </CardContent>
       </Card>
     </div>
+  )
+}
+
+const AccountSettingsPanel = ({ settings, onChange }: Pick<SettingsSectionProps, 'settings' | 'onChange'>) => (
+  <div className="space-y-4">
+    <Card>
+      <CardHeader>
+        <CardTitle>Account</CardTitle>
+        <CardDescription>Local profile and primary activation controls.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-2 text-sm text-muted-foreground">
+        <p>Profile type: Local user</p>
+        <p>Agent identity: {settings.agentName || 'Agent'}</p>
+      </CardContent>
+    </Card>
+
+    <Card>
+      <CardHeader>
+        <CardTitle>Activation</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="space-y-2">
+          <p className="text-sm font-medium">Hotkey</p>
+          <HotkeyInput
+            value={settings.hotkey}
+            onChange={(hotkey) => {
+              onChange({ hotkey })
+            }}
+          />
+        </div>
+
+        <Tabs
+          value={settings.activationMode}
+          onValueChange={(value) => {
+            onChange({ activationMode: value as AppSettings['activationMode'] })
+          }}
+        >
+          <TabsList>
+            <TabsTrigger value="tap">Tap to talk</TabsTrigger>
+            <TabsTrigger value="hold">Hold to talk</TabsTrigger>
+          </TabsList>
+          <TabsContent value="tap">
+            <p className="rounded-md border border-border-subtle bg-surface-0 p-3 text-sm text-muted-foreground">
+              Press {settings.hotkey} to start and press again to stop.
+            </p>
+          </TabsContent>
+          <TabsContent value="hold">
+            <p className="rounded-md border border-border-subtle bg-surface-0 p-3 text-sm text-muted-foreground">
+              Hold {settings.hotkey} while speaking. Release to send.
+            </p>
+          </TabsContent>
+        </Tabs>
+      </CardContent>
+    </Card>
+  </div>
+)
+
+const PreferencesSettingsPanel = ({
+  settings,
+  autoDetectSupported,
+  onChange,
+}: SettingsSectionProps) => (
+  <Card>
+    <CardHeader>
+      <CardTitle>Preferences</CardTitle>
+      <CardDescription>Language and behavior defaults for daily usage.</CardDescription>
+    </CardHeader>
+    <CardContent className="space-y-3">
+      <div className="rounded-md border border-border-subtle bg-surface-0 px-3 py-2.5">
+        <p className="mb-2 text-sm">Interface language</p>
+        <select
+          className="app-no-drag h-9 w-full rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 px-2.5 text-sm"
+          value={settings.uiLanguage}
+          onChange={(event) => {
+            onChange({ uiLanguage: event.target.value })
+          }}
+        >
+          {UI_LANGUAGES.map((language) => (
+            <option key={language.id} value={language.id}>
+              {language.label}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div className="rounded-md border border-border-subtle bg-surface-0 px-3 py-2.5">
+        <p className="mb-2 text-sm">Transcription language</p>
+        <select
+          className="app-no-drag h-9 w-full rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 px-2.5 text-sm"
+          value={settings.preferredLanguage}
+          onChange={(event) => {
+            onChange({ preferredLanguage: event.target.value })
+          }}
+        >
+          {TRANSCRIPTION_LANGUAGE_OPTIONS.map((language) => (
+            <option
+              key={language}
+              value={language}
+              disabled={language === AUTO_DETECT_LANGUAGE && !autoDetectSupported}
+            >
+              {languageLabelWithFlag(language)}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {[
+        {
+          label: 'Auto-paste (mock)',
+          key: 'autoPaste',
+          value: settings.autoPaste,
+        },
+        {
+          label: 'Auto-hide floating icon',
+          key: 'autoHideFloatingIcon',
+          value: settings.autoHideFloatingIcon,
+        },
+        {
+          label: 'Launch at login',
+          key: 'launchAtLogin',
+          value: settings.launchAtLogin,
+        },
+        {
+          label: 'Sounds',
+          key: 'sounds',
+          value: settings.sounds,
+        },
+      ].map((item) => (
+        <div key={item.key} className="flex items-center justify-between rounded-md border border-border-subtle bg-surface-0 px-3 py-2.5">
+          <p className="text-sm">{item.label}</p>
+          <Switch
+            checked={item.value}
+            onCheckedChange={(checked) => {
+              onChange({ [item.key]: checked } as Partial<AppSettings>)
+            }}
+          />
+        </div>
+      ))}
+    </CardContent>
+  </Card>
+)
+
+const PrivacyPanel = () => (
+  <Card>
+    <CardHeader>
+      <CardTitle>Privacy</CardTitle>
+      <CardDescription>Local-first privacy guarantees and data boundaries.</CardDescription>
+    </CardHeader>
+    <CardContent>
+      <div className="rounded-[var(--radius-premium)] border border-primary/30 bg-primary/10 p-4 text-sm text-primary">
+        Local processing: voice data is never uploaded online in this mock mode.
+      </div>
+    </CardContent>
+  </Card>
+)
+
+const PermissionsSection = () => {
+  const [microphonePermission, setMicrophonePermission] = useState(true)
+  const [pastePermission, setPastePermission] = useState(isMacOS)
+  const [automationPermission, setAutomationPermission] = useState(false)
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Permissions</CardTitle>
+        <CardDescription>Mocked OS access toggles for app-level integrations.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex items-center justify-between rounded-md border border-border-subtle bg-surface-0 px-3 py-2.5">
+          <p className="text-sm">Microphone access</p>
+          <Switch checked={microphonePermission} onCheckedChange={setMicrophonePermission} />
+        </div>
+        <div className="flex items-center justify-between rounded-md border border-border-subtle bg-surface-0 px-3 py-2.5">
+          <p className="text-sm">Paste integration</p>
+          <Switch checked={pastePermission} onCheckedChange={setPastePermission} />
+        </div>
+        <div className="flex items-center justify-between rounded-md border border-border-subtle bg-surface-0 px-3 py-2.5">
+          <p className="text-sm">Automation access</p>
+          <Switch checked={automationPermission} onCheckedChange={setAutomationPermission} />
+        </div>
+      </CardContent>
+    </Card>
   )
 }
 
@@ -1657,18 +1699,57 @@ const InfoSection = ({ settings }: { settings: AppSettings }) => (
 )
 
 type SettingsNodeId =
-  | 'general.activation'
-  | 'general.behavior'
-  | 'general.privacy'
-  | 'translation'
-  | 'models.transcriptions.cloud'
-  | 'models.transcriptions.local'
-  | 'models.post.cloud'
-  | 'models.post.local'
+  | 'account'
+  | 'preferences'
+  | 'transcription'
+  | 'dictionary'
+  | 'ai-models'
   | 'prompts'
   | 'agent.name'
+  | 'privacy'
+  | 'permissions'
+  | 'developer'
   | 'shortcuts'
-  | 'info'
+
+interface SettingsMenuGroup {
+  label: string
+  items: Array<{ id: SettingsNodeId; label: string; icon: typeof Settings }>
+}
+
+const SETTINGS_MENU_GROUPS: SettingsMenuGroup[] = [
+  {
+    label: 'Profile',
+    items: [{ id: 'account', label: 'Account', icon: UserRound }],
+  },
+  {
+    label: 'App',
+    items: [{ id: 'preferences', label: 'Preferences', icon: SlidersHorizontal }],
+  },
+  {
+    label: 'Speech',
+    items: [
+      { id: 'transcription', label: 'Transcription', icon: Mic },
+      { id: 'dictionary', label: 'Dictionary', icon: BookOpen },
+    ],
+  },
+  {
+    label: 'Intelligence',
+    items: [
+      { id: 'ai-models', label: 'AI Models', icon: BrainCircuit },
+      { id: 'agent.name', label: 'Agent', icon: Bot },
+      { id: 'prompts', label: 'Prompts', icon: Sparkles },
+    ],
+  },
+  {
+    label: 'System',
+    items: [
+      { id: 'privacy', label: 'Privacy', icon: Lock },
+      { id: 'permissions', label: 'Permissions', icon: Shield },
+      { id: 'developer', label: 'Developer', icon: Wrench },
+      { id: 'shortcuts', label: 'Shortcuts', icon: Settings },
+    ],
+  },
+]
 
 interface SettingsWorkspaceProps {
   settings: AppSettings
@@ -1687,13 +1768,13 @@ const SettingsWorkspace = ({
   onModelsChange,
   onPostModelsChange,
 }: SettingsWorkspaceProps) => {
-  const [activeNode, setActiveNode] = useState<SettingsNodeId>('general.activation')
-  const [expanded, setExpanded] = useState({
-    general: true,
-    models: true,
-    transcriptions: true,
-    postProcessing: true,
-  })
+  const [activeNode, setActiveNode] = useState<SettingsNodeId>('account')
+  const [transcriptionMode, setTranscriptionMode] = useState<'cloud' | 'local'>(
+    settings.transcriptionRuntime === 'local' ? 'local' : 'cloud',
+  )
+  const [postProcessingMode, setPostProcessingMode] = useState<'cloud' | 'local'>(
+    settings.postProcessingRuntime === 'local' ? 'local' : 'cloud',
+  )
 
   const activeTranscriptionModelId =
     settings.transcriptionRuntime === 'cloud'
@@ -1710,240 +1791,160 @@ const SettingsWorkspace = ({
     onSettingsChange({ preferredLanguage: 'English' })
   }, [autoDetectSupported, onSettingsChange, settings.preferredLanguage])
 
-  const currentRoot = activeNode.startsWith('general.')
-    ? 'general'
-    : activeNode.startsWith('models.transcriptions.')
-      ? 'models.transcriptions'
-      : activeNode.startsWith('models.post.')
-        ? 'models.post'
-      : activeNode === 'translation'
-        ? 'translation'
-      : activeNode === 'prompts'
-        ? 'prompts'
-        : activeNode.startsWith('agent.')
-          ? 'agent'
-      : activeNode
+  useEffect(() => {
+    setTranscriptionMode(settings.transcriptionRuntime === 'local' ? 'local' : 'cloud')
+  }, [settings.transcriptionRuntime])
 
   useEffect(() => {
-    if (
-      currentRoot !== 'general' &&
-      currentRoot !== 'models.transcriptions' &&
-      currentRoot !== 'models.post' &&
-      currentRoot !== 'translation' &&
-      currentRoot !== 'agent'
-    ) {
-      return
-    }
-
-    const target = document.getElementById(`settings-node-${activeNode}`)
-    target?.scrollIntoView({
-      behavior: 'smooth',
-      block: 'start',
-    })
-  }, [activeNode, currentRoot])
+    setPostProcessingMode(settings.postProcessingRuntime === 'local' ? 'local' : 'cloud')
+  }, [settings.postProcessingRuntime])
 
   const renderContent = () => {
-    if (currentRoot === 'general') {
-      return <SettingsSection settings={settings} autoDetectSupported={autoDetectSupported} onChange={onSettingsChange} />
+    if (activeNode === 'account') {
+      return <AccountSettingsPanel settings={settings} onChange={onSettingsChange} />
     }
 
-    if (currentRoot === 'models.transcriptions') {
+    if (activeNode === 'preferences') {
       return (
-        <ModelsSection
-          scope="transcriptions"
-          mode={activeNode.endsWith('.cloud') ? 'cloud' : 'local'}
+        <PreferencesSettingsPanel
           settings={settings}
-          models={models}
-          postModels={postModels}
-          onSettingsChange={onSettingsChange}
-          onModelsChange={onModelsChange}
-          onPostModelsChange={onPostModelsChange}
+          autoDetectSupported={autoDetectSupported}
+          onChange={onSettingsChange}
         />
       )
     }
 
-    if (currentRoot === 'models.post') {
+    if (activeNode === 'transcription') {
       return (
-        <ModelsSection
-          scope="post"
-          mode={activeNode.endsWith('.cloud') ? 'cloud' : 'local'}
-          settings={settings}
-          models={models}
-          postModels={postModels}
-          onSettingsChange={onSettingsChange}
-          onModelsChange={onModelsChange}
-          onPostModelsChange={onPostModelsChange}
-        />
+        <div className="space-y-4">
+          <Tabs
+            value={transcriptionMode}
+            onValueChange={(value) => {
+              setTranscriptionMode(value as 'cloud' | 'local')
+            }}
+          >
+            <TabsList className="bg-surface-2/80">
+              <TabsTrigger value="cloud">Cloud</TabsTrigger>
+              <TabsTrigger value="local">Local</TabsTrigger>
+            </TabsList>
+          </Tabs>
+          <ModelsSection
+            scope="transcriptions"
+            mode={transcriptionMode}
+            settings={settings}
+            models={models}
+            postModels={postModels}
+            onSettingsChange={onSettingsChange}
+            onModelsChange={onModelsChange}
+            onPostModelsChange={onPostModelsChange}
+          />
+        </div>
       )
     }
 
-    if (currentRoot === 'translation') {
+    if (activeNode === 'dictionary') {
       return <TranslationModeSection settings={settings} onChange={onSettingsChange} />
     }
 
-    if (currentRoot === 'prompts') {
+    if (activeNode === 'ai-models') {
+      return (
+        <div className="space-y-4">
+          <Tabs
+            value={postProcessingMode}
+            onValueChange={(value) => {
+              setPostProcessingMode(value as 'cloud' | 'local')
+            }}
+          >
+            <TabsList className="bg-surface-2/80">
+              <TabsTrigger value="cloud">Cloud</TabsTrigger>
+              <TabsTrigger value="local">Local</TabsTrigger>
+            </TabsList>
+          </Tabs>
+          <ModelsSection
+            scope="post"
+            mode={postProcessingMode}
+            settings={settings}
+            models={models}
+            postModels={postModels}
+            onSettingsChange={onSettingsChange}
+            onModelsChange={onModelsChange}
+            onPostModelsChange={onPostModelsChange}
+          />
+        </div>
+      )
+    }
+
+    if (activeNode === 'prompts') {
       return <PromptsSection settings={settings} onChange={onSettingsChange} />
     }
 
-    if (currentRoot === 'agent') {
+    if (activeNode === 'agent.name') {
       return <AgentIdentitySection settings={settings} onChange={onSettingsChange} />
     }
 
-    if (currentRoot === 'shortcuts') {
+    if (activeNode === 'privacy') {
+      return <PrivacyPanel />
+    }
+
+    if (activeNode === 'permissions') {
+      return <PermissionsSection />
+    }
+
+    if (activeNode === 'shortcuts') {
       return <ShortcutsSection hotkey={settings.hotkey} />
     }
 
     return <InfoSection settings={settings} />
   }
 
-  const leafClass = (nodeId: SettingsNodeId) =>
+  const menuItemClass = (nodeId: SettingsNodeId) =>
     cn(
-      'app-no-drag flex h-8 w-full items-center rounded-md px-2.5 text-left text-sm transition-colors',
+      'relative app-no-drag flex h-10 w-full items-center gap-3 rounded-[10px] px-2.5 text-left text-sm transition-colors',
       activeNode === nodeId
-        ? 'bg-primary/15 text-primary ring-1 ring-primary/25'
-        : 'text-muted-foreground hover:bg-surface-2 hover:text-foreground',
+        ? 'bg-surface-1 text-foreground shadow-[0_0_0_1px_var(--border-hover)]'
+        : 'text-muted-foreground hover:bg-surface-2/60 hover:text-foreground',
     )
 
-  const branchClass = 'app-no-drag flex h-8 w-full items-center gap-1.5 rounded-md px-2.5 text-left text-sm font-medium text-foreground hover:bg-surface-2'
-
   return (
-    <div className="grid min-h-[620px] gap-4 rounded-[var(--radius-premium)] border border-border-subtle bg-surface-1/70 p-4 lg:grid-cols-[250px_1fr]">
-      <aside className="rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 p-2">
-        <nav className="space-y-1">
-          <button
-            type="button"
-            className={branchClass}
-            onClick={() => {
-              setExpanded((current) => ({
-                ...current,
-                general: !current.general,
-              }))
-            }}
-          >
-            {expanded.general ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-            General
-          </button>
-          {expanded.general ? (
-            <div className="ml-4 space-y-1">
-              <button type="button" className={leafClass('general.activation')} onClick={() => setActiveNode('general.activation')}>
-                Activation
-              </button>
-              <button type="button" className={leafClass('general.behavior')} onClick={() => setActiveNode('general.behavior')}>
-                Behavior
-              </button>
-              <button type="button" className={leafClass('general.privacy')} onClick={() => setActiveNode('general.privacy')}>
-                Privacy / Local
-              </button>
+    <div className="grid min-h-[620px] gap-4 rounded-[var(--radius-premium)] border border-border-subtle bg-surface-1/70 p-4 lg:grid-cols-[260px_1fr]">
+      <aside className="rounded-[var(--radius-premium)] border border-border-subtle bg-[#070a12] p-3">
+        <p className="px-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-[#6f7891]">Settings</p>
+        <nav className="mt-4 space-y-4">
+          {SETTINGS_MENU_GROUPS.map((group) => (
+            <div key={group.label}>
+              <p className="px-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-[#4f586d]">{group.label}</p>
+              <div className="mt-1.5 space-y-1">
+                {group.items.map((item) => {
+                  const Icon = item.icon
+                  const active = activeNode === item.id
+
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className={menuItemClass(item.id)}
+                      onClick={() => {
+                        setActiveNode(item.id)
+                      }}
+                    >
+                      {active ? <span className="absolute left-0 top-2 bottom-2 w-0.5 rounded-full bg-primary" /> : null}
+                      <span
+                        className={cn(
+                          'ml-2 inline-flex h-6 w-6 items-center justify-center rounded-full border',
+                          active
+                            ? 'border-primary/40 bg-primary/15 text-primary'
+                            : 'border-border-subtle text-muted-foreground',
+                        )}
+                      >
+                        <Icon className="h-3.5 w-3.5" />
+                      </span>
+                      <span>{item.label}</span>
+                    </button>
+                  )
+                })}
+              </div>
             </div>
-          ) : null}
-
-          <button type="button" className={leafClass('translation')} onClick={() => setActiveNode('translation')}>
-            Translation mode
-          </button>
-
-          <button
-            type="button"
-            className={branchClass}
-            onClick={() => {
-              setExpanded((current) => ({
-                ...current,
-                models: !current.models,
-              }))
-            }}
-          >
-            {expanded.models ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-            Models
-          </button>
-          {expanded.models ? (
-            <div className="ml-4 space-y-1">
-              <button
-                type="button"
-                className={branchClass}
-                onClick={() => {
-                  setExpanded((current) => ({
-                    ...current,
-                    transcriptions: !current.transcriptions,
-                  }))
-                }}
-              >
-                {expanded.transcriptions ? (
-                  <ChevronDown className="h-3.5 w-3.5" />
-                ) : (
-                  <ChevronRight className="h-3.5 w-3.5" />
-                )}
-                Transcriptions
-              </button>
-              {expanded.transcriptions ? (
-                <div className="ml-4 space-y-1">
-                  <button
-                    type="button"
-                    className={leafClass('models.transcriptions.cloud')}
-                    onClick={() => setActiveNode('models.transcriptions.cloud')}
-                  >
-                    Cloud
-                  </button>
-                  <button
-                    type="button"
-                    className={leafClass('models.transcriptions.local')}
-                    onClick={() => setActiveNode('models.transcriptions.local')}
-                  >
-                    Local
-                  </button>
-                </div>
-              ) : null}
-
-              <button
-                type="button"
-                className={branchClass}
-                onClick={() => {
-                  setExpanded((current) => ({
-                    ...current,
-                    postProcessing: !current.postProcessing,
-                  }))
-                }}
-              >
-                {expanded.postProcessing ? (
-                  <ChevronDown className="h-3.5 w-3.5" />
-                ) : (
-                  <ChevronRight className="h-3.5 w-3.5" />
-                )}
-                Post-processing
-              </button>
-              {expanded.postProcessing ? (
-                <div className="ml-4 space-y-1">
-                  <button
-                    type="button"
-                    className={leafClass('models.post.cloud')}
-                    onClick={() => setActiveNode('models.post.cloud')}
-                  >
-                    Cloud
-                  </button>
-                  <button
-                    type="button"
-                    className={leafClass('models.post.local')}
-                    onClick={() => setActiveNode('models.post.local')}
-                  >
-                    Local
-                  </button>
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-
-          <button type="button" className={leafClass('prompts')} onClick={() => setActiveNode('prompts')}>
-            Prompts
-          </button>
-
-          <button type="button" className={leafClass('agent.name')} onClick={() => setActiveNode('agent.name')}>
-            Agent name
-          </button>
-
-          <button type="button" className={leafClass('shortcuts')} onClick={() => setActiveNode('shortcuts')}>
-            Shortcuts
-          </button>
-          <button type="button" className={leafClass('info')} onClick={() => setActiveNode('info')}>
-            Info
-          </button>
+          ))}
         </nav>
       </aside>
 

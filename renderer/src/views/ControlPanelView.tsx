@@ -2329,10 +2329,10 @@ const ControlPanelScene = () => {
                   key={control.id}
                   type="button"
                   aria-label={control.id}
-                  className="relative h-3 w-3 rounded-full border border-black/10 transition-transform duration-150 hover:scale-105"
+                  className="relative h-3 w-3 rounded-full border border-black/15 transition-transform duration-150 hover:scale-105"
                   style={{ backgroundColor: control.color }}
                 >
-                  <Icon className="pointer-events-none absolute inset-0 m-auto h-2 w-2 text-black/60 opacity-0 transition-opacity duration-150 group-hover:opacity-95" />
+                  <Icon className="pointer-events-none absolute inset-0 m-auto h-2.5 w-2.5 text-black/85 opacity-20 drop-shadow-[0_0.5px_0_rgba(255,255,255,0.35)] transition-opacity duration-150 group-hover:opacity-100" />
                 </button>
               )
             })}

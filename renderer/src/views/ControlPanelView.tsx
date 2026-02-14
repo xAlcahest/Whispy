@@ -662,7 +662,7 @@ const ModelsSection = ({
 
   const providerButtonClass = (active: boolean) =>
     cn(
-      'app-no-drag flex h-10 w-full items-center gap-2 rounded-md px-3 text-left text-sm transition-colors',
+      'app-no-drag inline-flex h-10 items-center gap-2 rounded-md px-3 text-sm transition-colors whitespace-nowrap',
       active
         ? 'bg-primary/15 text-primary ring-1 ring-primary/30'
         : 'text-muted-foreground hover:bg-surface-2 hover:text-foreground',
@@ -683,11 +683,11 @@ const ModelsSection = ({
         <CardHeader>
           <CardTitle>Transcriptions | Cloud</CardTitle>
           <CardDescription>
-            Provider tabs are listed vertically with icons. Model choices are listed one below another.
+            Provider tabs are listed horizontally. Model choices remain listed one below another.
           </CardDescription>
         </CardHeader>
-        <CardContent className="grid gap-4 lg:grid-cols-[240px_1fr]">
-          <div className="rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 p-2">
+        <CardContent className="space-y-4">
+          <div className="flex flex-wrap gap-2 rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 p-2">
             {CLOUD_TRANSCRIPTION_CATALOG.map((provider) => {
               const active = selectedTranscriptionProvider.providerId === provider.providerId
 
@@ -889,11 +889,11 @@ const ModelsSection = ({
         <CardHeader>
           <CardTitle>Post-processing | Cloud</CardTitle>
           <CardDescription>
-            Provider tabs are listed vertically with icons. Model choices are listed one below another.
+            Provider tabs are listed horizontally. Model choices remain listed one below another.
           </CardDescription>
         </CardHeader>
-        <CardContent className="grid gap-4 lg:grid-cols-[240px_1fr]">
-          <div className="rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 p-2">
+        <CardContent className="space-y-4">
+          <div className="flex flex-wrap gap-2 rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 p-2">
             {CLOUD_POST_PROCESSING_CATALOG.map((provider) => {
               const active = selectedPostProcessingProvider.providerId === provider.providerId
 

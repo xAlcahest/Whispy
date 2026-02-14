@@ -174,23 +174,6 @@ export const CLOUD_POST_PROCESSING_CATALOG = [
   },
 ] as const
 
-export const CLOUD_PROVIDER_ENDPOINTS = {
-  transcriptions: {
-    openai: 'https://api.openai.com/v1/audio/transcriptions',
-    grok: 'https://api.x.ai/v1/audio/transcriptions',
-    groq: 'https://api.groq.com/openai/v1/audio/transcriptions',
-    meta: 'https://api.meta.ai/v1/audio/transcriptions',
-    custom: 'Custom endpoint',
-  },
-  postProcessing: {
-    openai: 'https://api.openai.com/v1/chat/completions',
-    grok: 'https://api.x.ai/v1/chat/completions',
-    groq: 'https://api.groq.com/openai/v1/chat/completions',
-    meta: 'https://api.meta.ai/v1/chat/completions',
-    custom: 'Custom endpoint',
-  },
-} as const
-
 export const AUTO_DETECT_SUPPORTED_TRANSCRIPTION_MODELS = new Set<string>([
   ...MODEL_PRESETS.map((model) => model.id),
   ...CLOUD_TRANSCRIPTION_CATALOG.filter((provider) => provider.providerId !== 'custom').flatMap((provider) =>

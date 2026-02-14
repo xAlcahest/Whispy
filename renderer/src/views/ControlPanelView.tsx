@@ -43,7 +43,6 @@ import {
   AUTO_DETECT_LANGUAGE,
   AUTO_DETECT_SUPPORTED_TRANSCRIPTION_MODELS,
   CLOUD_POST_PROCESSING_CATALOG,
-  CLOUD_PROVIDER_ENDPOINTS,
   CLOUD_TRANSCRIPTION_CATALOG,
   LANGUAGES,
   PROVIDERS,
@@ -874,7 +873,7 @@ const ModelsSection = ({
               </div>
             ) : (
               <div className="space-y-3">
-                <div className="grid gap-3 md:grid-cols-2">
+                <div className="max-w-md space-y-1.5">
                   <div className="space-y-1.5">
                     <p className="text-sm font-medium">API key</p>
                     <Input
@@ -884,13 +883,6 @@ const ModelsSection = ({
                         setTranscriptionApiKey(selectedTranscriptionProvider.providerId, event.target.value)
                       }}
                       placeholder={`Enter ${selectedTranscriptionProvider.providerLabel} API key`}
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <p className="text-sm font-medium">Endpoint</p>
-                    <Input
-                      value={CLOUD_PROVIDER_ENDPOINTS.transcriptions[selectedTranscriptionProvider.providerId as keyof typeof CLOUD_PROVIDER_ENDPOINTS.transcriptions]}
-                      readOnly
                     />
                   </div>
                 </div>
@@ -1120,7 +1112,7 @@ const ModelsSection = ({
               </div>
             ) : (
               <div className="space-y-3">
-                <div className="grid gap-3 md:grid-cols-2">
+                <div className="max-w-md space-y-1.5">
                   <div className="space-y-1.5">
                     <p className="text-sm font-medium">API key</p>
                     <Input
@@ -1130,13 +1122,6 @@ const ModelsSection = ({
                         setPostProcessingApiKey(selectedPostProcessingProvider.providerId, event.target.value)
                       }}
                       placeholder={`Enter ${selectedPostProcessingProvider.providerLabel} API key`}
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <p className="text-sm font-medium">Endpoint</p>
-                    <Input
-                      value={CLOUD_PROVIDER_ENDPOINTS.postProcessing[selectedPostProcessingProvider.providerId as keyof typeof CLOUD_PROVIDER_ENDPOINTS.postProcessing]}
-                      readOnly
                     />
                   </div>
                 </div>

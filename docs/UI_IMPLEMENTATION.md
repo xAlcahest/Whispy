@@ -87,9 +87,21 @@ Behavior implemented:
   - Local model cards with metadata (size/speed/quality).
   - Simulated download/remove with progress bar.
   - "Use local" action enabled only for downloaded models.
+- Cloud catalogs are currently static in frontend constants (mock stage).
 - Language model compatibility guard:
   - `Auto-detect` language is allowed only for model ids included in `AUTO_DETECT_SUPPORTED_TRANSCRIPTION_MODELS`.
   - If unsupported model is active while `Auto-detect` is selected, UI falls back language to `English`.
+
+### Planned backend behavior for cloud model discovery
+
+When real backend integrations are enabled, cloud model lists should switch from static UI catalogs to runtime discovery:
+
+- Program performs automatic provider-side model scan/discovery.
+- UI shows a curated/filtered default list first (program-level filtering).
+- A `Show others` action reveals the full raw provider model set discovered by backend.
+- This pattern should apply to both cloud pipelines:
+  - Cloud Transcriptions
+  - Cloud Post-processing
 
 ## 5) Provider tabs and API key handling (custom vs non-custom)
 
@@ -152,6 +164,7 @@ Important current storage behavior:
 - **Incomplete i18n**: only English dictionary/locale currently implemented.
 - **Unused overlay size constant**: `WITH_TOAST` exists in IPC/main sizing map but is not selected by overlay renderer logic.
 - **Legacy settings overlap**: onboarding still uses old `provider` + `modelId` fields while new cloud/local split fields are also present.
+- **Cloud model source is static today**: frontend uses fixed provider/model catalogs until backend discovery is wired.
 
 ## 10) Where in code
 

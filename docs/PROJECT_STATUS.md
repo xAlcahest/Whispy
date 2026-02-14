@@ -34,3 +34,4 @@ This file tracks implemented UI status and near-term gaps. Detailed implementati
 - Add settings tree search/filter for faster navigation.
 - Add import/export for settings/prompts/history.
 - Improve model capability visibility (for example auto-detect support, latency/cost/tooling metadata).
+- Replace static cloud model catalogs with backend auto-discovery, keep curated defaults, and add a `Show others` option for full provider model lists.

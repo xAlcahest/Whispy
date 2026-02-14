@@ -4,6 +4,7 @@ export type ActivationMode = 'tap' | 'hold'
 export type ThemeMode = 'light' | 'dark'
 export type Provider = 'whisper' | 'parakeet'
 export type RuntimeMode = 'cloud' | 'local'
+export type TranslationHotkeyMode = 'combo' | 'custom'
 
 export interface AppSettings {
   uiLanguage: string
@@ -42,6 +43,12 @@ export interface AppSettings {
   normalPrompt: string
   agentName: string
   agentPrompt: string
+  translationModeEnabled: boolean
+  translationHotkeyMode: TranslationHotkeyMode
+  translationCustomHotkey: string
+  translationSourceLanguage: string
+  translationTargetLanguage: string
+  translationPrompt: string
 }
 
 export interface HistoryEntry {

@@ -45,6 +45,7 @@ import {
   CLOUD_POST_PROCESSING_CATALOG,
   CLOUD_TRANSCRIPTION_CATALOG,
   LANGUAGES,
+  LANGUAGE_FLAG_BY_NAME,
   PROVIDERS,
   STORAGE_KEYS,
   TRANSCRIPTION_LANGUAGE_OPTIONS,
@@ -90,6 +91,21 @@ const normalizeKey = (key: string) => {
 
   return key
 }
+
+const buildTranslationComboHotkey = (baseHotkey: string) => {
+  const sanitized = baseHotkey.trim()
+  if (!sanitized) {
+    return 'Ctrl+Insert'
+  }
+
+  const parts = sanitized.split('+').map((part) => part.trim())
+  const preferredModifiers = ['Ctrl', 'Alt', 'Shift', isMacOS ? 'Cmd' : 'Meta']
+  const modifierToAdd = preferredModifiers.find((modifier) => !parts.includes(modifier)) ?? 'Shift'
+
+  return `${modifierToAdd}+${sanitized}`
+}
+
+const languageLabelWithFlag = (language: string) => `${LANGUAGE_FLAG_BY_NAME[language] ?? '🏳️'} ${language}`
 
 interface HotkeyInputProps {
   value: string
@@ -1291,9 +1307,27 @@ const PromptsSection = ({ settings, onChange }: PromptsSectionProps) => {
   const [testInput, setTestInput] = useState('')
   const [testOutput, setTestOutput] = useState('')
 
+  const translationComboHotkey = useMemo(
+    () => buildTranslationComboHotkey(settings.hotkey),
+    [settings.hotkey],
+  )
+
+  const translationHotkey =
+    settings.translationHotkeyMode === 'combo' ? translationComboHotkey : settings.translationCustomHotkey
+
   const runPromptTest = () => {
     const normalizedAgent = settings.agentName.trim().toLowerCase()
     const usesAgentRoute = normalizedAgent.length > 0 && testInput.toLowerCase().includes(normalizedAgent)
+
+    const usesTranslationRoute =
+      settings.translationModeEnabled && testInput.trim().toLowerCase().startsWith('translate:')
+
+    if (usesTranslationRoute) {
+      setTestOutput(
+        `Route: Translation prompt\n\nSource: ${settings.translationSourceLanguage}\nTarget: ${settings.translationTargetLanguage}\nHotkey: ${translationHotkey}\n\nTemplate:\n${settings.translationPrompt}\n\nInput:\n${testInput.replace(/^translate:\s*/i, '')}`,
+      )
+      return
+    }
 
     if (usesAgentRoute) {
       setTestOutput(
@@ -1344,6 +1378,20 @@ const PromptsSection = ({ settings, onChange }: PromptsSectionProps) => {
                 </p>
                 <p className="mt-2 whitespace-pre-wrap text-sm text-foreground">{settings.agentPrompt}</p>
               </div>
+
+              <div className="rounded-md border border-border-subtle bg-surface-0 p-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Translation mode</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {settings.translationModeEnabled
+                    ? `Enabled | hotkey: ${translationHotkey}`
+                    : 'Disabled'}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {languageLabelWithFlag(settings.translationSourceLanguage)} {' -> '}
+                  {languageLabelWithFlag(settings.translationTargetLanguage)}
+                </p>
+                <p className="mt-2 whitespace-pre-wrap text-sm text-foreground">{settings.translationPrompt}</p>
+              </div>
             </TabsContent>
 
             <TabsContent value="customize" className="mt-4 space-y-4">
@@ -1367,6 +1415,93 @@ const PromptsSection = ({ settings, onChange }: PromptsSectionProps) => {
                   placeholder="Prompt used when the agent name is detected."
                 />
               </div>
+
+              <div className="space-y-4 rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium">Translation mode</p>
+                    <p className="text-xs text-muted-foreground">Adds a dedicated translation route with its own hotkey.</p>
+                  </div>
+                  <Switch
+                    checked={settings.translationModeEnabled}
+                    onCheckedChange={(checked) => {
+                      onChange({ translationModeEnabled: checked })
+                    }}
+                  />
+                </div>
+
+                <Tabs
+                  value={settings.translationHotkeyMode}
+                  onValueChange={(value) => {
+                    onChange({ translationHotkeyMode: value as AppSettings['translationHotkeyMode'] })
+                  }}
+                >
+                  <TabsList>
+                    <TabsTrigger value="combo">Use combo with main hotkey</TabsTrigger>
+                    <TabsTrigger value="custom">Use custom hotkey</TabsTrigger>
+                  </TabsList>
+                  <TabsContent value="combo" className="mt-3">
+                    <div className="rounded-md border border-border-subtle bg-surface-1 px-3 py-2 text-sm">
+                      Translation hotkey: <span className="font-semibold">{translationComboHotkey}</span>
+                    </div>
+                  </TabsContent>
+                  <TabsContent value="custom" className="mt-3">
+                    <HotkeyInput
+                      value={settings.translationCustomHotkey}
+                      onChange={(hotkey) => {
+                        onChange({ translationCustomHotkey: hotkey })
+                      }}
+                    />
+                  </TabsContent>
+                </Tabs>
+
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <p className="text-sm font-medium">Source language</p>
+                    <select
+                      className="app-no-drag h-9 w-full rounded-[var(--radius-premium)] border border-border-subtle bg-surface-1 px-2.5 text-sm"
+                      value={settings.translationSourceLanguage}
+                      onChange={(event) => {
+                        onChange({ translationSourceLanguage: event.target.value })
+                      }}
+                    >
+                      {TRANSCRIPTION_LANGUAGE_OPTIONS.map((language) => (
+                        <option key={language} value={language}>
+                          {languageLabelWithFlag(language)}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <p className="text-sm font-medium">Target language</p>
+                    <select
+                      className="app-no-drag h-9 w-full rounded-[var(--radius-premium)] border border-border-subtle bg-surface-1 px-2.5 text-sm"
+                      value={settings.translationTargetLanguage}
+                      onChange={(event) => {
+                        onChange({ translationTargetLanguage: event.target.value })
+                      }}
+                    >
+                      {LANGUAGES.map((language) => (
+                        <option key={language} value={language}>
+                          {languageLabelWithFlag(language)}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <p className="text-sm font-medium">Translation prompt</p>
+                  <Textarea
+                    value={settings.translationPrompt}
+                    onChange={(event) => {
+                      onChange({ translationPrompt: event.target.value })
+                    }}
+                    placeholder="Prompt used when translation mode is active."
+                  />
+                </div>
+              </div>
             </TabsContent>
 
             <TabsContent value="test" className="mt-4 space-y-3">
@@ -1377,7 +1512,7 @@ const PromptsSection = ({ settings, onChange }: PromptsSectionProps) => {
                   onChange={(event) => {
                     setTestInput(event.target.value)
                   }}
-                  placeholder={`Try text with or without "${settings.agentName || 'Agent'}".`}
+                  placeholder={`Try text with "${settings.agentName || 'Agent'}" or prefix with "translate:".`}
                 />
               </div>
               <div className="flex justify-end">

@@ -48,11 +48,46 @@ export const DEFAULT_SETTINGS: AppSettings = {
   agentName: 'Agent',
   agentPrompt:
     'If the user explicitly says the agent name, execute the requested action format and return concise actionable output.',
+  translationModeEnabled: false,
+  translationHotkeyMode: 'combo',
+  translationCustomHotkey: 'Ctrl+Shift+T',
+  translationSourceLanguage: 'Auto-detect',
+  translationTargetLanguage: 'English',
+  translationPrompt:
+    'Translate the transcription from {source_language} to {target_language} while preserving intent and tone.',
 }
 
-export const LANGUAGES = ['English', 'Italian', 'German', 'French', 'Spanish']
 export const AUTO_DETECT_LANGUAGE = 'Auto-detect'
+
+export const LANGUAGE_LOCALES = ['en-GB', 'it-IT', 'de-DE', 'fr-FR', 'es-ES'] as const
+
+const languageDisplayNames = new Intl.DisplayNames(['en'], { type: 'language' })
+
+const regionToFlagEmoji = (region: string) =>
+  region
+    .toUpperCase()
+    .replace(/./g, (char) => String.fromCodePoint(127397 + char.charCodeAt(0)))
+
+export const LANGUAGE_OPTIONS = LANGUAGE_LOCALES.map((locale) => {
+  const localeObject = new Intl.Locale(locale)
+  const language = languageDisplayNames.of(localeObject.language) ?? locale
+  const region = localeObject.region ?? 'UN'
+
+  return {
+    locale,
+    value: language,
+    label: language,
+    flag: regionToFlagEmoji(region),
+  }
+})
+
+export const LANGUAGES = LANGUAGE_OPTIONS.map((language) => language.value)
 export const TRANSCRIPTION_LANGUAGE_OPTIONS = [AUTO_DETECT_LANGUAGE, ...LANGUAGES]
+
+export const LANGUAGE_FLAG_BY_NAME: Record<string, string> = {
+  [AUTO_DETECT_LANGUAGE]: '🌐',
+  ...Object.fromEntries(LANGUAGE_OPTIONS.map((language) => [language.value, language.flag])),
+}
 
 export const UI_LANGUAGES = [{ id: 'en', label: 'English' }] as const
 

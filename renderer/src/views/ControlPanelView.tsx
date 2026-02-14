@@ -22,7 +22,10 @@ import {
   type MutableRefObject,
   type SetStateAction,
 } from 'react'
-import { SiMeta, SiOpenaigym, SiX } from '@icons-pack/react-simple-icons'
+import openaiLogoSvg from '@lobehub/icons-static-svg/icons/openai.svg?raw'
+import grokLogoSvg from '@lobehub/icons-static-svg/icons/grok.svg?raw'
+import groqLogoSvg from '@lobehub/icons-static-svg/icons/groq.svg?raw'
+import metaColorLogoSvg from '@lobehub/icons-static-svg/icons/meta-color.svg?raw'
 import { Button } from '../components/ui/button'
 import { Badge } from '../components/ui/badge'
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '../components/ui/card'
@@ -545,35 +548,39 @@ interface ModelsSectionProps {
 }
 
 const renderProviderIcon = (providerId: string) => {
-  if (providerId === 'openai') {
+  const logoByProvider: Record<string, { svg: string; className?: string }> = {
+    openai: {
+      svg: openaiLogoSvg,
+      className: 'text-[#10a37f]',
+    },
+    grok: {
+      svg: grokLogoSvg,
+      className: 'text-[#7c3aed]',
+    },
+    groq: {
+      svg: groqLogoSvg,
+      className: 'text-[#f55036]',
+    },
+    meta: {
+      svg: metaColorLogoSvg,
+    },
+  }
+
+  const providerLogo = logoByProvider[providerId]
+  if (providerLogo) {
     return (
-      <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-[#10a37f]/35 bg-[#10a37f]/10">
-        <SiOpenaigym className="h-3.5 w-3.5 text-[#10a37f]" />
-      </span>
+      <span
+        className={cn(
+          'inline-flex h-5 w-5 items-center justify-center [&>svg]:h-5 [&>svg]:w-5 [&>svg]:shrink-0',
+          providerLogo.className,
+        )}
+        aria-hidden="true"
+        dangerouslySetInnerHTML={{ __html: providerLogo.svg }}
+      />
     )
   }
 
-  if (providerId === 'grok') {
-    return (
-      <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-[#7c3aed]/35 bg-[#7c3aed]/10">
-        <SiX className="h-3.5 w-3.5 text-[#7c3aed]" />
-      </span>
-    )
-  }
-
-  if (providerId === 'meta') {
-    return (
-      <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-[#0866ff]/35 bg-[#0866ff]/10">
-        <SiMeta className="h-3.5 w-3.5 text-[#0866ff]" />
-      </span>
-    )
-  }
-
-  return (
-    <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-primary/35 bg-primary/10">
-      <Settings className="h-3.5 w-3.5 text-primary" />
-    </span>
-  )
+  return <Settings className="h-4 w-4 text-primary" aria-hidden="true" />
 }
 
 const ModelsSection = ({

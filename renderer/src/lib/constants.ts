@@ -102,6 +102,14 @@ export const CLOUD_TRANSCRIPTION_CATALOG = [
     ],
   },
   {
+    providerId: 'groq',
+    providerLabel: 'Groq',
+    models: [
+      { id: 'whisper-large-v3', label: 'whisper-large-v3' },
+      { id: 'distil-whisper-large-v3-en', label: 'distil-whisper-large-v3-en' },
+    ],
+  },
+  {
     providerId: 'meta',
     providerLabel: 'Meta',
     models: [
@@ -131,6 +139,14 @@ export const CLOUD_POST_PROCESSING_CATALOG = [
     models: [
       { id: 'grok-2-latest', label: 'grok-2-latest' },
       { id: 'grok-2-mini', label: 'grok-2-mini' },
+    ],
+  },
+  {
+    providerId: 'groq',
+    providerLabel: 'Groq',
+    models: [
+      { id: 'llama-3.3-70b-versatile', label: 'llama-3.3-70b-versatile' },
+      { id: 'mixtral-8x7b-32768', label: 'mixtral-8x7b-32768' },
     ],
   },
   {

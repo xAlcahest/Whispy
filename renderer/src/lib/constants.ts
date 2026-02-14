@@ -14,6 +14,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   hotkey: 'Ctrl+Shift+K',
   activationMode: 'tap',
   autoPaste: true,
+  autoPasteBackend: 'ydotools',
+  microphoneAccess: true,
   autoHideFloatingIcon: false,
   launchAtLogin: false,
   sounds: true,
@@ -55,6 +57,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   translationTargetLanguage: 'English',
   translationPrompt:
     'Translate the transcription from {source_language} to {target_language} while preserving intent and tone.',
+  postProcessingDictionaryEnabled: false,
+  postProcessingDictionaryRules: [],
+  debugModeEnabled: false,
 }
 
 export const AUTO_DETECT_LANGUAGE = 'Auto-detect'

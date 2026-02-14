@@ -1,74 +1,86 @@
 # UI Implementation (Current State)
 
-This document describes what is actually implemented in the UI as of the current codebase.
+This document tracks what is currently implemented in the frontend codebase.
 
 ## 1) UI architecture and windows
 
-- App architecture is Electron `main` + `preload` + React `renderer`, with hash routes selecting window content (`#/overlay`, `#/control`).
+- App architecture is Electron `main` + `preload` + React `renderer`, with hash routes (`#/overlay`, `#/control`).
 - Two BrowserWindows are created at startup:
   - **Overlay window**: frameless, transparent, always-on-top, skip-taskbar, visible on all workspaces.
-  - **Control panel window**: frameless main workspace window with custom header and full settings/history UI.
-- Overlay size is controlled from renderer through IPC size keys (`BASE`, `WITH_MENU`, `EXPANDED`; `WITH_TOAST` exists but is not currently used by overlay view logic).
-- Renderer uses a typed `electronAPI` bridge, with a browser-safe fallback implementation for non-Electron contexts.
+  - **Control panel window**: frameless main workspace with custom header and full settings/history UI.
+- Overlay size is controlled via IPC size keys (`BASE`, `WITH_MENU`, `EXPANDED`; `WITH_TOAST` exists but is not used in renderer state flow).
+- Renderer uses typed `electronAPI` bridge with a browser-safe fallback implementation.
+- External links are forced to open in the OS browser:
+  - `openExternal` IPC path is validated (`http/https`) and routed through `shell.openExternal`.
+  - `setWindowOpenHandler` denies Electron popups and redirects links externally.
 
-## 2) Main UI flows implemented
+## 2) Main UI flows
 
 ### Overlay flow
 
 - Overlay states are `IDLE -> RECORDING -> PROCESSING -> IDLE` driven by a mock transcription service.
-- Primary interaction:
+- Primary interactions:
   - Left click toggles start/stop dictation.
-  - Right click opens context menu: start/stop, open control panel, hide overlay.
-  - Hover while active shows cancel button.
+  - Right click opens context menu (start/stop, open control panel, hide overlay).
+  - Hover while active shows cancel action.
   - `Esc` closes menu first, then hides overlay.
-- Overlay adjusts interactivity and size dynamically:
-  - Captures mouse only when hovered, active, or context menu is open.
+- Overlay interactivity/size updates dynamically:
+  - Captures mouse only while active/hovered/menu open.
   - Auto-hide timer hides overlay when idle if enabled.
 - On mock transcription result:
   - Entry is appended to local history.
-  - If auto-paste is enabled, text is copied to clipboard (with error toast fallback).
-  - Notifications are emitted through localStorage-backed app notifications.
+  - Auto-paste path copies text to clipboard (with destructive notification fallback if clipboard fails).
 
 ### Control panel flow
 
-- On first run (based on localStorage flag), a 4-step onboarding wizard is shown:
+- First-run onboarding (localStorage flag) has 4 steps:
   1. Welcome
   2. Provider/model/language
   3. Permissions (mock)
   4. Hotkey + activation mode
-- After onboarding, main workspace has two top-level sections:
+- Post-onboarding top sections:
   - **Conversations**
   - **Settings**
-- Header includes:
-  - Section toggle button (settings icon)
-  - "Show overlay" action
-  - Theme toggle (light/dark)
 
-## 3) Settings workspace structure and navigation
+## 3) Settings workspace and layout behavior
 
-- Settings are presented as a left tree + right content panel.
-- Tree branches/leaves currently implemented:
-  - `General`
-    - Activation
-    - Behavior
-    - Privacy / Local
-  - `Models`
-    - `Transcriptions`
-      - Cloud
-      - Local
-    - `Post-processing`
-      - Cloud
-      - Local
-  - `Prompts`
-  - `Agent name`
-  - `Shortcuts`
-  - `Info`
-- Branches are expandable/collapsible.
-- Selecting a node updates active content; for section cards with matching ids, the right panel scrolls to that node anchor.
+- Settings uses fixed two-column layout:
+  - Left sidebar navigation (always left, fixed width)
+  - Right content panel
+- Responsive/scroll behavior:
+  - Settings keeps internal scrolling (content panel scrolls; full page does not scroll in settings context).
+  - Sidebar has its own internal scroll.
+  - Sidebar labels are `whitespace-nowrap` to preserve visual consistency in narrow windows.
+- Current sidebar groups/items:
+  - **App**: `Preferences`
+  - **Speech**: `AI Models`, `Dictionary`
+  - **Post-Processing**: `AI Models`, `Agent`, `Prompts`
+  - **System**: `Privacy`, `Developer`, `Shortcuts`
+- Account code still exists but is hidden through `SHOW_ACCOUNT_SECTION = false`.
 
-## 4) Model configuration UX
+## 4) Preferences, translation mode, and autopaste
 
-Model configuration is split by **pipeline** and **runtime mode**:
+- Preferences includes:
+  - UI language
+  - Transcription language (with auto-detect capability guard)
+  - Activation controls (hotkey + tap/hold mode)
+  - Auto-paste backend selector (dropdown)
+  - Microphone access toggle
+  - Auto-hide floating icon toggle
+  - Launch at login toggle
+  - Sounds toggle
+- Translation mode config is embedded in Preferences (not a separate sidebar node).
+- Auto-paste behavior:
+  - Treated as always-on in settings migration/load logic.
+  - Backend selection supports: `wtype`, `xdotools`, `ydotools`.
+  - Wayland + `wtype` displays warning:
+    - `wtype /!\`
+    - "wtype isn't supported in your current compositor, consider using xdotools or ydotools (recommended)"
+- Display server detection (`wayland` / `x11` / `unknown`) is exposed from main via IPC and consumed in renderer.
+
+## 5) Model configuration UX (Speech + Post-Processing)
+
+Model configuration remains split by pipeline and runtime:
 
 - Pipelines:
   - **Transcriptions**
@@ -77,107 +89,92 @@ Model configuration is split by **pipeline** and **runtime mode**:
   - **Cloud**
   - **Local**
 
-Behavior implemented:
+Current behavior:
 
 - Cloud mode:
-  - Provider tabs (OpenAI, Grok, Groq, Meta, Custom).
-  - Provider-specific model selection list.
-  - Active model is visually marked.
+  - Provider selectors are responsive grid cards (no long single-row overflow dependency).
+  - Model selectors are responsive grids (`auto-fit/minmax`) to keep models visible on narrow widths.
+  - Works the same for both Speech and Post-processing model sections.
 - Local mode:
-  - Local model cards with metadata (size/speed/quality).
-  - Simulated download/remove with progress bar.
-  - "Use local" action enabled only for downloaded models.
-- Cloud catalogs are currently static in frontend constants (mock stage).
-- Language model compatibility guard:
-  - `Auto-detect` language is allowed only for model ids included in `AUTO_DETECT_SUPPORTED_TRANSCRIPTION_MODELS`.
-  - If unsupported model is active while `Auto-detect` is selected, UI falls back language to `English`.
+  - Model cards use wrapped metadata chips (`size`, `speed`, `quality`) instead of cramped inline metadata.
+  - Action buttons (`Download/Remove`, `Use local`) are responsive and avoid overflow in narrow layouts.
+- Auto-detect language guard:
+  - `Auto-detect` is enabled only for ids in `AUTO_DETECT_SUPPORTED_TRANSCRIPTION_MODELS`.
+  - If unsupported model is active while `Auto-detect` is selected, UI falls back to `English`.
 
-### Planned backend behavior for cloud model discovery
+## 6) Provider/API key behavior and model scanning
 
-When real backend integrations are enabled, cloud model lists should switch from static UI catalogs to runtime discovery:
+Shared cloud behavior for both pipelines:
 
-- Program performs automatic provider-side model scan/discovery.
-- UI shows a curated/filtered default list first (program-level filtering).
-- A `Show others` action reveals the full raw provider model set discovered by backend.
-- This pattern should apply to both cloud pipelines:
-  - Cloud Transcriptions
-  - Cloud Post-processing
-
-## 5) Provider tabs and API key handling (custom vs non-custom)
-
-Shared behavior in both cloud transcriptions and cloud post-processing:
-
-- **Non-custom providers** (`openai`, `grok`, `groq`, `meta`):
-  - Single password-type API key field shown for selected provider.
-  - Key persists to provider-specific setting fields (separate fields per provider and per pipeline).
-  - Model is chosen from predefined catalog list.
-- **Custom provider**:
-  - Dedicated fields for:
-    - Custom base URL
-    - Custom API key
-    - Custom model id
-  - "Use cloud" button explicitly activates cloud runtime with custom provider and model.
+- Non-custom providers (`openai`, `grok`, `groq`, `meta`):
+  - API key field only.
+  - Inline helper link opens provider docs for key creation in external browser.
+- Custom provider:
+  - Fields for base URL, API key, model id.
+  - `Scan models` action tries to discover models from a derived models endpoint.
+  - Endpoint derivation supports common OpenAI-style paths (`/v1/transcriptions`, `/v1/chat/completions`, etc.) and maps toward `/v1/models`/`/models`.
+  - If endpoint fails or response has no models, UI shows explicit fetch error:
+    - "Unable to fetch models because the API used does not respond to this endpoint call, or the endpoint does not exist."
+  - Scanned models are selectable directly from UI list.
 
 Important current storage behavior:
 
-- API keys are persisted in localStorage as plain JSON settings (no secure keychain integration yet).
+- API keys are still persisted in localStorage (plain JSON settings).
 
-## 6) Prompts workspace and agent name
+## 7) Dictionary workflow
 
-- Prompts workspace is a dedicated section with 3 tabs:
-  - `Preview`: shows current normal prompt and agent-route prompt.
-  - `Customize`: editable textareas for normal prompt and agent prompt.
-  - `Test`: mock routing test output based on whether input contains current agent name.
-- Agent name has a dedicated section (`Agent name`) separate from prompts.
-- Prompt test routing logic:
-  - If test input includes agent name (case-insensitive), route is "Agent prompt".
-  - Otherwise route is "Normal prompt".
-- Legacy guard in storage migrates `ActionAgent`/empty name to default `Agent`.
+- Dictionary lives under **Speech** and controls replacement rules used in post-processing pipeline logic.
+- Features implemented:
+  - Enable/disable dictionary replacements toggle.
+  - Add/remove replacement rules (`source -> target`).
+  - Save icon per rule (only shown when rule has unsaved changes and valid fields).
+  - Save icon disappears once rule is saved; reappears on subsequent edits.
+  - Preview input/output block (visible only when dictionary is enabled).
+- Disabled-state behavior:
+  - Existing rules remain visible but are grayed-out (read-only).
+  - Rule editing, save/delete actions, and add-rule are disabled while dictionary is off.
 
-## 7) Conversations/history and counter
+## 8) Prompts workspace and agent section
 
-- Conversations section reads local history entries and supports:
-  - Search by text
-  - Filters: language, provider, date range (today/7d/30d/all)
-  - Expand/collapse entry text
-  - Copy single entry
-  - Delete single entry
-  - Clear all (confirmation dialog)
-- History data is generated by overlay mock transcription results and sorted newest-first.
-- Header shows conversation count badge:
-  - Loading state: `...`
-  - Count cap display: `999+`
+- Prompts remains a dedicated workspace with `Preview`, `Customize`, `Test`.
+- Tabs are rendered in one horizontal row and remain side-by-side with horizontal overflow handling in narrow widths.
+- Agent identity remains a dedicated section under Post-Processing.
+- Prompt test route logic:
+  - Agent route if input contains agent name.
+  - Translation route if translation mode is enabled and input starts with `translate:`.
+  - Normal route otherwise.
 
-## 8) i18n scaffolding and current language status
+## 9) Developer/Info updates
 
-- i18n provider/hook exists and is wired into app root.
-- Current locale type is only `en`, with a minimal translation dictionary.
-- Language setting UI exists, but available UI language options currently only include English.
-- Locale is synchronized through settings storage and storage-event listeners.
+- `Developer` section now includes **Bug logs** card above runtime status:
+  - Debug mode toggle (`debugModeEnabled`)
+  - Show/hide log paths action
+  - Mock paths for renderer/main/crash logs
+- Runtime status now includes provider context when transcription runtime is cloud:
+  - Example: `Cloud (OpenAI)`
 
-## 9) Known UX issues/risks and open TODOs
+## 10) Conversations, i18n, and known risks
 
-- **Mock-heavy flows**: dictation, permissions, model downloads, and some runtime status are simulated.
-- **API key security risk**: sensitive keys are stored in localStorage (plain text in renderer context).
-- **Cross-window state sync depends on storage events**: behavior can be brittle versus explicit IPC/state bus.
-- **Model path text is macOS-specific**: local transcription storage path copy is hardcoded to `~/Library/...`.
-- **Incomplete i18n**: only English dictionary/locale currently implemented.
-- **Unused overlay size constant**: `WITH_TOAST` exists in IPC/main sizing map but is not selected by overlay renderer logic.
-- **Legacy settings overlap**: onboarding still uses old `provider` + `modelId` fields while new cloud/local split fields are also present.
-- **Cloud model source is static today**: frontend uses fixed provider/model catalogs until backend discovery is wired.
+- Conversations/history supports search, filters, copy, delete, clear-all, and header count badge.
+- i18n scaffolding is present; language options remain effectively English-only today.
 
-## 10) Where in code
+Current known risks / TODOs:
 
-- Window lifecycle and IPC registration: `main/index.ts`
+- Dictation/runtime/download behaviors are still mock implementations.
+- API keys are stored in localStorage (no secure keychain integration yet).
+- Cross-window sync still relies heavily on storage events.
+- Legacy onboarding fields (`provider`, `modelId`) still coexist with newer split settings.
+- Cloud provider catalogs are still frontend static for non-custom providers (custom endpoint scan exists; full backend discovery is pending).
+
+## 11) Where in code
+
+- Window lifecycle + IPC handlers: `main/index.ts`
 - Preload bridge: `preload/index.ts`
 - Shared IPC contracts: `shared/ipc.ts`
 - Shared bridge interface: `shared/electron-api.ts`
-- Route switch between overlay/control: `renderer/src/App.tsx`
-- Overlay UI and interactions: `renderer/src/views/OverlayView.tsx`
-- Control panel UI (history, onboarding, settings tree, models, prompts, agent): `renderer/src/views/ControlPanelView.tsx`
-- Settings/model constants and catalogs: `renderer/src/lib/constants.ts`
-- Persistent local storage helpers: `renderer/src/lib/storage.ts`
-- i18n provider and translations: `renderer/src/i18n/index.tsx`
-- Mock dictation lifecycle service: `renderer/src/services/fakeTranscriptionService.ts`
-- Cross-window notification payload via storage: `renderer/src/lib/app-notifications.ts`
-- Core theme tokens and drag/no-drag regions: `renderer/src/styles.css`
+- Overlay UI: `renderer/src/views/OverlayView.tsx`
+- Control panel and settings UX: `renderer/src/views/ControlPanelView.tsx`
+- Settings defaults/catalogs: `renderer/src/lib/constants.ts`
+- Settings/history persistence and migrations: `renderer/src/lib/storage.ts`
+- App settings types: `renderer/src/types/app.ts`
+- Renderer electron fallback API: `renderer/src/lib/electron-api.ts`

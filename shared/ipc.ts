@@ -1,4 +1,5 @@
 export type OverlaySizeKey = 'BASE' | 'WITH_MENU' | 'WITH_TOAST' | 'EXPANDED'
+export type DisplayServer = 'wayland' | 'x11' | 'unknown'
 
 export interface HotkeyRegistrationFailedPayload {
   requestedHotkey: string
@@ -17,6 +18,7 @@ export const IPCChannels = {
   setMainWindowInteractivity: 'ui:set-main-window-interactivity',
   openControlPanel: 'ui:open-control-panel',
   openExternal: 'ui:open-external',
+  getDisplayServer: 'ui:get-display-server',
   floatingIconAutoHideChanged: 'ui:event-floating-icon-auto-hide-changed',
   hotkeyRegistrationFailed: 'ui:event-hotkey-registration-failed',
   hotkeyFallbackUsed: 'ui:event-hotkey-fallback-used',

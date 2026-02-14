@@ -1,4 +1,5 @@
 import type {
+  DisplayServer,
   HotkeyFallbackUsedPayload,
   HotkeyRegistrationFailedPayload,
   OverlaySizeKey,
@@ -11,6 +12,7 @@ export interface ElectronAPI {
   setMainWindowInteractivity: (shouldCapture: boolean) => Promise<void>
   openControlPanel: () => Promise<void>
   openExternal: (url: string) => Promise<void>
+  getDisplayServer: () => Promise<DisplayServer>
   onFloatingIconAutoHideChanged: (callback: (enabled: boolean) => void) => () => void
   onHotkeyRegistrationFailed: (
     callback: (payload: HotkeyRegistrationFailedPayload) => void,

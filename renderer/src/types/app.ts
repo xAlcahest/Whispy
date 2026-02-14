@@ -5,12 +5,21 @@ export type ThemeMode = 'light' | 'dark'
 export type Provider = 'whisper' | 'parakeet'
 export type RuntimeMode = 'cloud' | 'local'
 export type TranslationHotkeyMode = 'combo' | 'custom'
+export type AutoPasteBackend = 'wtype' | 'xdotools' | 'ydotools'
+
+export interface DictionaryRule {
+  id: string
+  source: string
+  target: string
+}
 
 export interface AppSettings {
   uiLanguage: string
   hotkey: string
   activationMode: ActivationMode
   autoPaste: boolean
+  autoPasteBackend: AutoPasteBackend
+  microphoneAccess: boolean
   autoHideFloatingIcon: boolean
   launchAtLogin: boolean
   sounds: boolean
@@ -49,6 +58,9 @@ export interface AppSettings {
   translationSourceLanguage: string
   translationTargetLanguage: string
   translationPrompt: string
+  postProcessingDictionaryEnabled: boolean
+  postProcessingDictionaryRules: DictionaryRule[]
+  debugModeEnabled: boolean
 }
 
 export interface HistoryEntry {

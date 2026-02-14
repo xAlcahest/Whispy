@@ -11,9 +11,9 @@ import {
   Moon,
   PanelRight,
   Plus,
+  Save,
   Search,
   Settings,
-  Shield,
   SlidersHorizontal,
   Sparkles,
   Sun,
@@ -74,6 +74,7 @@ import {
   setOnboardingCompleted,
 } from '../lib/storage'
 import type { AppSettings, HistoryEntry, ModelState } from '../types/app'
+import type { DisplayServer } from '../../../shared/ipc'
 
 type PanelSection = 'conversations' | 'settings'
 
@@ -115,6 +116,123 @@ const buildTranslationComboHotkey = (baseHotkey: string) => {
 }
 
 const languageLabelWithFlag = (language: string) => `${LANGUAGE_FLAG_BY_NAME[language] ?? '🏳️'} ${language}`
+
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+const applyDictionaryRules = (text: string, rules: AppSettings['postProcessingDictionaryRules']) =>
+  rules.reduce((currentText, rule) => {
+    const sourceTerm = rule.source.trim()
+    if (!sourceTerm) {
+      return currentText
+    }
+
+    return currentText.replace(new RegExp(escapeRegExp(sourceTerm), 'gi'), rule.target)
+  }, text)
+
+const createDictionaryRule = (): AppSettings['postProcessingDictionaryRules'][number] => ({
+  id: crypto.randomUUID(),
+  source: '',
+  target: '',
+})
+
+const deriveModelsEndpointFromBaseUrl = (baseUrl: string) => {
+  const trimmedUrl = baseUrl.trim()
+  if (!trimmedUrl) {
+    return null
+  }
+
+  let parsedUrl: URL
+  try {
+    parsedUrl = new URL(trimmedUrl)
+  } catch {
+    return null
+  }
+
+  const rawPath = parsedUrl.pathname.replace(/\/+$/, '')
+  const normalizedPath = rawPath.toLowerCase()
+
+  let modelsPath = ''
+
+  if (normalizedPath.endsWith('/v1/models') || normalizedPath.endsWith('/models')) {
+    modelsPath = rawPath || '/models'
+  } else if (normalizedPath.endsWith('/v1/audio/transcriptions')) {
+    modelsPath = `${rawPath.slice(0, -'/v1/audio/transcriptions'.length)}/v1/models`
+  } else if (normalizedPath.endsWith('/v1/transcriptions')) {
+    modelsPath = `${rawPath.slice(0, -'/v1/transcriptions'.length)}/v1/models`
+  } else if (normalizedPath.endsWith('/v1/chat/completions')) {
+    modelsPath = `${rawPath.slice(0, -'/v1/chat/completions'.length)}/v1/models`
+  } else if (normalizedPath.endsWith('/v1/completions')) {
+    modelsPath = `${rawPath.slice(0, -'/v1/completions'.length)}/v1/models`
+  } else if (normalizedPath.endsWith('/v1')) {
+    modelsPath = `${rawPath}/models`
+  } else if (rawPath) {
+    modelsPath = `${rawPath}/models`
+  } else {
+    modelsPath = '/models'
+  }
+
+  parsedUrl.pathname = modelsPath.startsWith('/') ? modelsPath : `/${modelsPath}`
+  parsedUrl.search = ''
+  parsedUrl.hash = ''
+
+  return parsedUrl.toString()
+}
+
+const extractModelIdsFromPayload = (payload: unknown) => {
+  const entries: unknown[] = []
+
+  if (Array.isArray(payload)) {
+    entries.push(...payload)
+  }
+
+  if (payload && typeof payload === 'object') {
+    const record = payload as Record<string, unknown>
+    if (Array.isArray(record.data)) {
+      entries.push(...record.data)
+    }
+    if (Array.isArray(record.models)) {
+      entries.push(...record.models)
+    }
+    if (Array.isArray(record.results)) {
+      entries.push(...record.results)
+    }
+  }
+
+  const modelIds = entries
+    .map((entry) => {
+      if (typeof entry === 'string') {
+        return entry
+      }
+
+      if (entry && typeof entry === 'object') {
+        const record = entry as Record<string, unknown>
+        if (typeof record.id === 'string') {
+          return record.id
+        }
+        if (typeof record.model === 'string') {
+          return record.model
+        }
+        if (typeof record.name === 'string') {
+          return record.name
+        }
+      }
+
+      return null
+    })
+    .filter((value): value is string => Boolean(value?.trim()))
+    .map((value) => value.trim())
+
+  return Array.from(new Set(modelIds))
+}
+
+const CUSTOM_MODEL_FETCH_ERROR =
+  'Unable to fetch models because the API used does not respond to this endpoint call, or the endpoint does not exist.'
+
+const AUTO_PASTE_BACKENDS: Array<{ id: AppSettings['autoPasteBackend']; label: string }> = [
+  { id: 'wtype', label: 'wtype' },
+  { id: 'xdotools', label: 'xdotools' },
+  { id: 'ydotools', label: 'ydotools' },
+]
 
 interface HotkeyInputProps {
   value: string
@@ -415,6 +533,7 @@ const HistorySection = ({ entries, loading, onCopy, onDelete, onClear }: History
 interface SettingsSectionProps {
   settings: AppSettings
   autoDetectSupported: boolean
+  displayServer: DisplayServer
   onChange: (next: Partial<AppSettings>) => void
 }
 
@@ -434,7 +553,7 @@ const TranslationModeSection = ({ settings, onChange }: TranslationModeSectionPr
         <CardHeader>
           <CardTitle>Translation mode</CardTitle>
           <CardDescription>
-            Dedicated translation controls isolated from the General section.
+            Configure translation behavior directly inside Preferences.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -523,6 +642,256 @@ const TranslationModeSection = ({ settings, onChange }: TranslationModeSectionPr
   )
 }
 
+const DictionarySettingsSection = ({ settings, onChange }: Pick<SettingsSectionProps, 'settings' | 'onChange'>) => {
+  const { pushToast } = useToast()
+  const [previewInput, setPreviewInput] = useState('')
+  const [savedRuleSnapshotById, setSavedRuleSnapshotById] = useState<
+    Record<string, { source: string; target: string }>
+  >(() =>
+    Object.fromEntries(
+      settings.postProcessingDictionaryRules
+        .map((rule) => ({
+          id: rule.id,
+          source: rule.source.trim(),
+          target: rule.target.trim(),
+        }))
+        .filter((rule) => rule.source.length > 0 && rule.target.length > 0)
+        .map((rule) => [rule.id, { source: rule.source, target: rule.target }]),
+    ),
+  )
+
+  useEffect(() => {
+    setSavedRuleSnapshotById((current) => {
+      const validRuleIds = new Set(settings.postProcessingDictionaryRules.map((rule) => rule.id))
+      const nextEntries = Object.entries(current).filter(([id]) => validRuleIds.has(id))
+
+      if (nextEntries.length === Object.keys(current).length) {
+        return current
+      }
+
+      return Object.fromEntries(nextEntries)
+    })
+  }, [settings.postProcessingDictionaryRules])
+
+  const activeRules = useMemo(
+    () =>
+      settings.postProcessingDictionaryRules.filter(
+        (rule) => rule.source.trim().length > 0 && rule.target.trim().length > 0,
+      ),
+    [settings.postProcessingDictionaryRules],
+  )
+
+  const previewOutput = useMemo(() => {
+    if (!previewInput.trim()) {
+      return ''
+    }
+
+    if (!settings.postProcessingDictionaryEnabled || activeRules.length === 0) {
+      return previewInput
+    }
+
+    return applyDictionaryRules(previewInput, activeRules)
+  }, [activeRules, previewInput, settings.postProcessingDictionaryEnabled])
+
+  return (
+    <Card id="settings-node-dictionary" className="scroll-mt-6">
+      <CardHeader>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <CardTitle>Dictionary</CardTitle>
+            <CardDescription>
+              Replace recurring misrecognized words during post-processing before final output.
+            </CardDescription>
+          </div>
+          <Badge tone="primary">{activeRules.length} active</Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex items-center justify-between gap-3 rounded-md border border-border-subtle bg-surface-0 px-3 py-2.5">
+          <div>
+            <p className="text-sm font-medium">Enable dictionary replacements</p>
+            <p className="text-xs text-muted-foreground">
+              Applies replacement rules to post-processing text. Mock frontend behavior for now.
+            </p>
+          </div>
+          <Switch
+            checked={settings.postProcessingDictionaryEnabled}
+            onCheckedChange={(checked) => {
+              onChange({ postProcessingDictionaryEnabled: checked })
+            }}
+          />
+        </div>
+
+        <div className="space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-sm font-medium">Replacement rules</p>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!settings.postProcessingDictionaryEnabled}
+              onClick={() => {
+                onChange({
+                  postProcessingDictionaryRules: [
+                    ...settings.postProcessingDictionaryRules,
+                    createDictionaryRule(),
+                  ],
+                })
+              }}
+            >
+              <Plus className="h-3.5 w-3.5" /> Add rule
+            </Button>
+          </div>
+
+          {settings.postProcessingDictionaryRules.length === 0 ? (
+            <div className="rounded-md border border-dashed border-border-subtle bg-surface-0 px-3 py-4 text-sm text-muted-foreground">
+              No dictionary rules yet. Add a rule to map incorrect words to the correct term.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {settings.postProcessingDictionaryRules.map((rule) => {
+                const normalizedSource = rule.source.trim()
+                const normalizedTarget = rule.target.trim()
+                const canSaveRule = normalizedSource.length > 0 && normalizedTarget.length > 0
+                const savedSnapshot = savedRuleSnapshotById[rule.id]
+                const isRuleSaved =
+                  Boolean(savedSnapshot) &&
+                  savedSnapshot.source === normalizedSource &&
+                  savedSnapshot.target === normalizedTarget
+                const dictionaryEnabled = settings.postProcessingDictionaryEnabled
+                const showSaveRule = dictionaryEnabled && canSaveRule && !isRuleSaved
+
+                return (
+                  <div
+                    key={rule.id}
+                    className={cn(
+                      'grid gap-2 rounded-md border border-border-subtle bg-surface-0 p-2',
+                      !dictionaryEnabled ? 'opacity-55' : undefined,
+                      showSaveRule ? 'lg:grid-cols-[1fr_1fr_auto_auto]' : 'lg:grid-cols-[1fr_1fr_auto]',
+                    )}
+                  >
+                    <Input
+                      value={rule.source}
+                      disabled={!dictionaryEnabled}
+                      onChange={(event) => {
+                        onChange({
+                          postProcessingDictionaryRules: settings.postProcessingDictionaryRules.map((currentRule) =>
+                            currentRule.id === rule.id
+                              ? {
+                                  ...currentRule,
+                                  source: event.target.value,
+                                }
+                              : currentRule,
+                          ),
+                        })
+                      }}
+                      placeholder="Recognized text (example: Open Eye)"
+                    />
+                    <Input
+                      value={rule.target}
+                      disabled={!dictionaryEnabled}
+                      onChange={(event) => {
+                        onChange({
+                          postProcessingDictionaryRules: settings.postProcessingDictionaryRules.map((currentRule) =>
+                            currentRule.id === rule.id
+                              ? {
+                                  ...currentRule,
+                                  target: event.target.value,
+                                }
+                              : currentRule,
+                          ),
+                        })
+                      }}
+                      placeholder="Replace with (example: OpenAI)"
+                    />
+                    {showSaveRule ? (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => {
+                          onChange({
+                            postProcessingDictionaryRules: settings.postProcessingDictionaryRules.map((currentRule) =>
+                              currentRule.id === rule.id
+                                ? {
+                                    ...currentRule,
+                                    source: normalizedSource,
+                                    target: normalizedTarget,
+                                  }
+                                : currentRule,
+                            ),
+                          })
+
+                          setSavedRuleSnapshotById((current) => ({
+                            ...current,
+                            [rule.id]: {
+                              source: normalizedSource,
+                              target: normalizedTarget,
+                            },
+                          }))
+
+                          pushToast({
+                            title: 'Dictionary rule saved',
+                            variant: 'success',
+                          })
+                        }}
+                        aria-label="Save rule"
+                      >
+                        <Save className="h-4 w-4" />
+                      </Button>
+                    ) : null}
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      disabled={!dictionaryEnabled}
+                      onClick={() => {
+                        onChange({
+                          postProcessingDictionaryRules: settings.postProcessingDictionaryRules.filter(
+                            (currentRule) => currentRule.id !== rule.id,
+                          ),
+                        })
+                      }}
+                      aria-label="Remove rule"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+
+          {!settings.postProcessingDictionaryEnabled ? (
+            <p className="text-xs text-muted-foreground">Dictionary is disabled: rules are visible in read-only mode.</p>
+          ) : null}
+        </div>
+
+        {settings.postProcessingDictionaryEnabled ? (
+          <>
+            <div className="space-y-1.5">
+              <p className="text-sm font-medium">Preview replacement</p>
+              <Textarea
+                value={previewInput}
+                onChange={(event) => {
+                  setPreviewInput(event.target.value)
+                }}
+                placeholder="Type sample text to preview dictionary replacements."
+              />
+            </div>
+
+            <div className="rounded-md border border-border-subtle bg-surface-0 p-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Preview output</p>
+              <p className="mt-2 whitespace-pre-wrap text-sm text-foreground">
+                {previewInput.trim()
+                  ? previewOutput
+                  : 'No preview yet. Insert sample text above to verify replacements.'}
+              </p>
+            </div>
+          </>
+        ) : null}
+      </CardContent>
+    </Card>
+  )
+}
+
 const AccountSettingsPanel = () => (
   <div className="space-y-4">
     <Card>
@@ -542,122 +911,155 @@ const AccountSettingsPanel = () => (
 const PreferencesSettingsPanel = ({
   settings,
   autoDetectSupported,
+  displayServer,
   onChange,
 }: SettingsSectionProps) => (
-  <Card>
-    <CardHeader>
-      <CardTitle>Preferences</CardTitle>
-      <CardDescription>Language and behavior defaults for daily usage.</CardDescription>
-    </CardHeader>
-    <CardContent className="space-y-3">
-      <div className="rounded-md border border-border-subtle bg-surface-0 px-3 py-2.5">
-        <p className="mb-2 text-sm">Interface language</p>
-        <select
-          className="app-no-drag h-9 w-full rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 px-2.5 text-sm"
-          value={settings.uiLanguage}
-          onChange={(event) => {
-            onChange({ uiLanguage: event.target.value })
-          }}
-        >
-          {UI_LANGUAGES.map((language) => (
-            <option key={language.id} value={language.id}>
-              {language.label}
-            </option>
-          ))}
-        </select>
-      </div>
+  <div className="space-y-4">
+    <Card>
+      <CardHeader>
+        <CardTitle>Preferences</CardTitle>
+        <CardDescription>Language and behavior defaults for daily usage.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="rounded-md border border-border-subtle bg-surface-0 px-3 py-2.5">
+          <p className="mb-2 text-sm">Interface language</p>
+          <select
+            className="app-no-drag h-9 w-full rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 px-2.5 text-sm"
+            value={settings.uiLanguage}
+            onChange={(event) => {
+              onChange({ uiLanguage: event.target.value })
+            }}
+          >
+            {UI_LANGUAGES.map((language) => (
+              <option key={language.id} value={language.id}>
+                {language.label}
+              </option>
+            ))}
+          </select>
+        </div>
 
-      <div className="rounded-md border border-border-subtle bg-surface-0 px-3 py-2.5">
-        <p className="mb-2 text-sm">Transcription language</p>
-        <select
-          className="app-no-drag h-9 w-full rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 px-2.5 text-sm"
-          value={settings.preferredLanguage}
-          onChange={(event) => {
-            onChange({ preferredLanguage: event.target.value })
-          }}
-        >
-          {TRANSCRIPTION_LANGUAGE_OPTIONS.map((language) => (
-            <option
-              key={language}
-              value={language}
-              disabled={language === AUTO_DETECT_LANGUAGE && !autoDetectSupported}
+        <div className="rounded-md border border-border-subtle bg-surface-0 px-3 py-2.5">
+          <p className="mb-2 text-sm">Transcription language</p>
+          <select
+            className="app-no-drag h-9 w-full rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 px-2.5 text-sm"
+            value={settings.preferredLanguage}
+            onChange={(event) => {
+              onChange({ preferredLanguage: event.target.value })
+            }}
+          >
+            {TRANSCRIPTION_LANGUAGE_OPTIONS.map((language) => (
+              <option
+                key={language}
+                value={language}
+                disabled={language === AUTO_DETECT_LANGUAGE && !autoDetectSupported}
+              >
+                {languageLabelWithFlag(language)}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="space-y-3 rounded-md border border-border-subtle bg-surface-0 px-3 py-2.5">
+          <p className="text-sm font-medium">Activation</p>
+
+          <div className="space-y-2">
+            <p className="text-sm">Hotkey</p>
+            <HotkeyInput
+              value={settings.hotkey}
+              onChange={(hotkey) => {
+                onChange({ hotkey })
+              }}
+            />
+          </div>
+
+          <Tabs
+            value={settings.activationMode}
+            onValueChange={(value) => {
+              onChange({ activationMode: value as AppSettings['activationMode'] })
+            }}
+          >
+            <TabsList>
+              <TabsTrigger value="tap">Tap to talk</TabsTrigger>
+              <TabsTrigger value="hold">Hold to talk</TabsTrigger>
+            </TabsList>
+            <TabsContent value="tap">
+              <p className="rounded-md border border-border-subtle bg-surface-1 p-3 text-sm text-muted-foreground">
+                Press {settings.hotkey} to start and press again to stop.
+              </p>
+            </TabsContent>
+            <TabsContent value="hold">
+              <p className="rounded-md border border-border-subtle bg-surface-1 p-3 text-sm text-muted-foreground">
+                Hold {settings.hotkey} while speaking. Release to send.
+              </p>
+            </TabsContent>
+          </Tabs>
+        </div>
+
+        <div className="space-y-2 rounded-md border border-border-subtle bg-surface-0 px-3 py-2.5">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-sm font-medium">Auto-paste</p>
+            <select
+              className="app-no-drag h-9 w-[180px] rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 px-2.5 text-sm"
+              value={settings.autoPasteBackend}
+              onChange={(event) => {
+                onChange({ autoPasteBackend: event.target.value as AppSettings['autoPasteBackend'] })
+              }}
             >
-              {languageLabelWithFlag(language)}
-            </option>
-          ))}
-        </select>
-      </div>
+              {AUTO_PASTE_BACKENDS.map((backend) => (
+                <option key={backend.id} value={backend.id}>
+                  {backend.label}
+                </option>
+              ))}
+            </select>
+          </div>
 
-      <div className="space-y-3 rounded-md border border-border-subtle bg-surface-0 px-3 py-2.5">
-        <p className="text-sm font-medium">Activation</p>
-
-        <div className="space-y-2">
-          <p className="text-sm">Hotkey</p>
-          <HotkeyInput
-            value={settings.hotkey}
-            onChange={(hotkey) => {
-              onChange({ hotkey })
-            }}
-          />
+          {displayServer === 'wayland' && settings.autoPasteBackend === 'wtype' ? (
+            <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-destructive">
+              <p className="text-sm font-semibold">wtype /!\</p>
+              <p className="mt-1 text-xs">
+                wtype isn't supported in your current compositor, consider using xdotools or ydotools (recommended)
+              </p>
+            </div>
+          ) : null}
         </div>
 
-        <Tabs
-          value={settings.activationMode}
-          onValueChange={(value) => {
-            onChange({ activationMode: value as AppSettings['activationMode'] })
-          }}
-        >
-          <TabsList>
-            <TabsTrigger value="tap">Tap to talk</TabsTrigger>
-            <TabsTrigger value="hold">Hold to talk</TabsTrigger>
-          </TabsList>
-          <TabsContent value="tap">
-            <p className="rounded-md border border-border-subtle bg-surface-1 p-3 text-sm text-muted-foreground">
-              Press {settings.hotkey} to start and press again to stop.
-            </p>
-          </TabsContent>
-          <TabsContent value="hold">
-            <p className="rounded-md border border-border-subtle bg-surface-1 p-3 text-sm text-muted-foreground">
-              Hold {settings.hotkey} while speaking. Release to send.
-            </p>
-          </TabsContent>
-        </Tabs>
-      </div>
+        {[
+          {
+            label: 'Microphone access',
+            key: 'microphoneAccess',
+            value: settings.microphoneAccess,
+          },
+          {
+            label: 'Auto-hide floating icon',
+            key: 'autoHideFloatingIcon',
+            value: settings.autoHideFloatingIcon,
+          },
+          {
+            label: 'Launch at login',
+            key: 'launchAtLogin',
+            value: settings.launchAtLogin,
+          },
+          {
+            label: 'Sounds',
+            key: 'sounds',
+            value: settings.sounds,
+          },
+        ].map((item) => (
+          <div key={item.key} className="flex items-center justify-between rounded-md border border-border-subtle bg-surface-0 px-3 py-2.5">
+            <p className="text-sm">{item.label}</p>
+            <Switch
+              checked={item.value}
+              onCheckedChange={(checked) => {
+                onChange({ [item.key]: checked } as Partial<AppSettings>)
+              }}
+            />
+          </div>
+        ))}
+      </CardContent>
+    </Card>
 
-      {[
-        {
-          label: 'Auto-paste (mock)',
-          key: 'autoPaste',
-          value: settings.autoPaste,
-        },
-        {
-          label: 'Auto-hide floating icon',
-          key: 'autoHideFloatingIcon',
-          value: settings.autoHideFloatingIcon,
-        },
-        {
-          label: 'Launch at login',
-          key: 'launchAtLogin',
-          value: settings.launchAtLogin,
-        },
-        {
-          label: 'Sounds',
-          key: 'sounds',
-          value: settings.sounds,
-        },
-      ].map((item) => (
-        <div key={item.key} className="flex items-center justify-between rounded-md border border-border-subtle bg-surface-0 px-3 py-2.5">
-          <p className="text-sm">{item.label}</p>
-          <Switch
-            checked={item.value}
-            onCheckedChange={(checked) => {
-              onChange({ [item.key]: checked } as Partial<AppSettings>)
-            }}
-          />
-        </div>
-      ))}
-    </CardContent>
-  </Card>
+    <TranslationModeSection settings={settings} onChange={onChange} />
+  </div>
 )
 
 const PrivacyPanel = () => (
@@ -673,35 +1075,6 @@ const PrivacyPanel = () => (
     </CardContent>
   </Card>
 )
-
-const PermissionsSection = () => {
-  const [microphonePermission, setMicrophonePermission] = useState(true)
-  const [pastePermission, setPastePermission] = useState(isMacOS)
-  const [automationPermission, setAutomationPermission] = useState(false)
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Permissions</CardTitle>
-        <CardDescription>Mocked OS access toggles for app-level integrations.</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="flex items-center justify-between rounded-md border border-border-subtle bg-surface-0 px-3 py-2.5">
-          <p className="text-sm">Microphone access</p>
-          <Switch checked={microphonePermission} onCheckedChange={setMicrophonePermission} />
-        </div>
-        <div className="flex items-center justify-between rounded-md border border-border-subtle bg-surface-0 px-3 py-2.5">
-          <p className="text-sm">Paste integration</p>
-          <Switch checked={pastePermission} onCheckedChange={setPastePermission} />
-        </div>
-        <div className="flex items-center justify-between rounded-md border border-border-subtle bg-surface-0 px-3 py-2.5">
-          <p className="text-sm">Automation access</p>
-          <Switch checked={automationPermission} onCheckedChange={setAutomationPermission} />
-        </div>
-      </CardContent>
-    </Card>
-  )
-}
 
 interface ModelsSectionProps {
   scope: 'transcriptions' | 'post'
@@ -763,6 +1136,12 @@ const ModelsSection = ({
   const { pushToast } = useToast()
   const transcriptionIntervals = useRef<Record<string, number>>({})
   const postIntervals = useRef<Record<string, number>>({})
+  const [customTranscriptionModelScanLoading, setCustomTranscriptionModelScanLoading] = useState(false)
+  const [customPostModelScanLoading, setCustomPostModelScanLoading] = useState(false)
+  const [customTranscriptionModelScanError, setCustomTranscriptionModelScanError] = useState<string | null>(null)
+  const [customPostModelScanError, setCustomPostModelScanError] = useState<string | null>(null)
+  const [customTranscriptionScannedModels, setCustomTranscriptionScannedModels] = useState<string[]>([])
+  const [customPostScannedModels, setCustomPostScannedModels] = useState<string[]>([])
 
   useEffect(() => {
     return () => {
@@ -850,6 +1229,110 @@ const ModelsSection = ({
     CLOUD_POST_PROCESSING_CATALOG.find((provider) => provider.providerId === settings.postProcessingCloudProvider) ??
     CLOUD_POST_PROCESSING_CATALOG[0]
 
+  const transcriptionModelsEndpoint = deriveModelsEndpointFromBaseUrl(settings.transcriptionCustomBaseUrl)
+  const postProcessingModelsEndpoint = deriveModelsEndpointFromBaseUrl(settings.postProcessingCustomBaseUrl)
+
+  const fetchCustomModels = async (modelsEndpoint: string, apiKey: string) => {
+    const headers = new Headers({
+      Accept: 'application/json',
+    })
+
+    const token = apiKey.trim()
+    if (token) {
+      headers.set('Authorization', `Bearer ${token}`)
+      headers.set('x-api-key', token)
+    }
+
+    const response = await fetch(modelsEndpoint, {
+      method: 'GET',
+      headers,
+    })
+
+    if (!response.ok) {
+      throw new Error(`HTTP_${response.status}`)
+    }
+
+    const payload = (await response.json()) as unknown
+    const modelIds = extractModelIdsFromPayload(payload)
+    if (modelIds.length === 0) {
+      throw new Error('EMPTY_MODELS')
+    }
+
+    return modelIds
+  }
+
+  const handleCustomTranscriptionModelScan = async () => {
+    if (!transcriptionModelsEndpoint) {
+      setCustomTranscriptionModelScanError(CUSTOM_MODEL_FETCH_ERROR)
+      setCustomTranscriptionScannedModels([])
+      return
+    }
+
+    setCustomTranscriptionModelScanLoading(true)
+    setCustomTranscriptionModelScanError(null)
+
+    try {
+      const modelIds = await fetchCustomModels(transcriptionModelsEndpoint, settings.transcriptionCustomApiKey)
+      setCustomTranscriptionScannedModels(modelIds)
+
+      if (!settings.transcriptionCustomModel.trim() && modelIds[0]) {
+        onSettingsChange({
+          transcriptionCustomModel: modelIds[0],
+          transcriptionCloudModelId: modelIds[0],
+        })
+      }
+
+      pushToast({
+        title: 'Custom STT models fetched',
+        description: `${modelIds.length} model${modelIds.length > 1 ? 's' : ''} discovered.`,
+        variant: 'success',
+      })
+    } catch {
+      setCustomTranscriptionScannedModels([])
+      setCustomTranscriptionModelScanError(
+        `${CUSTOM_MODEL_FETCH_ERROR} Endpoint: ${transcriptionModelsEndpoint}`,
+      )
+    } finally {
+      setCustomTranscriptionModelScanLoading(false)
+    }
+  }
+
+  const handleCustomPostModelScan = async () => {
+    if (!postProcessingModelsEndpoint) {
+      setCustomPostModelScanError(CUSTOM_MODEL_FETCH_ERROR)
+      setCustomPostScannedModels([])
+      return
+    }
+
+    setCustomPostModelScanLoading(true)
+    setCustomPostModelScanError(null)
+
+    try {
+      const modelIds = await fetchCustomModels(postProcessingModelsEndpoint, settings.postProcessingCustomApiKey)
+      setCustomPostScannedModels(modelIds)
+
+      if (!settings.postProcessingCustomModel.trim() && modelIds[0]) {
+        onSettingsChange({
+          postProcessingCustomModel: modelIds[0],
+          postProcessingCloudModelId: modelIds[0],
+        })
+      }
+
+      pushToast({
+        title: 'Custom LLM models fetched',
+        description: `${modelIds.length} model${modelIds.length > 1 ? 's' : ''} discovered.`,
+        variant: 'success',
+      })
+    } catch {
+      setCustomPostScannedModels([])
+      setCustomPostModelScanError(
+        `${CUSTOM_MODEL_FETCH_ERROR} Endpoint: ${postProcessingModelsEndpoint}`,
+      )
+    } finally {
+      setCustomPostModelScanLoading(false)
+    }
+  }
+
   type TranscriptionApiKeyField =
     | 'transcriptionOpenAIApiKey'
     | 'transcriptionGrokApiKey'
@@ -920,17 +1403,29 @@ const ModelsSection = ({
     } as Partial<AppSettings>)
   }
 
+  const providerApiKeyDocsByProvider: Record<string, string> = {
+    openai: 'https://platform.openai.com/api-keys',
+    grok: 'https://console.x.ai/team/api-keys',
+    groq: 'https://console.groq.com/keys',
+    meta: 'https://www.llama.com/docs/api/getting-started/',
+  }
+
+  const getProviderApiKeyDocsUrl = (providerId: string) => providerApiKeyDocsByProvider[providerId] ?? null
+
+  const transcriptionApiKeyDocsUrl = getProviderApiKeyDocsUrl(selectedTranscriptionProvider.providerId)
+  const postProcessingApiKeyDocsUrl = getProviderApiKeyDocsUrl(selectedPostProcessingProvider.providerId)
+
   const providerButtonClass = (active: boolean) =>
     cn(
-      'app-no-drag inline-flex h-10 items-center gap-2 px-4 text-sm font-medium transition-colors whitespace-nowrap',
+      'app-no-drag inline-flex h-10 w-full items-center justify-center gap-2 rounded-[var(--radius-premium)] px-3 text-sm font-medium transition-colors whitespace-nowrap',
       active
-        ? 'bg-primary/12 text-foreground'
-        : 'text-muted-foreground hover:bg-surface-2/70 hover:text-foreground',
+        ? 'border border-primary/35 bg-primary/12 text-foreground'
+        : 'border border-border-subtle bg-surface-1/60 text-muted-foreground hover:bg-surface-2/70 hover:text-foreground',
     )
 
   const modelItemClass = (active: boolean) =>
     cn(
-      'app-no-drag flex w-full items-center justify-between rounded-md border px-3 py-2 text-left text-sm transition-colors',
+      'app-no-drag flex min-h-11 w-full items-center justify-between gap-2 rounded-md border px-3 py-2 text-left text-sm transition-colors',
       active
         ? 'border-primary/40 bg-primary/10 text-primary'
         : 'border-border-subtle bg-surface-0 text-foreground hover:border-border-hover',
@@ -943,38 +1438,36 @@ const ModelsSection = ({
         <CardHeader>
           <CardTitle>Transcriptions | Cloud</CardTitle>
           <CardDescription>
-            Centered provider tabs with visible separators. Model choices remain listed one below another.
+            Providers stay visible and wrap responsively based on available width.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="flex justify-center">
-            <div className="max-w-full overflow-x-auto rounded-[var(--radius-premium)] border border-border-hover bg-surface-0/90 p-1">
-              <div className="inline-flex min-w-max items-stretch divide-x divide-border-hover rounded-[calc(var(--radius-premium)-2px)] border border-border-subtle bg-surface-1/70">
-                {CLOUD_TRANSCRIPTION_CATALOG.map((provider) => {
-                  const active = selectedTranscriptionProvider.providerId === provider.providerId
+          <div className="rounded-[var(--radius-premium)] border border-border-hover bg-surface-0/90 p-2">
+            <div className="grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(150px,1fr))]">
+              {CLOUD_TRANSCRIPTION_CATALOG.map((provider) => {
+                const active = selectedTranscriptionProvider.providerId === provider.providerId
 
-                  return (
-                    <button
-                      key={provider.providerId}
-                      type="button"
-                      className={providerButtonClass(active)}
-                      onClick={() => {
-                        onSettingsChange({
-                          transcriptionRuntime: 'cloud',
-                          transcriptionCloudProvider: provider.providerId,
-                          transcriptionCloudModelId:
-                            provider.providerId === 'custom'
-                              ? settings.transcriptionCustomModel || provider.models[0]?.id || ''
-                              : provider.models[0]?.id || '',
-                        })
-                      }}
-                    >
-                      {renderProviderIcon(provider.providerId)}
-                      {provider.providerLabel}
-                    </button>
-                  )
-                })}
-              </div>
+                return (
+                  <button
+                    key={provider.providerId}
+                    type="button"
+                    className={providerButtonClass(active)}
+                    onClick={() => {
+                      onSettingsChange({
+                        transcriptionRuntime: 'cloud',
+                        transcriptionCloudProvider: provider.providerId,
+                        transcriptionCloudModelId:
+                          provider.providerId === 'custom'
+                            ? settings.transcriptionCustomModel || provider.models[0]?.id || ''
+                            : provider.models[0]?.id || '',
+                      })
+                    }}
+                  >
+                    {renderProviderIcon(provider.providerId)}
+                    {provider.providerLabel}
+                  </button>
+                )
+              })}
             </div>
           </div>
 
@@ -1022,6 +1515,65 @@ const ModelsSection = ({
                     placeholder="custom-stt-model"
                   />
                 </div>
+
+                <div className="space-y-2 rounded-md border border-border-subtle bg-surface-1/70 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-sm font-medium">Model endpoint scan</p>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={customTranscriptionModelScanLoading}
+                      onClick={() => {
+                        void handleCustomTranscriptionModelScan()
+                      }}
+                    >
+                      <Search className="h-3.5 w-3.5" />
+                      {customTranscriptionModelScanLoading ? 'Scanning...' : 'Scan models'}
+                    </Button>
+                  </div>
+
+                  <p className="text-xs text-muted-foreground">
+                    {transcriptionModelsEndpoint
+                      ? `Models endpoint: ${transcriptionModelsEndpoint}`
+                      : 'Enter a valid custom endpoint URL to enable model scanning.'}
+                  </p>
+
+                  {customTranscriptionModelScanError ? (
+                    <p className="rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-2 text-xs text-destructive">
+                      {customTranscriptionModelScanError}
+                    </p>
+                  ) : null}
+
+                  {customTranscriptionScannedModels.length > 0 ? (
+                    <div className="grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(210px,1fr))]">
+                      {customTranscriptionScannedModels.map((modelId) => {
+                        const active = settings.transcriptionCustomModel === modelId
+
+                        return (
+                          <button
+                            key={modelId}
+                            type="button"
+                            className={modelItemClass(active)}
+                            onClick={() => {
+                              onSettingsChange({
+                                transcriptionCustomModel: modelId,
+                                transcriptionCloudModelId: modelId,
+                              })
+                            }}
+                          >
+                            <span className="min-w-0 break-words">{modelId}</span>
+                            {active ? (
+                              <Badge tone="primary" className="shrink-0">Selected</Badge>
+                            ) : (
+                              <span className="shrink-0 text-xs text-muted-foreground">Use model</span>
+                            )}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  ) : null}
+                </div>
+
                 <div className="flex justify-end">
                   <Button
                     size="sm"
@@ -1052,9 +1604,25 @@ const ModelsSection = ({
                       placeholder={`Enter ${selectedTranscriptionProvider.providerLabel} API key`}
                     />
                   </div>
+                  {transcriptionApiKeyDocsUrl ? (
+                    <p className="text-xs text-muted-foreground">
+                      If you want to create and use an API key here, use{' '}
+                      <button
+                        type="button"
+                        className="app-no-drag inline-flex items-center gap-1 text-primary hover:text-primary/80"
+                        onClick={() => {
+                          electronAPI.openExternal(transcriptionApiKeyDocsUrl)
+                        }}
+                      >
+                        this link
+                        <Link className="h-3 w-3" />
+                      </button>
+                      .
+                    </p>
+                  ) : null}
                 </div>
 
-                <div className="space-y-2">
+                <div className="grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(210px,1fr))]">
                   {selectedTranscriptionProvider.models.map((model) => {
                     const active = settings.transcriptionCloudModelId === model.id
 
@@ -1071,8 +1639,12 @@ const ModelsSection = ({
                           })
                         }}
                       >
-                        <span>{model.label}</span>
-                        {active ? <Badge tone="primary">Active</Badge> : <span className="text-xs text-muted-foreground">Select</span>}
+                        <span className="min-w-0 break-words">{model.label}</span>
+                        {active ? (
+                          <Badge tone="primary" className="shrink-0">Active</Badge>
+                        ) : (
+                          <span className="shrink-0 text-xs text-muted-foreground">Select</span>
+                        )}
                       </button>
                     )
                   })}
@@ -1101,17 +1673,20 @@ const ModelsSection = ({
                 settings.transcriptionLocalModelId === model.id ? 'border-primary/40 bg-primary/10' : undefined,
               )}
             >
-              <div className="flex items-center justify-between gap-3">
-                <div>
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div className="min-w-0">
                   <p className="text-sm font-medium">{model.label}</p>
-                  <p className="text-xs text-muted-foreground">
-                    {model.size} | {model.speed} | {model.quality}
-                  </p>
+                  <div className="mt-1 flex flex-wrap gap-1.5 text-xs text-muted-foreground">
+                    <span className="rounded-full border border-border-subtle px-2 py-0.5">{model.size}</span>
+                    <span className="rounded-full border border-border-subtle px-2 py-0.5">{model.speed}</span>
+                    <span className="rounded-full border border-border-subtle px-2 py-0.5">{model.quality}</span>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="grid w-full grid-cols-1 gap-2 sm:grid-cols-2 lg:w-auto lg:grid-cols-2">
                   <Button
                     variant="outline"
                     size="sm"
+                    className="w-full"
                     onClick={() => {
                       if (model.downloaded) {
                         onModelsChange((current) =>
@@ -1146,6 +1721,7 @@ const ModelsSection = ({
 
                   <Button
                     size="sm"
+                    className="w-full"
                     variant={settings.transcriptionLocalModelId === model.id ? 'secondary' : 'default'}
                     disabled={!model.downloaded}
                     onClick={() => {
@@ -1182,38 +1758,36 @@ const ModelsSection = ({
         <CardHeader>
           <CardTitle>Post-processing | Cloud</CardTitle>
           <CardDescription>
-            Centered provider tabs with visible separators. Model choices remain listed one below another.
+            Providers stay visible and wrap responsively based on available width.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="flex justify-center">
-            <div className="max-w-full overflow-x-auto rounded-[var(--radius-premium)] border border-border-hover bg-surface-0/90 p-1">
-              <div className="inline-flex min-w-max items-stretch divide-x divide-border-hover rounded-[calc(var(--radius-premium)-2px)] border border-border-subtle bg-surface-1/70">
-                {CLOUD_POST_PROCESSING_CATALOG.map((provider) => {
-                  const active = selectedPostProcessingProvider.providerId === provider.providerId
+          <div className="rounded-[var(--radius-premium)] border border-border-hover bg-surface-0/90 p-2">
+            <div className="grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(150px,1fr))]">
+              {CLOUD_POST_PROCESSING_CATALOG.map((provider) => {
+                const active = selectedPostProcessingProvider.providerId === provider.providerId
 
-                  return (
-                    <button
-                      key={provider.providerId}
-                      type="button"
-                      className={providerButtonClass(active)}
-                      onClick={() => {
-                        onSettingsChange({
-                          postProcessingRuntime: 'cloud',
-                          postProcessingCloudProvider: provider.providerId,
-                          postProcessingCloudModelId:
-                            provider.providerId === 'custom'
-                              ? settings.postProcessingCustomModel || provider.models[0]?.id || ''
-                              : provider.models[0]?.id || '',
-                        })
-                      }}
-                    >
-                      {renderProviderIcon(provider.providerId)}
-                      {provider.providerLabel}
-                    </button>
-                  )
-                })}
-              </div>
+                return (
+                  <button
+                    key={provider.providerId}
+                    type="button"
+                    className={providerButtonClass(active)}
+                    onClick={() => {
+                      onSettingsChange({
+                        postProcessingRuntime: 'cloud',
+                        postProcessingCloudProvider: provider.providerId,
+                        postProcessingCloudModelId:
+                          provider.providerId === 'custom'
+                            ? settings.postProcessingCustomModel || provider.models[0]?.id || ''
+                            : provider.models[0]?.id || '',
+                      })
+                    }}
+                  >
+                    {renderProviderIcon(provider.providerId)}
+                    {provider.providerLabel}
+                  </button>
+                )
+              })}
             </div>
           </div>
 
@@ -1261,6 +1835,65 @@ const ModelsSection = ({
                     placeholder="custom-llm-model"
                   />
                 </div>
+
+                <div className="space-y-2 rounded-md border border-border-subtle bg-surface-1/70 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-sm font-medium">Model endpoint scan</p>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={customPostModelScanLoading}
+                      onClick={() => {
+                        void handleCustomPostModelScan()
+                      }}
+                    >
+                      <Search className="h-3.5 w-3.5" />
+                      {customPostModelScanLoading ? 'Scanning...' : 'Scan models'}
+                    </Button>
+                  </div>
+
+                  <p className="text-xs text-muted-foreground">
+                    {postProcessingModelsEndpoint
+                      ? `Models endpoint: ${postProcessingModelsEndpoint}`
+                      : 'Enter a valid custom endpoint URL to enable model scanning.'}
+                  </p>
+
+                  {customPostModelScanError ? (
+                    <p className="rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-2 text-xs text-destructive">
+                      {customPostModelScanError}
+                    </p>
+                  ) : null}
+
+                  {customPostScannedModels.length > 0 ? (
+                    <div className="grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(210px,1fr))]">
+                      {customPostScannedModels.map((modelId) => {
+                        const active = settings.postProcessingCustomModel === modelId
+
+                        return (
+                          <button
+                            key={modelId}
+                            type="button"
+                            className={modelItemClass(active)}
+                            onClick={() => {
+                              onSettingsChange({
+                                postProcessingCustomModel: modelId,
+                                postProcessingCloudModelId: modelId,
+                              })
+                            }}
+                          >
+                            <span className="min-w-0 break-words">{modelId}</span>
+                            {active ? (
+                              <Badge tone="primary" className="shrink-0">Selected</Badge>
+                            ) : (
+                              <span className="shrink-0 text-xs text-muted-foreground">Use model</span>
+                            )}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  ) : null}
+                </div>
+
                 <div className="flex justify-end">
                   <Button
                     size="sm"
@@ -1291,9 +1924,25 @@ const ModelsSection = ({
                       placeholder={`Enter ${selectedPostProcessingProvider.providerLabel} API key`}
                     />
                   </div>
+                  {postProcessingApiKeyDocsUrl ? (
+                    <p className="text-xs text-muted-foreground">
+                      If you want to create and use an API key here, use{' '}
+                      <button
+                        type="button"
+                        className="app-no-drag inline-flex items-center gap-1 text-primary hover:text-primary/80"
+                        onClick={() => {
+                          electronAPI.openExternal(postProcessingApiKeyDocsUrl)
+                        }}
+                      >
+                        this link
+                        <Link className="h-3 w-3" />
+                      </button>
+                      .
+                    </p>
+                  ) : null}
                 </div>
 
-                <div className="space-y-2">
+                <div className="grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(210px,1fr))]">
                   {selectedPostProcessingProvider.models.map((model) => {
                     const active = settings.postProcessingCloudModelId === model.id
 
@@ -1310,8 +1959,12 @@ const ModelsSection = ({
                           })
                         }}
                       >
-                        <span>{model.label}</span>
-                        {active ? <Badge tone="primary">Active</Badge> : <span className="text-xs text-muted-foreground">Select</span>}
+                        <span className="min-w-0 break-words">{model.label}</span>
+                        {active ? (
+                          <Badge tone="primary" className="shrink-0">Active</Badge>
+                        ) : (
+                          <span className="shrink-0 text-xs text-muted-foreground">Select</span>
+                        )}
                       </button>
                     )
                   })}
@@ -1338,17 +1991,20 @@ const ModelsSection = ({
                 settings.postProcessingLocalModelId === model.id ? 'border-primary/40 bg-primary/10' : undefined,
               )}
             >
-              <div className="flex items-center justify-between gap-3">
-                <div>
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div className="min-w-0">
                   <p className="text-sm font-medium">{model.label}</p>
-                  <p className="text-xs text-muted-foreground">
-                    {model.size} | {model.speed} | {model.quality}
-                  </p>
+                  <div className="mt-1 flex flex-wrap gap-1.5 text-xs text-muted-foreground">
+                    <span className="rounded-full border border-border-subtle px-2 py-0.5">{model.size}</span>
+                    <span className="rounded-full border border-border-subtle px-2 py-0.5">{model.speed}</span>
+                    <span className="rounded-full border border-border-subtle px-2 py-0.5">{model.quality}</span>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="grid w-full grid-cols-1 gap-2 sm:grid-cols-2 lg:w-auto lg:grid-cols-2">
                   <Button
                     variant="outline"
                     size="sm"
+                    className="w-full"
                     onClick={() => {
                       if (model.downloaded) {
                         onPostModelsChange((current) =>
@@ -1383,6 +2039,7 @@ const ModelsSection = ({
 
                   <Button
                     size="sm"
+                    className="w-full"
                     variant={settings.postProcessingLocalModelId === model.id ? 'secondary' : 'default'}
                     disabled={!model.downloaded}
                     onClick={() => {
@@ -1505,17 +2162,19 @@ const PromptsSection = ({ settings, onChange }: PromptsSectionProps) => {
               setView(nextValue as PromptView)
             }}
           >
-            <TabsList className="mx-auto h-auto w-fit flex-wrap justify-center gap-1 bg-surface-2/80 p-1">
-              <TabsTrigger value="preview" className="min-w-[120px]">
-                Preview
-              </TabsTrigger>
-              <TabsTrigger value="customize" className="min-w-[120px]">
-                Customize
-              </TabsTrigger>
-              <TabsTrigger value="test" className="min-w-[120px]">
-                Test
-              </TabsTrigger>
-            </TabsList>
+            <div className="overflow-x-auto">
+              <TabsList className="mx-auto h-auto w-max flex-nowrap justify-start gap-1 bg-surface-2/80 p-1">
+                <TabsTrigger value="preview" className="min-w-[120px]">
+                  Preview
+                </TabsTrigger>
+                <TabsTrigger value="customize" className="min-w-[120px]">
+                  Customize
+                </TabsTrigger>
+                <TabsTrigger value="test" className="min-w-[120px]">
+                  Test
+                </TabsTrigger>
+              </TabsList>
+            </div>
 
             <TabsContent value="preview" className="mt-4 space-y-3">
               <div className="rounded-md border border-border-subtle bg-surface-0 p-3">
@@ -1650,54 +2309,104 @@ const ShortcutsSection = ({ hotkey }: { hotkey: string }) => (
   </div>
 )
 
-const InfoSection = ({ settings }: { settings: AppSettings }) => (
-  <div className="space-y-4">
-    <Card>
-      <CardHeader>
-        <CardTitle>Runtime status</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-1 text-sm text-muted-foreground">
-        <p>
-          Transcription runtime: {settings.transcriptionRuntime === 'cloud' ? 'Cloud' : 'Local'}
-        </p>
-        <p>
-          Active transcription model:{' '}
-          {settings.transcriptionRuntime === 'cloud'
-            ? settings.transcriptionCloudModelId
-            : settings.transcriptionLocalModelId}
-        </p>
-        <p>Language: {settings.preferredLanguage}</p>
-      </CardContent>
-    </Card>
+const InfoSection = ({
+  settings,
+  onChange,
+}: {
+  settings: AppSettings
+  onChange: (next: Partial<AppSettings>) => void
+}) => {
+  const [showBugLogs, setShowBugLogs] = useState(false)
 
-    <Card>
-      <CardHeader>
-        <CardTitle>Whispy Local</CardTitle>
-        <CardDescription>Mock UI version: 0.1.0</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="rounded-md border border-border-subtle bg-surface-0 p-3 text-sm text-muted-foreground">
-          Changelog (mock):
-          <ul className="mt-2 list-disc space-y-1 pl-5">
-            <li>Floating overlay with IDLE/RECORDING/PROCESSING states</li>
-            <li>Complete control panel with onboarding</li>
-            <li>Models section with simulated download flow</li>
-          </ul>
-        </div>
-      </CardContent>
-      <CardFooter>
-        <Button
-          variant="outline"
-          onClick={() => {
-            electronAPI.openExternal('https://example.com/support')
-          }}
-        >
-          <Link className="h-3.5 w-3.5" /> Support
-        </Button>
-      </CardFooter>
-    </Card>
-  </div>
-)
+  const activeTranscriptionProviderLabel =
+    CLOUD_TRANSCRIPTION_CATALOG.find((provider) => provider.providerId === settings.transcriptionCloudProvider)
+      ?.providerLabel ?? settings.transcriptionCloudProvider
+
+  const transcriptionRuntimeLabel =
+    settings.transcriptionRuntime === 'cloud'
+      ? `Cloud (${activeTranscriptionProviderLabel})`
+      : 'Local'
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader>
+          <CardTitle>Bug logs</CardTitle>
+          <CardDescription>Quick debug controls and log locations.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex items-center justify-between rounded-md border border-border-subtle bg-surface-0 px-3 py-2.5">
+            <p className="text-sm">Debug mode</p>
+            <Switch
+              checked={settings.debugModeEnabled}
+              onCheckedChange={(checked) => {
+                onChange({ debugModeEnabled: checked })
+              }}
+            />
+          </div>
+          <Button
+            variant="outline"
+            onClick={() => {
+              setShowBugLogs((current) => !current)
+            }}
+          >
+            {showBugLogs ? 'Hide log paths' : 'Show log paths'}
+          </Button>
+          {showBugLogs ? (
+            <div className="rounded-md border border-border-subtle bg-surface-0 p-3 text-sm text-muted-foreground">
+              <p>Renderer logs: ~/.config/whispy/logs/renderer.log</p>
+              <p>Main logs: ~/.config/whispy/logs/main.log</p>
+              <p>Crash dumps: ~/.config/whispy/logs/crash/</p>
+            </div>
+          ) : null}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Runtime status</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-1 text-sm text-muted-foreground">
+          <p>Transcription runtime: {transcriptionRuntimeLabel}</p>
+          <p>
+            Active transcription model:{' '}
+            {settings.transcriptionRuntime === 'cloud'
+              ? settings.transcriptionCloudModelId
+              : settings.transcriptionLocalModelId}
+          </p>
+          <p>Language: {settings.preferredLanguage}</p>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Whispy Local</CardTitle>
+          <CardDescription>Mock UI version: 0.1.0</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="rounded-md border border-border-subtle bg-surface-0 p-3 text-sm text-muted-foreground">
+            Changelog (mock):
+            <ul className="mt-2 list-disc space-y-1 pl-5">
+              <li>Floating overlay with IDLE/RECORDING/PROCESSING states</li>
+              <li>Complete control panel with onboarding</li>
+              <li>Models section with simulated download flow</li>
+            </ul>
+          </div>
+        </CardContent>
+        <CardFooter>
+          <Button
+            variant="outline"
+            onClick={() => {
+              electronAPI.openExternal('https://example.com/support')
+            }}
+          >
+            <Link className="h-3.5 w-3.5" /> Support
+          </Button>
+        </CardFooter>
+      </Card>
+    </div>
+  )
+}
 
 type SettingsNodeId =
   | 'account'
@@ -1708,7 +2417,6 @@ type SettingsNodeId =
   | 'prompts'
   | 'agent.name'
   | 'privacy'
-  | 'permissions'
   | 'developer'
   | 'shortcuts'
 
@@ -1716,6 +2424,8 @@ interface SettingsMenuGroup {
   label: string
   items: Array<{ id: SettingsNodeId; label: string; icon: typeof Settings }>
 }
+
+const SHOW_ACCOUNT_SECTION = false
 
 const SETTINGS_MENU_GROUPS: SettingsMenuGroup[] = [
   {
@@ -1729,12 +2439,12 @@ const SETTINGS_MENU_GROUPS: SettingsMenuGroup[] = [
   {
     label: 'Speech',
     items: [
-      { id: 'transcription', label: 'Transcription', icon: Mic },
+      { id: 'transcription', label: 'AI Models', icon: BrainCircuit },
       { id: 'dictionary', label: 'Dictionary', icon: BookOpen },
     ],
   },
   {
-    label: 'Intelligence',
+    label: 'Post-Processing',
     items: [
       { id: 'ai-models', label: 'AI Models', icon: BrainCircuit },
       { id: 'agent.name', label: 'Agent', icon: Bot },
@@ -1745,7 +2455,6 @@ const SETTINGS_MENU_GROUPS: SettingsMenuGroup[] = [
     label: 'System',
     items: [
       { id: 'privacy', label: 'Privacy', icon: Lock },
-      { id: 'permissions', label: 'Permissions', icon: Shield },
       { id: 'developer', label: 'Developer', icon: Wrench },
       { id: 'shortcuts', label: 'Shortcuts', icon: Settings },
     ],
@@ -1756,6 +2465,7 @@ interface SettingsWorkspaceProps {
   settings: AppSettings
   models: ModelState[]
   postModels: ModelState[]
+  displayServer: DisplayServer
   onSettingsChange: (next: Partial<AppSettings>) => void
   onModelsChange: Dispatch<SetStateAction<ModelState[]>>
   onPostModelsChange: Dispatch<SetStateAction<ModelState[]>>
@@ -1765,11 +2475,14 @@ const SettingsWorkspace = ({
   settings,
   models,
   postModels,
+  displayServer,
   onSettingsChange,
   onModelsChange,
   onPostModelsChange,
 }: SettingsWorkspaceProps) => {
-  const [activeNode, setActiveNode] = useState<SettingsNodeId>('account')
+  const [activeNode, setActiveNode] = useState<SettingsNodeId>(
+    SHOW_ACCOUNT_SECTION ? 'account' : 'preferences',
+  )
   const [transcriptionMode, setTranscriptionMode] = useState<'cloud' | 'local'>(
     settings.transcriptionRuntime === 'local' ? 'local' : 'cloud',
   )
@@ -1810,6 +2523,7 @@ const SettingsWorkspace = ({
         <PreferencesSettingsPanel
           settings={settings}
           autoDetectSupported={autoDetectSupported}
+          displayServer={displayServer}
           onChange={onSettingsChange}
         />
       )
@@ -1844,7 +2558,7 @@ const SettingsWorkspace = ({
     }
 
     if (activeNode === 'dictionary') {
-      return <TranslationModeSection settings={settings} onChange={onSettingsChange} />
+      return <DictionarySettingsSection settings={settings} onChange={onSettingsChange} />
     }
 
     if (activeNode === 'ai-models') {
@@ -1887,65 +2601,69 @@ const SettingsWorkspace = ({
       return <PrivacyPanel />
     }
 
-    if (activeNode === 'permissions') {
-      return <PermissionsSection />
-    }
-
     if (activeNode === 'shortcuts') {
       return <ShortcutsSection hotkey={settings.hotkey} />
     }
 
-    return <InfoSection settings={settings} />
+    return <InfoSection settings={settings} onChange={onSettingsChange} />
   }
 
   const menuItemClass = (nodeId: SettingsNodeId) =>
     cn(
-      'relative app-no-drag flex h-10 w-full items-center gap-3 rounded-[10px] px-2.5 text-left text-sm transition-colors',
+      'relative app-no-drag flex h-10 w-full items-center gap-3 rounded-[10px] px-2.5 text-left text-sm whitespace-nowrap transition-colors',
       activeNode === nodeId
         ? 'bg-surface-1 text-foreground shadow-[0_0_0_1px_var(--border-hover)]'
         : 'text-muted-foreground hover:bg-surface-2/60 hover:text-foreground',
     )
 
   return (
-    <div className="grid min-h-[620px] gap-4 rounded-[var(--radius-premium)] border border-border-subtle bg-surface-1/70 p-4 lg:grid-cols-[260px_1fr]">
-      <aside className="rounded-[var(--radius-premium)] border border-border-subtle bg-[#070a12] p-3">
+    <div className="grid h-full min-h-0 grid-cols-[260px_minmax(0,1fr)] gap-4 rounded-[var(--radius-premium)] border border-border-subtle bg-surface-1/70 p-4">
+      <aside className="min-h-0 overflow-y-auto rounded-[var(--radius-premium)] border border-border-subtle bg-[#070a12] p-3">
         <p className="px-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-[#6f7891]">Settings</p>
         <nav className="mt-4 space-y-4">
-          {SETTINGS_MENU_GROUPS.map((group) => (
-            <div key={group.label}>
-              <p className="px-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-[#4f586d]">{group.label}</p>
-              <div className="mt-1.5 space-y-1">
-                {group.items.map((item) => {
-                  const Icon = item.icon
-                  const active = activeNode === item.id
+          {SETTINGS_MENU_GROUPS.map((group) => {
+            const visibleItems = group.items.filter((item) => SHOW_ACCOUNT_SECTION || item.id !== 'account')
 
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      className={menuItemClass(item.id)}
-                      onClick={() => {
-                        setActiveNode(item.id)
-                      }}
-                    >
-                      {active ? <span className="absolute left-0 top-2 bottom-2 w-0.5 rounded-full bg-primary" /> : null}
-                      <span
-                        className={cn(
-                          'ml-2 inline-flex h-6 w-6 items-center justify-center rounded-full border',
-                          active
-                            ? 'border-primary/40 bg-primary/15 text-primary'
-                            : 'border-border-subtle text-muted-foreground',
-                        )}
+            if (visibleItems.length === 0) {
+              return null
+            }
+
+            return (
+              <div key={group.label}>
+                <p className="px-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-[#4f586d]">{group.label}</p>
+                <div className="mt-1.5 space-y-1">
+                  {visibleItems.map((item) => {
+                    const Icon = item.icon
+                    const active = activeNode === item.id
+
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        className={menuItemClass(item.id)}
+                        onClick={() => {
+                          setActiveNode(item.id)
+                        }}
                       >
-                        <Icon className="h-3.5 w-3.5" />
-                      </span>
-                      <span>{item.label}</span>
-                    </button>
-                  )
-                })}
+                        {active ? <span className="absolute left-0 top-2 bottom-2 w-0.5 rounded-full bg-primary" /> : null}
+                        <span
+                          className={cn(
+                            'ml-2 inline-flex h-6 w-6 items-center justify-center rounded-full border',
+                            active
+                              ? 'border-primary/40 bg-primary/15 text-primary'
+                              : 'border-border-subtle text-muted-foreground',
+                          )}
+                        >
+                          <Icon className="h-3.5 w-3.5" />
+                        </span>
+                        <span>{item.label}</span>
+                      </button>
+                    )
+                  })}
+                </div>
               </div>
-            </div>
-          ))}
+            )
+          })}
         </nav>
       </aside>
 
@@ -2158,6 +2876,7 @@ const ControlPanelScene = () => {
   const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([])
   const [historyLoading, setHistoryLoading] = useState(true)
   const [onboardingDone, setOnboardingDone] = useState(isOnboardingCompleted)
+  const [displayServer, setDisplayServer] = useState<DisplayServer>('unknown')
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -2167,6 +2886,27 @@ const ControlPanelScene = () => {
 
     return () => {
       window.clearTimeout(timer)
+    }
+  }, [])
+
+  useEffect(() => {
+    let alive = true
+
+    void electronAPI
+      .getDisplayServer()
+      .then((server) => {
+        if (alive) {
+          setDisplayServer(server)
+        }
+      })
+      .catch(() => {
+        if (alive) {
+          setDisplayServer('unknown')
+        }
+      })
+
+    return () => {
+      alive = false
     }
   }, [])
 
@@ -2295,6 +3035,7 @@ const ControlPanelScene = () => {
           settings={settings}
           models={models}
           postModels={postModels}
+          displayServer={displayServer}
           onSettingsChange={handleSettingsChange}
           onModelsChange={setModels}
           onPostModelsChange={setPostModels}
@@ -2381,7 +3122,12 @@ const ControlPanelScene = () => {
         </div>
       </header>
 
-      <main className="min-h-0 flex-1 overflow-y-auto p-6">
+      <main
+        className={cn(
+          'min-h-0 flex-1 p-6',
+          onboardingDone && section === 'settings' ? 'overflow-hidden' : 'overflow-y-auto',
+        )}
+      >
         {!onboardingDone ? (
           <OnboardingWizard
             settings={settings}
@@ -2398,8 +3144,13 @@ const ControlPanelScene = () => {
             }}
           />
         ) : (
-          <div className="mx-auto max-w-5xl space-y-4">
-            <div className="flex items-center justify-between gap-2">
+          <div
+            className={cn(
+              'mx-auto max-w-5xl',
+              section === 'settings' ? 'flex h-full min-h-0 flex-col gap-4' : 'space-y-4',
+            )}
+          >
+            <div className="flex items-center gap-2">
               <div className="flex items-center gap-2">
                 <h1 className="text-lg font-semibold">{section === 'conversations' ? t('menuConversations') : t('menuSettings')}</h1>
                 {section === 'conversations' ? (
@@ -2408,9 +3159,8 @@ const ControlPanelScene = () => {
                   </span>
                 ) : null}
               </div>
-              <p className="text-sm text-muted-foreground">Local-first interface ready for real IPC and services.</p>
             </div>
-            {renderSection()}
+            {section === 'settings' ? <div className="min-h-0 flex-1">{renderSection()}</div> : renderSection()}
           </div>
         )}
       </main>

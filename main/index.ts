@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, screen, shell } from 'electron'
 import { join } from 'node:path'
 import {
   IPCChannels,
+  type DisplayServer,
   type HotkeyFallbackUsedPayload,
   type HotkeyRegistrationFailedPayload,
   type OverlaySizeKey,
@@ -55,6 +56,38 @@ const loadRoute = async (window: BrowserWindow, route: 'overlay' | 'control') =>
   })
 }
 
+const openExternalInBrowser = (targetURL: string) => {
+  try {
+    const parsedURL = new URL(targetURL)
+    if (!['http:', 'https:'].includes(parsedURL.protocol)) {
+      return
+    }
+
+    void shell.openExternal(parsedURL.toString())
+  } catch {}
+}
+
+const forceExternalLinksToBrowser = (window: BrowserWindow) => {
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    openExternalInBrowser(url)
+    return { action: 'deny' }
+  })
+}
+
+const getDisplayServer = (): DisplayServer => {
+  const sessionType = process.env.XDG_SESSION_TYPE?.toLowerCase()
+
+  if (sessionType === 'wayland' || Boolean(process.env.WAYLAND_DISPLAY)) {
+    return 'wayland'
+  }
+
+  if (sessionType === 'x11' || Boolean(process.env.DISPLAY)) {
+    return 'x11'
+  }
+
+  return 'unknown'
+}
+
 const createOverlayWindow = async () => {
   const baseBounds = getOverlayBounds(OVERLAY_SIZES.BASE)
   overlayWindow = new BrowserWindow({
@@ -73,6 +106,8 @@ const createOverlayWindow = async () => {
       nodeIntegration: false,
     },
   })
+
+  forceExternalLinksToBrowser(overlayWindow)
 
   overlayWindow.setAlwaysOnTop(true, 'screen-saver')
   overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
@@ -99,6 +134,8 @@ const createControlPanelWindow = async () => {
       nodeIntegration: false,
     },
   })
+
+  forceExternalLinksToBrowser(controlPanelWindow)
 
   controlPanelWindow.on('closed', () => {
     controlPanelWindow = null
@@ -163,12 +200,10 @@ const registerIPC = () => {
   })
 
   ipcMain.handle(IPCChannels.openExternal, (_event, targetURL: string) => {
-    if (!targetURL.startsWith('http://') && !targetURL.startsWith('https://')) {
-      return
-    }
-
-    shell.openExternal(targetURL)
+    openExternalInBrowser(targetURL)
   })
+
+  ipcMain.handle(IPCChannels.getDisplayServer, () => getDisplayServer())
 }
 
 const emitMockEvents = () => {

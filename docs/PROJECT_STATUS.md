@@ -1,37 +1,51 @@
 # Project Status
 
-This file tracks implemented UI status and near-term gaps. Detailed implementation is documented in `docs/UI_IMPLEMENTATION.md`.
+This file tracks implemented UI status and near-term gaps. Full behavioral detail lives in `docs/UI_IMPLEMENTATION.md`.
 
 ## Implemented
 
-- Electron architecture with two UI windows (overlay + control panel) and typed preload bridge.
-- Overlay dictation UX with mock lifecycle states (`IDLE`, `RECORDING`, `PROCESSING`), context menu, cancel action, resize/interactivity management, and optional auto-hide.
-- Control panel with first-run onboarding wizard (4 steps) and post-onboarding workspace.
-- Conversations/history section with search, language/provider/date filters, expand/collapse, copy, delete, clear-all confirmation, and header counter badge.
-- Settings workspace with tree navigation (General, Models, Prompts, Agent name, Shortcuts, Info).
-- Model configuration split by pipeline and runtime:
-  - Transcriptions: Cloud + Local
-  - Post-processing: Cloud + Local
-- Cloud provider tab UX with centered tabs and separators (OpenAI, Grok, Groq, Meta, Custom), including provider-specific API key fields and custom endpoint/model fields.
-- Local model management with simulated download/remove progress for both transcription and post-processing models.
-- Prompts workspace (Preview/Customize/Test) and dedicated Agent name section with mock prompt-routing test.
-- i18n scaffolding integrated (`I18nProvider`, `useI18n`) with current English-only dictionary.
+- Electron app with two windows (overlay + control panel), typed preload bridge, and typed shared IPC contracts.
+- External links are forced to open in the user browser (no in-app Electron popup browsing).
+- Overlay dictation UX with mock lifecycle states, context menu, cancel action, dynamic interactivity, and optional auto-hide.
+- Control panel onboarding + post-onboarding workspace with Conversations and Settings.
+- Settings redesigned into grouped left sidebar with fixed-left navigation and internal panel scrolling.
+- Responsive model UX updates in both Speech and Post-Processing:
+  - Provider selectors in responsive grid layout.
+  - Model selectors in responsive grid layout for narrow windows.
+  - Local model cards with wrapped metadata chips and overflow-safe action buttons.
+- Preferences updates:
+  - Hotkey activation controls moved into Preferences.
+  - Auto-paste backend selector (`wtype` / `xdotools` / `ydotools`) with always-on autopaste behavior.
+  - Wayland warning when selecting `wtype`.
+  - Microphone access moved into Preferences.
+- Dictionary workflow updates:
+  - Dictionary section in Speech.
+  - Enable/disable toggle.
+  - Add, save, delete replacement rules.
+  - Save icon appears only for unsaved valid edits and disappears after save.
+  - Rules remain visible but grayed-out/read-only when dictionary is disabled.
+- Prompts workspace tab row preserved side-by-side with overflow handling.
+- Developer/Info updates:
+  - New `Bug logs` card with debug mode toggle and show/hide log paths.
+  - Runtime status now includes cloud provider name for transcription runtime.
+- Provider API key UX updates:
+  - Non-custom providers show API key docs links for key creation.
+  - Custom providers support model endpoint scanning with explicit error handling when endpoint is unavailable.
 
 ## Known Gaps / Risks
 
-- Core dictation/runtime integrations are still mock implementations.
-- API keys are stored in renderer localStorage (no secure keychain yet).
-- Cross-window sync relies heavily on storage events rather than explicit shared state channel.
-- UI language selector currently offers only English.
-- Some legacy settings fields remain (`provider`, `modelId`) alongside newer cloud/local split fields.
-- One overlay size key (`WITH_TOAST`) exists but is not used by current overlay state logic.
+- Core runtime behavior is still mock (transcription, downloads, permissions behavior).
+- API keys are still stored in renderer localStorage (no OS keychain integration yet).
+- Cloud provider model catalogs for non-custom providers remain static frontend data.
+- Cross-window state sync still uses storage events heavily.
+- Onboarding still contains legacy fields (`provider`, `modelId`) alongside newer split runtime settings.
+- i18n remains effectively English-only.
 
 ## Next Candidate Work
 
-- Replace mock transcription/runtime/download flows with real services and IPC-driven status.
-- Move credential storage to secure OS keychain integration.
-- Expand localization beyond English and complete translation coverage.
-- Add settings tree search/filter for faster navigation.
+- Replace mock dictation/runtime/download flows with real backend + IPC-driven state.
+- Move credential storage to secure OS keychain.
+- Implement backend cloud model discovery for non-custom providers and keep `Show others` expansion flow.
+- Add schema/validation for custom provider endpoints and richer scanner diagnostics (auth/network/rate-limit distinctions).
 - Add import/export for settings/prompts/history.
-- Improve model capability visibility (for example auto-detect support, latency/cost/tooling metadata).
-- Replace static cloud model catalogs with backend auto-discovery, keep curated defaults, and add a `Show others` option for full provider model lists.
+- Expand localization coverage beyond English.

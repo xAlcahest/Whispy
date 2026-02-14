@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type { ElectronAPI } from '../shared/electron-api'
 import {
   IPCChannels,
+  type DisplayServer,
   type HotkeyFallbackUsedPayload,
   type HotkeyRegistrationFailedPayload,
   type OverlaySizeKey,
@@ -26,6 +27,7 @@ const electronAPI: ElectronAPI = {
     ipcRenderer.invoke(IPCChannels.setMainWindowInteractivity, shouldCapture),
   openControlPanel: () => ipcRenderer.invoke(IPCChannels.openControlPanel),
   openExternal: (url: string) => ipcRenderer.invoke(IPCChannels.openExternal, url),
+  getDisplayServer: () => ipcRenderer.invoke(IPCChannels.getDisplayServer) as Promise<DisplayServer>,
   onFloatingIconAutoHideChanged: (callback) =>
     listen<boolean>(IPCChannels.floatingIconAutoHideChanged, callback),
   onHotkeyRegistrationFailed: (callback) =>

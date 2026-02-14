@@ -20,6 +20,20 @@ export const loadSettings = (): AppSettings => {
     ...parsed,
   }
 
+  mergedSettings.autoPaste = true
+
+  if (!['wtype', 'xdotools', 'ydotools'].includes(mergedSettings.autoPasteBackend)) {
+    mergedSettings.autoPasteBackend = DEFAULT_SETTINGS.autoPasteBackend
+  }
+
+  if (typeof mergedSettings.microphoneAccess !== 'boolean') {
+    mergedSettings.microphoneAccess = DEFAULT_SETTINGS.microphoneAccess
+  }
+
+  if (typeof mergedSettings.debugModeEnabled !== 'boolean') {
+    mergedSettings.debugModeEnabled = DEFAULT_SETTINGS.debugModeEnabled
+  }
+
   if (!mergedSettings.agentName || mergedSettings.agentName === 'ActionAgent') {
     mergedSettings.agentName = 'Agent'
   }

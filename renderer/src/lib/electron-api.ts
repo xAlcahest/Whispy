@@ -1,4 +1,5 @@
 import type { ElectronAPI } from '../../../shared/electron-api'
+import type { DisplayServer } from '../../../shared/ipc'
 
 const noopUnsubscribe = () => {}
 
@@ -13,6 +14,8 @@ const fallbackElectronAPI: ElectronAPI = {
       window.open(url, '_blank', 'noopener,noreferrer')
     }
   },
+  getDisplayServer: async () =>
+    (navigator.userAgent.toLowerCase().includes('wayland') ? 'wayland' : 'unknown') as DisplayServer,
   onFloatingIconAutoHideChanged: () => noopUnsubscribe,
   onHotkeyRegistrationFailed: () => noopUnsubscribe,
   onHotkeyFallbackUsed: () => noopUnsubscribe,

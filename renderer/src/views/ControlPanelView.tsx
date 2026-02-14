@@ -43,6 +43,7 @@ import {
   AUTO_DETECT_LANGUAGE,
   AUTO_DETECT_SUPPORTED_TRANSCRIPTION_MODELS,
   CLOUD_POST_PROCESSING_CATALOG,
+  CLOUD_PROVIDER_ENDPOINTS,
   CLOUD_TRANSCRIPTION_CATALOG,
   LANGUAGES,
   PROVIDERS,
@@ -683,6 +684,76 @@ const ModelsSection = ({
     CLOUD_POST_PROCESSING_CATALOG.find((provider) => provider.providerId === settings.postProcessingCloudProvider) ??
     CLOUD_POST_PROCESSING_CATALOG[0]
 
+  type TranscriptionApiKeyField =
+    | 'transcriptionOpenAIApiKey'
+    | 'transcriptionGrokApiKey'
+    | 'transcriptionGroqApiKey'
+    | 'transcriptionMetaApiKey'
+    | 'transcriptionCustomApiKey'
+
+  type PostProcessingApiKeyField =
+    | 'postProcessingOpenAIApiKey'
+    | 'postProcessingGrokApiKey'
+    | 'postProcessingGroqApiKey'
+    | 'postProcessingMetaApiKey'
+    | 'postProcessingCustomApiKey'
+
+  const transcriptionApiKeyFieldByProvider: Record<string, TranscriptionApiKeyField> = {
+    openai: 'transcriptionOpenAIApiKey',
+    grok: 'transcriptionGrokApiKey',
+    groq: 'transcriptionGroqApiKey',
+    meta: 'transcriptionMetaApiKey',
+    custom: 'transcriptionCustomApiKey',
+  }
+
+  const postProcessingApiKeyFieldByProvider: Record<string, PostProcessingApiKeyField> = {
+    openai: 'postProcessingOpenAIApiKey',
+    grok: 'postProcessingGrokApiKey',
+    groq: 'postProcessingGroqApiKey',
+    meta: 'postProcessingMetaApiKey',
+    custom: 'postProcessingCustomApiKey',
+  }
+
+  const getTranscriptionApiKey = (providerId: string) => {
+    const key = transcriptionApiKeyFieldByProvider[providerId]
+    if (!key) {
+      return ''
+    }
+
+    return settings[key]
+  }
+
+  const setTranscriptionApiKey = (providerId: string, value: string) => {
+    const key = transcriptionApiKeyFieldByProvider[providerId]
+    if (!key) {
+      return
+    }
+
+    onSettingsChange({
+      [key]: value,
+    } as Partial<AppSettings>)
+  }
+
+  const getPostProcessingApiKey = (providerId: string) => {
+    const key = postProcessingApiKeyFieldByProvider[providerId]
+    if (!key) {
+      return ''
+    }
+
+    return settings[key]
+  }
+
+  const setPostProcessingApiKey = (providerId: string, value: string) => {
+    const key = postProcessingApiKeyFieldByProvider[providerId]
+    if (!key) {
+      return
+    }
+
+    onSettingsChange({
+      [key]: value,
+    } as Partial<AppSettings>)
+  }
+
   const providerButtonClass = (active: boolean) =>
     cn(
       'app-no-drag inline-flex h-10 items-center gap-2 px-4 text-sm font-medium transition-colors whitespace-nowrap',
@@ -749,15 +820,28 @@ const ModelsSection = ({
 
             {selectedTranscriptionProvider.providerId === 'custom' ? (
               <div className="space-y-3">
-                <div className="space-y-1.5">
-                  <p className="text-sm font-medium">Custom STT endpoint</p>
-                  <Input
-                    value={settings.transcriptionCustomBaseUrl}
-                    onChange={(event) => {
-                      onSettingsChange({ transcriptionCustomBaseUrl: event.target.value })
-                    }}
-                    placeholder="https://api.example.com/v1/transcriptions"
-                  />
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <p className="text-sm font-medium">Custom STT endpoint</p>
+                    <Input
+                      value={settings.transcriptionCustomBaseUrl}
+                      onChange={(event) => {
+                        onSettingsChange({ transcriptionCustomBaseUrl: event.target.value })
+                      }}
+                      placeholder="https://api.example.com/v1/transcriptions"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <p className="text-sm font-medium">Custom STT API key</p>
+                    <Input
+                      type="password"
+                      value={settings.transcriptionCustomApiKey}
+                      onChange={(event) => {
+                        onSettingsChange({ transcriptionCustomApiKey: event.target.value })
+                      }}
+                      placeholder="Enter API key"
+                    />
+                  </div>
                 </div>
                 <div className="space-y-1.5">
                   <p className="text-sm font-medium">Custom STT model</p>
@@ -789,28 +873,51 @@ const ModelsSection = ({
                 </div>
               </div>
             ) : (
-              <div className="space-y-2">
-                {selectedTranscriptionProvider.models.map((model) => {
-                  const active = settings.transcriptionCloudModelId === model.id
-
-                  return (
-                    <button
-                      key={model.id}
-                      type="button"
-                      className={modelItemClass(active)}
-                      onClick={() => {
-                        onSettingsChange({
-                          transcriptionRuntime: 'cloud',
-                          transcriptionCloudProvider: selectedTranscriptionProvider.providerId,
-                          transcriptionCloudModelId: model.id,
-                        })
+              <div className="space-y-3">
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <p className="text-sm font-medium">API key</p>
+                    <Input
+                      type="password"
+                      value={getTranscriptionApiKey(selectedTranscriptionProvider.providerId)}
+                      onChange={(event) => {
+                        setTranscriptionApiKey(selectedTranscriptionProvider.providerId, event.target.value)
                       }}
-                    >
-                      <span>{model.label}</span>
-                      {active ? <Badge tone="primary">Active</Badge> : <span className="text-xs text-muted-foreground">Select</span>}
-                    </button>
-                  )
-                })}
+                      placeholder={`Enter ${selectedTranscriptionProvider.providerLabel} API key`}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <p className="text-sm font-medium">Endpoint</p>
+                    <Input
+                      value={CLOUD_PROVIDER_ENDPOINTS.transcriptions[selectedTranscriptionProvider.providerId as keyof typeof CLOUD_PROVIDER_ENDPOINTS.transcriptions]}
+                      readOnly
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  {selectedTranscriptionProvider.models.map((model) => {
+                    const active = settings.transcriptionCloudModelId === model.id
+
+                    return (
+                      <button
+                        key={model.id}
+                        type="button"
+                        className={modelItemClass(active)}
+                        onClick={() => {
+                          onSettingsChange({
+                            transcriptionRuntime: 'cloud',
+                            transcriptionCloudProvider: selectedTranscriptionProvider.providerId,
+                            transcriptionCloudModelId: model.id,
+                          })
+                        }}
+                      >
+                        <span>{model.label}</span>
+                        {active ? <Badge tone="primary">Active</Badge> : <span className="text-xs text-muted-foreground">Select</span>}
+                      </button>
+                    )
+                  })}
+                </div>
               </div>
             )}
           </div>
@@ -959,15 +1066,28 @@ const ModelsSection = ({
 
             {selectedPostProcessingProvider.providerId === 'custom' ? (
               <div className="space-y-3">
-                <div className="space-y-1.5">
-                  <p className="text-sm font-medium">Custom LLM endpoint</p>
-                  <Input
-                    value={settings.postProcessingCustomBaseUrl}
-                    onChange={(event) => {
-                      onSettingsChange({ postProcessingCustomBaseUrl: event.target.value })
-                    }}
-                    placeholder="https://api.example.com/v1/chat/completions"
-                  />
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <p className="text-sm font-medium">Custom LLM endpoint</p>
+                    <Input
+                      value={settings.postProcessingCustomBaseUrl}
+                      onChange={(event) => {
+                        onSettingsChange({ postProcessingCustomBaseUrl: event.target.value })
+                      }}
+                      placeholder="https://api.example.com/v1/chat/completions"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <p className="text-sm font-medium">Custom LLM API key</p>
+                    <Input
+                      type="password"
+                      value={settings.postProcessingCustomApiKey}
+                      onChange={(event) => {
+                        onSettingsChange({ postProcessingCustomApiKey: event.target.value })
+                      }}
+                      placeholder="Enter API key"
+                    />
+                  </div>
                 </div>
                 <div className="space-y-1.5">
                   <p className="text-sm font-medium">Custom LLM model</p>
@@ -999,28 +1119,51 @@ const ModelsSection = ({
                 </div>
               </div>
             ) : (
-              <div className="space-y-2">
-                {selectedPostProcessingProvider.models.map((model) => {
-                  const active = settings.postProcessingCloudModelId === model.id
-
-                  return (
-                    <button
-                      key={model.id}
-                      type="button"
-                      className={modelItemClass(active)}
-                      onClick={() => {
-                        onSettingsChange({
-                          postProcessingRuntime: 'cloud',
-                          postProcessingCloudProvider: selectedPostProcessingProvider.providerId,
-                          postProcessingCloudModelId: model.id,
-                        })
+              <div className="space-y-3">
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <p className="text-sm font-medium">API key</p>
+                    <Input
+                      type="password"
+                      value={getPostProcessingApiKey(selectedPostProcessingProvider.providerId)}
+                      onChange={(event) => {
+                        setPostProcessingApiKey(selectedPostProcessingProvider.providerId, event.target.value)
                       }}
-                    >
-                      <span>{model.label}</span>
-                      {active ? <Badge tone="primary">Active</Badge> : <span className="text-xs text-muted-foreground">Select</span>}
-                    </button>
-                  )
-                })}
+                      placeholder={`Enter ${selectedPostProcessingProvider.providerLabel} API key`}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <p className="text-sm font-medium">Endpoint</p>
+                    <Input
+                      value={CLOUD_PROVIDER_ENDPOINTS.postProcessing[selectedPostProcessingProvider.providerId as keyof typeof CLOUD_PROVIDER_ENDPOINTS.postProcessing]}
+                      readOnly
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  {selectedPostProcessingProvider.models.map((model) => {
+                    const active = settings.postProcessingCloudModelId === model.id
+
+                    return (
+                      <button
+                        key={model.id}
+                        type="button"
+                        className={modelItemClass(active)}
+                        onClick={() => {
+                          onSettingsChange({
+                            postProcessingRuntime: 'cloud',
+                            postProcessingCloudProvider: selectedPostProcessingProvider.providerId,
+                            postProcessingCloudModelId: model.id,
+                          })
+                        }}
+                      >
+                        <span>{model.label}</span>
+                        {active ? <Badge tone="primary">Active</Badge> : <span className="text-xs text-muted-foreground">Select</span>}
+                      </button>
+                    )
+                  })}
+                </div>
               </div>
             )}
           </div>

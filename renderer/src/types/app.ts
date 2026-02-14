@@ -20,13 +20,23 @@ export interface AppSettings {
   transcriptionRuntime: RuntimeMode
   transcriptionCloudProvider: string
   transcriptionCloudModelId: string
+  transcriptionOpenAIApiKey: string
+  transcriptionGrokApiKey: string
+  transcriptionGroqApiKey: string
+  transcriptionMetaApiKey: string
   transcriptionCustomBaseUrl: string
+  transcriptionCustomApiKey: string
   transcriptionCustomModel: string
   transcriptionLocalModelId: string
   postProcessingRuntime: RuntimeMode
   postProcessingCloudProvider: string
   postProcessingCloudModelId: string
+  postProcessingOpenAIApiKey: string
+  postProcessingGrokApiKey: string
+  postProcessingGroqApiKey: string
+  postProcessingMetaApiKey: string
   postProcessingCustomBaseUrl: string
+  postProcessingCustomApiKey: string
   postProcessingCustomModel: string
   postProcessingLocalModelId: string
   normalPrompt: string

@@ -24,13 +24,23 @@ export const DEFAULT_SETTINGS: AppSettings = {
   transcriptionRuntime: 'cloud',
   transcriptionCloudProvider: 'openai',
   transcriptionCloudModelId: 'gpt-4o-transcribe',
+  transcriptionOpenAIApiKey: '',
+  transcriptionGrokApiKey: '',
+  transcriptionGroqApiKey: '',
+  transcriptionMetaApiKey: '',
   transcriptionCustomBaseUrl: '',
+  transcriptionCustomApiKey: '',
   transcriptionCustomModel: 'custom-stt-model',
   transcriptionLocalModelId: 'small',
   postProcessingRuntime: 'cloud',
   postProcessingCloudProvider: 'openai',
   postProcessingCloudModelId: 'gpt-4.1-mini',
+  postProcessingOpenAIApiKey: '',
+  postProcessingGrokApiKey: '',
+  postProcessingGroqApiKey: '',
+  postProcessingMetaApiKey: '',
   postProcessingCustomBaseUrl: '',
+  postProcessingCustomApiKey: '',
   postProcessingCustomModel: 'custom-llm-model',
   postProcessingLocalModelId: 'llama-3.1-8b-instruct',
   normalPrompt:
@@ -163,6 +173,23 @@ export const CLOUD_POST_PROCESSING_CATALOG = [
     models: [{ id: 'custom-llm-model', label: 'custom-llm-model' }],
   },
 ] as const
+
+export const CLOUD_PROVIDER_ENDPOINTS = {
+  transcriptions: {
+    openai: 'https://api.openai.com/v1/audio/transcriptions',
+    grok: 'https://api.x.ai/v1/audio/transcriptions',
+    groq: 'https://api.groq.com/openai/v1/audio/transcriptions',
+    meta: 'https://api.meta.ai/v1/audio/transcriptions',
+    custom: 'Custom endpoint',
+  },
+  postProcessing: {
+    openai: 'https://api.openai.com/v1/chat/completions',
+    grok: 'https://api.x.ai/v1/chat/completions',
+    groq: 'https://api.groq.com/openai/v1/chat/completions',
+    meta: 'https://api.meta.ai/v1/chat/completions',
+    custom: 'Custom endpoint',
+  },
+} as const
 
 export const AUTO_DETECT_SUPPORTED_TRANSCRIPTION_MODELS = new Set<string>([
   ...MODEL_PRESETS.map((model) => model.id),

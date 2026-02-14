@@ -35,12 +35,14 @@ export const DEFAULT_SETTINGS: AppSettings = {
   postProcessingLocalModelId: 'llama-3.1-8b-instruct',
   normalPrompt:
     'Rewrite the transcription clearly, keep the original meaning, and return plain text only.',
-  agentName: 'ActionAgent',
+  agentName: 'Agent',
   agentPrompt:
     'If the user explicitly says the agent name, execute the requested action format and return concise actionable output.',
 }
 
 export const LANGUAGES = ['English', 'Italian', 'German', 'French', 'Spanish']
+export const AUTO_DETECT_LANGUAGE = 'Auto-detect'
+export const TRANSCRIPTION_LANGUAGE_OPTIONS = [AUTO_DETECT_LANGUAGE, ...LANGUAGES]
 
 export const UI_LANGUAGES = [{ id: 'en', label: 'English' }] as const
 
@@ -145,5 +147,12 @@ export const CLOUD_POST_PROCESSING_CATALOG = [
     models: [{ id: 'custom-llm-model', label: 'custom-llm-model' }],
   },
 ] as const
+
+export const AUTO_DETECT_SUPPORTED_TRANSCRIPTION_MODELS = new Set<string>([
+  ...MODEL_PRESETS.map((model) => model.id),
+  ...CLOUD_TRANSCRIPTION_CATALOG.filter((provider) => provider.providerId !== 'custom').flatMap((provider) =>
+    provider.models.map((model) => model.id),
+  ),
+])
 
 export const TARGET_APPS = ['VS Code', 'Notion', 'Slack', 'Cursor', 'Chrome', 'Terminal']

@@ -1,14 +1,10 @@
 import {
-  Bell,
   BookOpen,
   ChevronDown,
   ChevronRight,
   Cloud,
   Copy,
-  Download,
-  HardDrive,
   Link,
-  MessageSquare,
   Moon,
   PanelRight,
   Search,
@@ -16,7 +12,6 @@ import {
   Sparkles,
   Sun,
   Trash2,
-  X,
 } from 'lucide-react'
 import {
   useEffect,
@@ -27,6 +22,7 @@ import {
   type MutableRefObject,
   type SetStateAction,
 } from 'react'
+import { SiMeta, SiOpenaigym, SiX } from '@icons-pack/react-simple-icons'
 import { Button } from '../components/ui/button'
 import { Badge } from '../components/ui/badge'
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '../components/ui/card'
@@ -41,11 +37,14 @@ import { parseAppNotification } from '../lib/app-notifications'
 import { cn } from '../lib/cn'
 import { electronAPI } from '../lib/electron-api'
 import {
+  AUTO_DETECT_LANGUAGE,
+  AUTO_DETECT_SUPPORTED_TRANSCRIPTION_MODELS,
   CLOUD_POST_PROCESSING_CATALOG,
   CLOUD_TRANSCRIPTION_CATALOG,
   LANGUAGES,
   PROVIDERS,
   STORAGE_KEYS,
+  TRANSCRIPTION_LANGUAGE_OPTIONS,
   UI_LANGUAGES,
 } from '../lib/constants'
 import {
@@ -64,11 +63,6 @@ import {
 import type { AppSettings, HistoryEntry, ModelState } from '../types/app'
 
 type PanelSection = 'conversations' | 'settings'
-
-const sectionItems: Array<{ id: PanelSection; labelKey: string; icon: typeof MessageSquare }> = [
-  { id: 'conversations', labelKey: 'menuConversations', icon: MessageSquare },
-  { id: 'settings', labelKey: 'menuSettings', icon: Settings },
-]
 
 const formatTimestamp = (value: number) =>
   new Intl.DateTimeFormat('en-US', {
@@ -392,10 +386,11 @@ const HistorySection = ({ entries, loading, onCopy, onDelete, onClear }: History
 
 interface SettingsSectionProps {
   settings: AppSettings
+  autoDetectSupported: boolean
   onChange: (next: Partial<AppSettings>) => void
 }
 
-const SettingsSection = ({ settings, onChange }: SettingsSectionProps) => (
+const SettingsSection = ({ settings, autoDetectSupported, onChange }: SettingsSectionProps) => (
   <div className="space-y-4">
     <Card className="scroll-mt-6">
       <CardHeader>
@@ -465,6 +460,32 @@ const SettingsSection = ({ settings, onChange }: SettingsSectionProps) => (
             <p className="mt-1 text-xs text-muted-foreground">More interface languages can be added later.</p>
           </div>
 
+          <div className="rounded-md border border-border-subtle bg-surface-0 px-3 py-2.5">
+            <p className="mb-2 text-sm">Transcription language</p>
+            <select
+              className="app-no-drag h-9 w-full rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 px-2.5 text-sm"
+              value={settings.preferredLanguage}
+              onChange={(event) => {
+                onChange({ preferredLanguage: event.target.value })
+              }}
+            >
+              {TRANSCRIPTION_LANGUAGE_OPTIONS.map((language) => (
+                <option
+                  key={language}
+                  value={language}
+                  disabled={language === AUTO_DETECT_LANGUAGE && !autoDetectSupported}
+                >
+                  {language}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {autoDetectSupported
+                ? 'Auto-detect is available for the currently selected transcription model.'
+                : 'Auto-detect is not available for the current transcription model.'}
+            </p>
+          </div>
+
           {[
             {
               label: 'Auto-paste (mock)',
@@ -513,6 +534,7 @@ const SettingsSection = ({ settings, onChange }: SettingsSectionProps) => (
 )
 
 interface ModelsSectionProps {
+  scope: 'transcriptions' | 'post'
   settings: AppSettings
   models: ModelState[]
   postModels: ModelState[]
@@ -521,14 +543,24 @@ interface ModelsSectionProps {
   onPostModelsChange: Dispatch<SetStateAction<ModelState[]>>
 }
 
-const providerIconById: Record<string, typeof Sparkles> = {
-  openai: Sparkles,
-  grok: Cloud,
-  meta: MessageSquare,
-  custom: Settings,
+const renderProviderIcon = (providerId: string) => {
+  if (providerId === 'openai') {
+    return <SiOpenaigym className="h-4 w-4" />
+  }
+
+  if (providerId === 'grok') {
+    return <SiX className="h-4 w-4" />
+  }
+
+  if (providerId === 'meta') {
+    return <SiMeta className="h-4 w-4" />
+  }
+
+  return <Settings className="h-4 w-4" />
 }
 
 const ModelsSection = ({
+  scope,
   settings,
   models,
   postModels,
@@ -644,6 +676,8 @@ const ModelsSection = ({
 
   return (
     <div className="space-y-5">
+      {scope === 'transcriptions' ? (
+        <>
       <Card id="settings-node-models.transcriptions.cloud" className="scroll-mt-6">
         <CardHeader>
           <CardTitle>Transcriptions | Cloud</CardTitle>
@@ -654,7 +688,6 @@ const ModelsSection = ({
         <CardContent className="grid gap-4 lg:grid-cols-[240px_1fr]">
           <div className="rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 p-2">
             {CLOUD_TRANSCRIPTION_CATALOG.map((provider) => {
-              const Icon = providerIconById[provider.providerId] ?? Settings
               const active = selectedTranscriptionProvider.providerId === provider.providerId
 
               return (
@@ -673,7 +706,7 @@ const ModelsSection = ({
                     })
                   }}
                 >
-                  <Icon className="h-4 w-4" />
+                  {renderProviderIcon(provider.providerId)}
                   {provider.providerLabel}
                 </button>
               )
@@ -763,101 +796,94 @@ const ModelsSection = ({
             {downloadedModels} downloaded models | storage path: ~/Library/Application Support/Whispy/models
           </CardDescription>
         </CardHeader>
-        <CardContent className="grid gap-3 lg:grid-cols-2">
+        <CardContent className="space-y-2">
           {models.map((model) => (
-            <Card key={model.id} className={settings.transcriptionLocalModelId === model.id ? 'border-primary/50' : undefined}>
-              <CardHeader className="pb-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <CardTitle>{model.label}</CardTitle>
-                    <CardDescription>{model.size}</CardDescription>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <Badge tone={model.speed === 'Fast' ? 'success' : model.speed === 'Balanced' ? 'primary' : 'warning'}>
-                      {model.speed}
-                    </Badge>
-                    <Badge>{model.quality}</Badge>
-                  </div>
+            <div
+              key={model.id}
+              className={cn(
+                'rounded-md border border-border-subtle bg-surface-0 p-3',
+                settings.transcriptionLocalModelId === model.id ? 'border-primary/40 bg-primary/10' : undefined,
+              )}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium">{model.label}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {model.size} | {model.speed} | {model.quality}
+                  </p>
                 </div>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <div className="h-2 overflow-hidden rounded-full bg-surface-3">
-                  <div
-                    className="h-full bg-primary transition-[width] duration-300"
-                    style={{
-                      width: `${model.progress}%`,
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      if (model.downloaded) {
+                        onModelsChange((current) =>
+                          current.map((item) =>
+                            item.id === model.id
+                              ? {
+                                  ...item,
+                                  downloaded: false,
+                                  downloading: false,
+                                  progress: 0,
+                                }
+                              : item,
+                          ),
+                        )
+                        pushToast({
+                          title: `${model.label} removed`,
+                        })
+                        return
+                      }
+
+                      if (!model.downloading) {
+                        setModelDownloading(model.id, onModelsChange, transcriptionIntervals)
+                        pushToast({
+                          title: `Download started (${model.label})`,
+                        })
+                      }
                     }}
-                  />
+                    disabled={model.downloading}
+                  >
+                    {model.downloaded ? 'Remove' : 'Download'}
+                  </Button>
+
+                  <Button
+                    size="sm"
+                    variant={settings.transcriptionLocalModelId === model.id ? 'secondary' : 'default'}
+                    disabled={!model.downloaded}
+                    onClick={() => {
+                      onSettingsChange({
+                        transcriptionRuntime: 'local',
+                        transcriptionLocalModelId: model.id,
+                        modelId: model.id,
+                      })
+                    }}
+                  >
+                    {settings.transcriptionLocalModelId === model.id ? 'Active' : 'Use local'}
+                  </Button>
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  Status: {model.downloading ? `Downloading ${model.progress}%` : model.downloaded ? 'Downloaded' : 'Not downloaded'}
-                </p>
-              </CardContent>
-              <CardFooter className="justify-between">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    if (model.downloaded) {
-                      onModelsChange((current) =>
-                        current.map((item) =>
-                          item.id === model.id
-                            ? {
-                                ...item,
-                                downloaded: false,
-                                downloading: false,
-                                progress: 0,
-                              }
-                            : item,
-                        ),
-                      )
-                      pushToast({
-                        title: `${model.label} removed`,
-                      })
-                      return
-                    }
-
-                    if (!model.downloading) {
-                      setModelDownloading(model.id, onModelsChange, transcriptionIntervals)
-                      pushToast({
-                        title: `Download started (${model.label})`,
-                      })
-                    }
+              </div>
+              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-surface-3">
+                <div
+                  className="h-full bg-primary transition-[width] duration-300"
+                  style={{
+                    width: `${model.progress}%`,
                   }}
-                  disabled={model.downloading}
-                >
-                  {model.downloaded ? (
-                    <>
-                      <X className="h-3.5 w-3.5" /> Remove
-                    </>
-                  ) : (
-                    <>
-                      <Download className="h-3.5 w-3.5" /> Download
-                    </>
-                  )}
-                </Button>
-
-                <Button
-                  size="sm"
-                  variant={settings.transcriptionLocalModelId === model.id ? 'secondary' : 'default'}
-                  disabled={!model.downloaded}
-                  onClick={() => {
-                    onSettingsChange({
-                      transcriptionRuntime: 'local',
-                      transcriptionLocalModelId: model.id,
-                      modelId: model.id,
-                    })
-                  }}
-                >
-                  <HardDrive className="h-3.5 w-3.5" />
-                  {settings.transcriptionLocalModelId === model.id ? 'Active' : 'Use local'}
-                </Button>
-              </CardFooter>
-            </Card>
+                />
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {model.downloading ? `Downloading ${model.progress}%` : model.downloaded ? 'Downloaded' : 'Not downloaded'}
+              </p>
+            </div>
           ))}
         </CardContent>
       </Card>
+        </>
+      ) : null}
 
+      {scope === 'post' ? (
+        <>
       <Card id="settings-node-models.post.cloud" className="scroll-mt-6">
         <CardHeader>
           <CardTitle>Post-processing | Cloud</CardTitle>
@@ -868,7 +894,6 @@ const ModelsSection = ({
         <CardContent className="grid gap-4 lg:grid-cols-[240px_1fr]">
           <div className="rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 p-2">
             {CLOUD_POST_PROCESSING_CATALOG.map((provider) => {
-              const Icon = providerIconById[provider.providerId] ?? Settings
               const active = selectedPostProcessingProvider.providerId === provider.providerId
 
               return (
@@ -887,7 +912,7 @@ const ModelsSection = ({
                     })
                   }}
                 >
-                  <Icon className="h-4 w-4" />
+                  {renderProviderIcon(provider.providerId)}
                   {provider.providerLabel}
                 </button>
               )
@@ -975,99 +1000,90 @@ const ModelsSection = ({
           <CardTitle>Post-processing | Local</CardTitle>
           <CardDescription>{downloadedPostModels} downloaded local LLM models</CardDescription>
         </CardHeader>
-        <CardContent className="grid gap-3 lg:grid-cols-2">
+        <CardContent className="space-y-2">
           {postModels.map((model) => (
-            <Card key={model.id} className={settings.postProcessingLocalModelId === model.id ? 'border-primary/50' : undefined}>
-              <CardHeader className="pb-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <CardTitle>{model.label}</CardTitle>
-                    <CardDescription>{model.size}</CardDescription>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <Badge tone={model.speed === 'Fast' ? 'success' : model.speed === 'Balanced' ? 'primary' : 'warning'}>
-                      {model.speed}
-                    </Badge>
-                    <Badge>{model.quality}</Badge>
-                  </div>
+            <div
+              key={model.id}
+              className={cn(
+                'rounded-md border border-border-subtle bg-surface-0 p-3',
+                settings.postProcessingLocalModelId === model.id ? 'border-primary/40 bg-primary/10' : undefined,
+              )}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium">{model.label}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {model.size} | {model.speed} | {model.quality}
+                  </p>
                 </div>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <div className="h-2 overflow-hidden rounded-full bg-surface-3">
-                  <div
-                    className="h-full bg-primary transition-[width] duration-300"
-                    style={{
-                      width: `${model.progress}%`,
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      if (model.downloaded) {
+                        onPostModelsChange((current) =>
+                          current.map((item) =>
+                            item.id === model.id
+                              ? {
+                                  ...item,
+                                  downloaded: false,
+                                  downloading: false,
+                                  progress: 0,
+                                }
+                              : item,
+                          ),
+                        )
+                        pushToast({
+                          title: `${model.label} removed`,
+                        })
+                        return
+                      }
+
+                      if (!model.downloading) {
+                        setModelDownloading(model.id, onPostModelsChange, postIntervals)
+                        pushToast({
+                          title: `Download started (${model.label})`,
+                        })
+                      }
                     }}
-                  />
+                    disabled={model.downloading}
+                  >
+                    {model.downloaded ? 'Remove' : 'Download'}
+                  </Button>
+
+                  <Button
+                    size="sm"
+                    variant={settings.postProcessingLocalModelId === model.id ? 'secondary' : 'default'}
+                    disabled={!model.downloaded}
+                    onClick={() => {
+                      onSettingsChange({
+                        postProcessingRuntime: 'local',
+                        postProcessingLocalModelId: model.id,
+                      })
+                    }}
+                  >
+                    {settings.postProcessingLocalModelId === model.id ? 'Active' : 'Use local'}
+                  </Button>
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  Status: {model.downloading ? `Downloading ${model.progress}%` : model.downloaded ? 'Downloaded' : 'Not downloaded'}
-                </p>
-              </CardContent>
-              <CardFooter className="justify-between">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    if (model.downloaded) {
-                      onPostModelsChange((current) =>
-                        current.map((item) =>
-                          item.id === model.id
-                            ? {
-                                ...item,
-                                downloaded: false,
-                                downloading: false,
-                                progress: 0,
-                              }
-                            : item,
-                        ),
-                      )
-                      pushToast({
-                        title: `${model.label} removed`,
-                      })
-                      return
-                    }
-
-                    if (!model.downloading) {
-                      setModelDownloading(model.id, onPostModelsChange, postIntervals)
-                      pushToast({
-                        title: `Download started (${model.label})`,
-                      })
-                    }
+              </div>
+              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-surface-3">
+                <div
+                  className="h-full bg-primary transition-[width] duration-300"
+                  style={{
+                    width: `${model.progress}%`,
                   }}
-                  disabled={model.downloading}
-                >
-                  {model.downloaded ? (
-                    <>
-                      <X className="h-3.5 w-3.5" /> Remove
-                    </>
-                  ) : (
-                    <>
-                      <Download className="h-3.5 w-3.5" /> Download
-                    </>
-                  )}
-                </Button>
-
-                <Button
-                  size="sm"
-                  variant={settings.postProcessingLocalModelId === model.id ? 'secondary' : 'default'}
-                  disabled={!model.downloaded}
-                  onClick={() => {
-                    onSettingsChange({
-                      postProcessingRuntime: 'local',
-                      postProcessingLocalModelId: model.id,
-                    })
-                  }}
-                >
-                  <HardDrive className="h-3.5 w-3.5" />
-                  {settings.postProcessingLocalModelId === model.id ? 'Active' : 'Use local'}
-                </Button>
-              </CardFooter>
-            </Card>
+                />
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {model.downloading ? `Downloading ${model.progress}%` : model.downloaded ? 'Downloaded' : 'Not downloaded'}
+              </p>
+            </div>
           ))}
         </CardContent>
       </Card>
+        </>
+      ) : null}
     </div>
   )
 }
@@ -1087,16 +1103,16 @@ const AgentIdentitySection = ({ settings, onChange }: AgentIdentitySectionProps)
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-2">
-        <Input
-          value={settings.agentName}
-          onChange={(event) => {
-            onChange({ agentName: event.target.value })
-          }}
-          placeholder="ActionAgent"
-        />
-        <p className="text-xs text-muted-foreground">
-          Example trigger sentence: "{settings.agentName || 'ActionAgent'}, summarize this in bullets."
-        </p>
+          <Input
+            value={settings.agentName}
+            onChange={(event) => {
+              onChange({ agentName: event.target.value })
+            }}
+            placeholder="Agent"
+          />
+          <p className="text-xs text-muted-foreground">
+            Example trigger sentence: "{settings.agentName || 'Agent'}, summarize this in bullets."
+          </p>
       </CardContent>
     </Card>
   </div>
@@ -1163,7 +1179,7 @@ const PromptsSection = ({ settings, onChange }: PromptsSectionProps) => {
               <div className="rounded-md border border-border-subtle bg-surface-0 p-3">
                 <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Agent route</p>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Triggered when input includes: <span className="font-medium text-foreground">{settings.agentName || 'ActionAgent'}</span>
+                  Triggered when input includes: <span className="font-medium text-foreground">{settings.agentName || 'Agent'}</span>
                 </p>
                 <p className="mt-2 whitespace-pre-wrap text-sm text-foreground">{settings.agentPrompt}</p>
               </div>
@@ -1200,7 +1216,7 @@ const PromptsSection = ({ settings, onChange }: PromptsSectionProps) => {
                   onChange={(event) => {
                     setTestInput(event.target.value)
                   }}
-                  placeholder={`Try text with or without "${settings.agentName || 'ActionAgent'}".`}
+                  placeholder={`Try text with or without "${settings.agentName || 'Agent'}".`}
                 />
               </div>
               <div className="flex justify-end">
@@ -1263,8 +1279,26 @@ const ShortcutsSection = ({ hotkey }: { hotkey: string }) => (
   </div>
 )
 
-const InfoSection = () => (
+const InfoSection = ({ settings }: { settings: AppSettings }) => (
   <div className="space-y-4">
+    <Card>
+      <CardHeader>
+        <CardTitle>Runtime status</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-1 text-sm text-muted-foreground">
+        <p>
+          Transcription runtime: {settings.transcriptionRuntime === 'cloud' ? 'Cloud' : 'Local'}
+        </p>
+        <p>
+          Active transcription model:{' '}
+          {settings.transcriptionRuntime === 'cloud'
+            ? settings.transcriptionCloudModelId
+            : settings.transcriptionLocalModelId}
+        </p>
+        <p>Language: {settings.preferredLanguage}</p>
+      </CardContent>
+    </Card>
+
     <Card>
       <CardHeader>
         <CardTitle>Whispy Local</CardTitle>
@@ -1332,10 +1366,27 @@ const SettingsWorkspace = ({
     postProcessing: true,
   })
 
+  const activeTranscriptionModelId =
+    settings.transcriptionRuntime === 'cloud'
+      ? settings.transcriptionCloudModelId
+      : settings.transcriptionLocalModelId
+
+  const autoDetectSupported = AUTO_DETECT_SUPPORTED_TRANSCRIPTION_MODELS.has(activeTranscriptionModelId)
+
+  useEffect(() => {
+    if (autoDetectSupported || settings.preferredLanguage !== AUTO_DETECT_LANGUAGE) {
+      return
+    }
+
+    onSettingsChange({ preferredLanguage: 'English' })
+  }, [autoDetectSupported, onSettingsChange, settings.preferredLanguage])
+
   const currentRoot = activeNode.startsWith('general.')
     ? 'general'
-    : activeNode.startsWith('models.')
-      ? 'models'
+    : activeNode.startsWith('models.transcriptions.')
+      ? 'models.transcriptions'
+      : activeNode.startsWith('models.post.')
+        ? 'models.post'
       : activeNode === 'prompts'
         ? 'prompts'
         : activeNode.startsWith('agent.')
@@ -1343,7 +1394,12 @@ const SettingsWorkspace = ({
       : activeNode
 
   useEffect(() => {
-    if (currentRoot !== 'general' && currentRoot !== 'models' && currentRoot !== 'agent') {
+    if (
+      currentRoot !== 'general' &&
+      currentRoot !== 'models.transcriptions' &&
+      currentRoot !== 'models.post' &&
+      currentRoot !== 'agent'
+    ) {
       return
     }
 
@@ -1356,12 +1412,27 @@ const SettingsWorkspace = ({
 
   const renderContent = () => {
     if (currentRoot === 'general') {
-      return <SettingsSection settings={settings} onChange={onSettingsChange} />
+      return <SettingsSection settings={settings} autoDetectSupported={autoDetectSupported} onChange={onSettingsChange} />
     }
 
-    if (currentRoot === 'models') {
+    if (currentRoot === 'models.transcriptions') {
       return (
         <ModelsSection
+          scope="transcriptions"
+          settings={settings}
+          models={models}
+          postModels={postModels}
+          onSettingsChange={onSettingsChange}
+          onModelsChange={onModelsChange}
+          onPostModelsChange={onPostModelsChange}
+        />
+      )
+    }
+
+    if (currentRoot === 'models.post') {
+      return (
+        <ModelsSection
+          scope="post"
           settings={settings}
           models={models}
           postModels={postModels}
@@ -1384,7 +1455,7 @@ const SettingsWorkspace = ({
       return <ShortcutsSection hotkey={settings.hotkey} />
     }
 
-    return <InfoSection />
+    return <InfoSection settings={settings} />
   }
 
   const leafClass = (nodeId: SettingsNodeId) =>
@@ -1550,6 +1621,15 @@ const OnboardingWizard = ({ settings, models, onSettingsChange, onComplete }: On
   const [step, setStep] = useState(0)
   const [micPermission, setMicPermission] = useState(false)
   const [pastePermission, setPastePermission] = useState(false)
+  const onboardingAutoDetectSupported = AUTO_DETECT_SUPPORTED_TRANSCRIPTION_MODELS.has(settings.modelId)
+
+  useEffect(() => {
+    if (onboardingAutoDetectSupported || settings.preferredLanguage !== AUTO_DETECT_LANGUAGE) {
+      return
+    }
+
+    onSettingsChange({ preferredLanguage: 'English' })
+  }, [onSettingsChange, onboardingAutoDetectSupported, settings.preferredLanguage])
 
   const canProceed =
     step === 0
@@ -1632,12 +1712,21 @@ const OnboardingWizard = ({ settings, models, onSettingsChange, onComplete }: On
                     onSettingsChange({ preferredLanguage: event.target.value })
                   }}
                 >
-                  {LANGUAGES.map((language) => (
-                    <option key={language} value={language}>
+                  {TRANSCRIPTION_LANGUAGE_OPTIONS.map((language) => (
+                    <option
+                      key={language}
+                      value={language}
+                      disabled={language === AUTO_DETECT_LANGUAGE && !onboardingAutoDetectSupported}
+                    >
                       {language}
                     </option>
                   ))}
                 </select>
+                <p className="text-xs text-muted-foreground md:col-span-3">
+                  {onboardingAutoDetectSupported
+                    ? 'Auto-detect is available for this model.'
+                    : 'Auto-detect is not available for this model.'}
+                </p>
               </div>
             </div>
           ) : null}
@@ -1872,6 +1961,12 @@ const ControlPanelScene = () => {
     return null
   }
 
+  const conversationsCountLabel = historyLoading
+    ? '...'
+    : historyEntries.length > 999
+      ? '999+'
+      : String(historyEntries.length)
+
   return (
     <div className="flex h-screen flex-col bg-[radial-gradient(circle_at_top_right,rgba(99,102,241,0.16),transparent_42%),radial-gradient(circle_at_bottom_left,rgba(37,99,235,0.14),transparent_38%)] text-foreground">
       <header className="app-drag flex h-12 shrink-0 items-center justify-between border-b border-border-subtle bg-surface-1/90 px-4">
@@ -1883,7 +1978,21 @@ const ControlPanelScene = () => {
           </div>
           <div className="ml-3 flex items-center gap-2 text-sm font-medium text-muted-foreground">
             <Sparkles className="h-4 w-4 text-primary" />
-            Whispy Local Control Panel
+            <span>Whispy Local Control Panel</span>
+            <button
+              type="button"
+              className={cn(
+                'app-no-drag inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors',
+                section === 'settings'
+                  ? 'bg-primary/15 text-primary ring-1 ring-primary/25'
+                  : 'text-muted-foreground hover:bg-surface-2 hover:text-foreground',
+              )}
+              onClick={() => {
+                setSection((current) => (current === 'settings' ? 'conversations' : 'settings'))
+              }}
+            >
+              <Settings className="h-4 w-4" />
+            </button>
           </div>
         </div>
 
@@ -1913,84 +2022,39 @@ const ControlPanelScene = () => {
         </div>
       </header>
 
-      <div className="flex min-h-0 flex-1">
-        <aside className="w-60 shrink-0 border-r border-border-subtle bg-surface-1/70 p-3">
-          <nav className="space-y-1.5">
-            <p className="px-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">Menu</p>
-            {sectionItems.map((item) => {
-              const Icon = item.icon
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => {
-                    setSection(item.id)
-                  }}
-                  className={cn(
-                    'app-no-drag flex h-10 w-full items-center gap-2 rounded-[var(--radius-premium)] px-3 text-sm transition-colors',
-                    section === item.id
-                      ? 'bg-primary/15 text-primary ring-1 ring-primary/25'
-                      : 'text-muted-foreground hover:bg-surface-2 hover:text-foreground',
-                  )}
-                >
-                  <Icon className="h-4 w-4" />
-                  {t(item.labelKey)}
-                </button>
-              )
-            })}
-          </nav>
-
-          <div className="mt-6 rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 p-3 text-xs text-muted-foreground">
-            <p className="font-medium text-foreground">Local status</p>
-            <p className="mt-1">
-              Transcription runtime: {settings.transcriptionRuntime === 'cloud' ? 'Cloud' : 'Local'}
-            </p>
-            <p>
-              Active transcription model:{' '}
-              {settings.transcriptionRuntime === 'cloud'
-                ? settings.transcriptionCloudModelId
-                : settings.transcriptionLocalModelId}
-            </p>
-            <p>Language: {settings.preferredLanguage}</p>
-          </div>
-        </aside>
-
-        <main className="min-h-0 flex-1 overflow-y-auto p-6">
-          {!onboardingDone ? (
-            <OnboardingWizard
-              settings={settings}
-              models={models}
-              onSettingsChange={handleSettingsChange}
-              onComplete={() => {
-                setOnboardingCompleted(true)
-                setOnboardingDone(true)
-                pushToast({
-                  title: 'Onboarding completed',
-                  description: 'Your configuration is ready.',
-                  variant: 'success',
-                })
-              }}
-            />
-          ) : (
-            <div className="mx-auto max-w-5xl space-y-4">
-              <div className="flex items-center justify-between gap-2">
-                <div>
-                  <h1 className="text-lg font-semibold">{t(sectionItems.find((item) => item.id === section)?.labelKey ?? '')}</h1>
-                  <p className="text-sm text-muted-foreground">
-                    Local-first interface ready for real IPC and services.
-                  </p>
-                </div>
-
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <Bell className="h-3.5 w-3.5" />
-                  Mock runtime active
-                </div>
+      <main className="min-h-0 flex-1 overflow-y-auto p-6">
+        {!onboardingDone ? (
+          <OnboardingWizard
+            settings={settings}
+            models={models}
+            onSettingsChange={handleSettingsChange}
+            onComplete={() => {
+              setOnboardingCompleted(true)
+              setOnboardingDone(true)
+              pushToast({
+                title: 'Onboarding completed',
+                description: 'Your configuration is ready.',
+                variant: 'success',
+              })
+            }}
+          />
+        ) : (
+          <div className="mx-auto max-w-5xl space-y-4">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <h1 className="text-lg font-semibold">{section === 'conversations' ? t('menuConversations') : t('menuSettings')}</h1>
+                {section === 'conversations' ? (
+                  <span className="inline-flex min-w-6 items-center justify-center rounded-full border border-primary/30 bg-primary/15 px-1.5 text-[11px] font-semibold text-primary">
+                    {conversationsCountLabel}
+                  </span>
+                ) : null}
               </div>
-              {renderSection()}
+              <p className="text-sm text-muted-foreground">Local-first interface ready for real IPC and services.</p>
             </div>
-          )}
-        </main>
-      </div>
+            {renderSection()}
+          </div>
+        )}
+      </main>
     </div>
   )
 }

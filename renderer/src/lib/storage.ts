@@ -15,10 +15,16 @@ const parseStorage = <T>(rawValue: string | null, fallback: T) => {
 
 export const loadSettings = (): AppSettings => {
   const parsed = parseStorage<Partial<AppSettings>>(localStorage.getItem(STORAGE_KEYS.settings), {})
-  return {
+  const mergedSettings: AppSettings = {
     ...DEFAULT_SETTINGS,
     ...parsed,
   }
+
+  if (!mergedSettings.agentName || mergedSettings.agentName === 'ActionAgent') {
+    mergedSettings.agentName = 'Agent'
+  }
+
+  return mergedSettings
 }
 
 export const saveSettings = (settings: AppSettings) => {

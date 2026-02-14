@@ -535,6 +535,7 @@ const SettingsSection = ({ settings, autoDetectSupported, onChange }: SettingsSe
 
 interface ModelsSectionProps {
   scope: 'transcriptions' | 'post'
+  mode: 'cloud' | 'local'
   settings: AppSettings
   models: ModelState[]
   postModels: ModelState[]
@@ -561,6 +562,7 @@ const renderProviderIcon = (providerId: string) => {
 
 const ModelsSection = ({
   scope,
+  mode,
   settings,
   models,
   postModels,
@@ -676,9 +678,8 @@ const ModelsSection = ({
 
   return (
     <div className="space-y-5">
-      {scope === 'transcriptions' ? (
-        <>
-      <Card id="settings-node-models.transcriptions.cloud" className="scroll-mt-6">
+      {scope === 'transcriptions' && mode === 'cloud' ? (
+        <Card id="settings-node-models.transcriptions.cloud" className="scroll-mt-6">
         <CardHeader>
           <CardTitle>Transcriptions | Cloud</CardTitle>
           <CardDescription>
@@ -788,7 +789,9 @@ const ModelsSection = ({
           </div>
         </CardContent>
       </Card>
+      ) : null}
 
+      {scope === 'transcriptions' && mode === 'local' ? (
       <Card id="settings-node-models.transcriptions.local" className="scroll-mt-6">
         <CardHeader>
           <CardTitle>Transcriptions | Local</CardTitle>
@@ -879,11 +882,9 @@ const ModelsSection = ({
           ))}
         </CardContent>
       </Card>
-        </>
       ) : null}
 
-      {scope === 'post' ? (
-        <>
+      {scope === 'post' && mode === 'cloud' ? (
       <Card id="settings-node-models.post.cloud" className="scroll-mt-6">
         <CardHeader>
           <CardTitle>Post-processing | Cloud</CardTitle>
@@ -994,7 +995,9 @@ const ModelsSection = ({
           </div>
         </CardContent>
       </Card>
+      ) : null}
 
+      {scope === 'post' && mode === 'local' ? (
       <Card id="settings-node-models.post.local" className="scroll-mt-6">
         <CardHeader>
           <CardTitle>Post-processing | Local</CardTitle>
@@ -1082,7 +1085,6 @@ const ModelsSection = ({
           ))}
         </CardContent>
       </Card>
-        </>
       ) : null}
     </div>
   )
@@ -1419,6 +1421,7 @@ const SettingsWorkspace = ({
       return (
         <ModelsSection
           scope="transcriptions"
+          mode={activeNode.endsWith('.cloud') ? 'cloud' : 'local'}
           settings={settings}
           models={models}
           postModels={postModels}
@@ -1433,6 +1436,7 @@ const SettingsWorkspace = ({
       return (
         <ModelsSection
           scope="post"
+          mode={activeNode.endsWith('.cloud') ? 'cloud' : 'local'}
           settings={settings}
           models={models}
           postModels={postModels}

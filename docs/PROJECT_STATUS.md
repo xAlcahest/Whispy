@@ -8,6 +8,7 @@ This file tracks implemented UI status and near-term gaps. Full behavioral detai
 - External links are forced to open in the user browser (no in-app Electron popup browsing).
 - Overlay dictation UX with mock lifecycle states, context menu, cancel action, dynamic interactivity, and optional auto-hide.
 - Control panel onboarding + post-onboarding workspace with Conversations and Settings.
+- Custom traffic-light window controls are wired (quit app, minimize window, maximize/unmaximize).
 - Settings redesigned into grouped left sidebar with fixed-left navigation and internal panel scrolling.
 - Responsive model UX updates in both Speech and Post-Processing:
   - Provider selectors in responsive grid layout.
@@ -31,6 +32,11 @@ This file tracks implemented UI status and near-term gaps. Full behavioral detai
 - Provider API key UX updates:
   - Non-custom providers show API key docs links for key creation.
   - Custom providers support model endpoint scanning with explicit error handling when endpoint is unavailable.
+- Conversations UX updates:
+  - Provider filter options are dynamic from stored entries.
+  - Search input removed from history toolbar.
+  - `Clear history` moved near Conversations header badge.
+  - Conversation cards compacted for denser display.
 
 ## Known Gaps / Risks
 
@@ -40,6 +46,7 @@ This file tracks implemented UI status and near-term gaps. Full behavioral detai
 - Cross-window state sync still uses storage events heavily.
 - Onboarding still contains legacy fields (`provider`, `modelId`) alongside newer split runtime settings.
 - i18n remains effectively English-only.
+- Conversation history still relies on localStorage; expected target is SQLite file storage for Conversation data.
 
 ## Next Candidate Work
 
@@ -49,3 +56,4 @@ This file tracks implemented UI status and near-term gaps. Full behavioral detai
 - Add schema/validation for custom provider endpoints and richer scanner diagnostics (auth/network/rate-limit distinctions).
 - Add import/export for settings/prompts/history.
 - Expand localization coverage beyond English.
+- Move Conversation persistence/querying to SQLite file backend and wire the UI list directly to that source.

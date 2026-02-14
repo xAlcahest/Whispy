@@ -13,6 +13,10 @@ This document tracks what is currently implemented in the frontend codebase.
 - External links are forced to open in the OS browser:
   - `openExternal` IPC path is validated (`http/https`) and routed through `shell.openExternal`.
   - `setWindowOpenHandler` denies Electron popups and redirects links externally.
+- Control panel custom traffic-light controls are wired to native window actions:
+  - Red: app quit (`app.exit(0)`) for full process shutdown.
+  - Yellow: minimize/iconize current control window.
+  - Green: maximize/unmaximize toggle (no fullscreen fallback).
 
 ## 2) Main UI flows
 
@@ -155,7 +159,9 @@ Important current storage behavior:
 
 ## 10) Conversations, i18n, and known risks
 
-- Conversations/history supports search, filters, copy, delete, clear-all, and header count badge.
+- Conversations/history supports provider/language/date filters, copy, delete, clear-all, and header count badge.
+- The search field was removed from the conversation filter strip; clear history is exposed near the Conversations title/badge.
+- Conversation cards are intentionally more compact (reduced paddings/metadata/action sizing) to improve density.
 - i18n scaffolding is present; language options remain effectively English-only today.
 
 Current known risks / TODOs:
@@ -165,6 +171,7 @@ Current known risks / TODOs:
 - Cross-window sync still relies heavily on storage events.
 - Legacy onboarding fields (`provider`, `modelId`) still coexist with newer split settings.
 - Cloud provider catalogs are still frontend static for non-custom providers (custom endpoint scan exists; full backend discovery is pending).
+- Conversation entries are still persisted in localStorage today; target architecture is SQLite-file-backed conversation storage.
 
 ## 11) Where in code
 

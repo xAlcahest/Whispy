@@ -22,6 +22,9 @@ const listen = <T>(channel: string, callback: (payload: T) => void) => {
 const electronAPI: ElectronAPI = {
   showDictationPanel: () => ipcRenderer.invoke(IPCChannels.showDictationPanel),
   hideWindow: () => ipcRenderer.invoke(IPCChannels.hideWindow),
+  closeWindow: () => ipcRenderer.invoke(IPCChannels.closeWindow),
+  minimizeWindow: () => ipcRenderer.invoke(IPCChannels.minimizeWindow),
+  toggleMaximizeWindow: () => ipcRenderer.invoke(IPCChannels.toggleMaximizeWindow),
   resizeMainWindow: (sizeKey: OverlaySizeKey) => ipcRenderer.invoke(IPCChannels.resizeMainWindow, sizeKey),
   setMainWindowInteractivity: (shouldCapture: boolean) =>
     ipcRenderer.invoke(IPCChannels.setMainWindowInteractivity, shouldCapture),

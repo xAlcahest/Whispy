@@ -67,8 +67,68 @@ const openExternalInBrowser = (targetURL: string) => {
   } catch {}
 }
 
+const resolveActionWindow = (sourceWebContents?: Electron.WebContents | null) => {
+  if (controlPanelWindow && !controlPanelWindow.isDestroyed()) {
+    return controlPanelWindow
+  }
+
+  if (sourceWebContents) {
+    const senderWindow = BrowserWindow.fromWebContents(sourceWebContents)
+    if (senderWindow && !senderWindow.isDestroyed()) {
+      return senderWindow
+    }
+  }
+
+  return BrowserWindow.getFocusedWindow() ?? overlayWindow
+}
+
+const runInternalWindowAction = (targetURL: string, sourceWebContents?: Electron.WebContents | null) => {
+  let parsedURL: URL
+  try {
+    parsedURL = new URL(targetURL)
+  } catch {
+    return false
+  }
+
+  if (parsedURL.protocol !== 'whispy-action:') {
+    return false
+  }
+
+  const actionKey = `${parsedURL.hostname}${parsedURL.pathname}`.replace(/\/+$/, '')
+
+  if (actionKey === 'app/quit' || actionKey === 'window/close') {
+    app.exit(0)
+    return true
+  }
+
+  const actionWindow = resolveActionWindow(sourceWebContents)
+  if (!actionWindow) {
+    return true
+  }
+
+  if (actionKey === 'window/minimize') {
+    actionWindow.minimize()
+    return true
+  }
+
+  if (actionKey === 'window/toggle-maximize') {
+    if (actionWindow.isMaximized()) {
+      actionWindow.unmaximize()
+    } else {
+      actionWindow.maximize()
+    }
+    return true
+  }
+
+  return true
+}
+
 const forceExternalLinksToBrowser = (window: BrowserWindow) => {
   window.webContents.setWindowOpenHandler(({ url }) => {
+    if (runInternalWindowAction(url, window.webContents)) {
+      return { action: 'deny' }
+    }
+
     openExternalInBrowser(url)
     return { action: 'deny' }
   })
@@ -124,6 +184,9 @@ const createControlPanelWindow = async () => {
     height: 800,
     minWidth: 960,
     minHeight: 660,
+    minimizable: true,
+    maximizable: true,
+    closable: true,
     frame: false,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : undefined,
     backgroundColor: '#0f1117',
@@ -179,8 +242,31 @@ const registerIPC = () => {
   })
 
   ipcMain.handle(IPCChannels.hideWindow, (event) => {
-    const senderWindow = BrowserWindow.fromWebContents(event.sender)
-    senderWindow?.hide()
+    const actionWindow = resolveActionWindow(event.sender)
+    actionWindow?.hide()
+  })
+
+  ipcMain.handle(IPCChannels.closeWindow, () => {
+    app.exit(0)
+  })
+
+  ipcMain.handle(IPCChannels.minimizeWindow, (event) => {
+    const actionWindow = resolveActionWindow(event.sender)
+    actionWindow?.minimize()
+  })
+
+  ipcMain.handle(IPCChannels.toggleMaximizeWindow, (event) => {
+    const actionWindow = resolveActionWindow(event.sender)
+    if (!actionWindow) {
+      return
+    }
+
+    if (actionWindow.isMaximized()) {
+      actionWindow.unmaximize()
+      return
+    }
+
+    actionWindow.maximize()
   })
 
   ipcMain.handle(IPCChannels.resizeMainWindow, (_event, sizeKey: OverlaySizeKey) => {
@@ -199,7 +285,11 @@ const registerIPC = () => {
     await ensureControlPanelWindow()
   })
 
-  ipcMain.handle(IPCChannels.openExternal, (_event, targetURL: string) => {
+  ipcMain.handle(IPCChannels.openExternal, (event, targetURL: string) => {
+    if (runInternalWindowAction(targetURL, event.sender)) {
+      return
+    }
+
     openExternalInBrowser(targetURL)
   })
 

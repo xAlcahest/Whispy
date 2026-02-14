@@ -3,12 +3,43 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Dropdown } from '../components/ui/dropdown'
 import { emitAppNotification } from '../lib/app-notifications'
 import { cn } from '../lib/cn'
-import { STORAGE_KEYS } from '../lib/constants'
+import { CLOUD_TRANSCRIPTION_CATALOG, MODEL_PRESETS, STORAGE_KEYS } from '../lib/constants'
 import { electronAPI } from '../lib/electron-api'
 import { appendHistoryEntry, loadSettings } from '../lib/storage'
 import { fakeTranscriptionService } from '../services/fakeTranscriptionService'
-import type { DictationStatus } from '../types/app'
+import type { AppSettings, DictationStatus } from '../types/app'
 import type { OverlaySizeKey } from '../../../shared/ipc'
+
+const resolveTranscriptionProviderLabel = (settings: AppSettings) => {
+  if (settings.transcriptionRuntime === 'local') {
+    return 'Local (On-device)'
+  }
+
+  return (
+    CLOUD_TRANSCRIPTION_CATALOG.find((provider) => provider.providerId === settings.transcriptionCloudProvider)
+      ?.providerLabel ?? settings.transcriptionCloudProvider
+  )
+}
+
+const resolveTranscriptionModelLabel = (settings: AppSettings) => {
+  if (settings.transcriptionRuntime === 'local') {
+    return (
+      MODEL_PRESETS.find((model) => model.id === settings.transcriptionLocalModelId)?.label ??
+      settings.transcriptionLocalModelId
+    )
+  }
+
+  if (settings.transcriptionCloudProvider === 'custom') {
+    return settings.transcriptionCustomModel.trim() || settings.transcriptionCloudModelId || 'custom-stt-model'
+  }
+
+  const selectedProvider = CLOUD_TRANSCRIPTION_CATALOG.find(
+    (provider) => provider.providerId === settings.transcriptionCloudProvider,
+  )
+
+  const selectedModelId = settings.transcriptionCloudModelId || selectedProvider?.models[0]?.id || ''
+  return selectedProvider?.models.find((model) => model.id === selectedModelId)?.label ?? selectedModelId
+}
 
 const OverlayScene = () => {
   const [status, setStatus] = useState<DictationStatus>(fakeTranscriptionService.getStatus())
@@ -29,12 +60,14 @@ const OverlayScene = () => {
   useEffect(() => {
     return fakeTranscriptionService.subscribeResult(async (result) => {
       const nextSettings = loadSettings()
+      const resolvedLanguage =
+        nextSettings.preferredLanguage === 'Auto-detect' ? result.language : nextSettings.preferredLanguage
       const historyEntry = {
         id: crypto.randomUUID(),
         timestamp: Date.now(),
-        language: result.language,
-        provider: result.provider,
-        model: result.model,
+        language: resolvedLanguage,
+        provider: resolveTranscriptionProviderLabel(nextSettings),
+        model: resolveTranscriptionModelLabel(nextSettings),
         targetApp: result.targetApp,
         text: result.text,
       }

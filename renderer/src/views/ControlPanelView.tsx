@@ -291,27 +291,31 @@ const HotkeyInput = ({ value, onChange }: HotkeyInputProps) => {
 interface HistorySectionProps {
   entries: HistoryEntry[]
   loading: boolean
+  clearConfirmOpen: boolean
+  onClearConfirmOpenChange: (open: boolean) => void
   onCopy: (text: string) => void
   onDelete: (id: string) => void
   onClear: () => void
 }
 
-const HistorySection = ({ entries, loading, onCopy, onDelete, onClear }: HistorySectionProps) => {
-  const [query, setQuery] = useState('')
+const HistorySection = ({
+  entries,
+  loading,
+  clearConfirmOpen,
+  onClearConfirmOpenChange,
+  onCopy,
+  onDelete,
+  onClear,
+}: HistorySectionProps) => {
   const [languageFilter, setLanguageFilter] = useState('all')
   const [providerFilter, setProviderFilter] = useState('all')
   const [dateFilter, setDateFilter] = useState<'all' | 'today' | '7d' | '30d'>('all')
   const [expandedEntries, setExpandedEntries] = useState<Record<string, boolean>>({})
-  const [confirmOpen, setConfirmOpen] = useState(false)
 
   const filteredEntries = useMemo(() => {
     const now = Date.now()
 
     return entries.filter((entry) => {
-      if (query.trim() && !entry.text.toLowerCase().includes(query.toLowerCase())) {
-        return false
-      }
-
       if (languageFilter !== 'all' && entry.language !== languageFilter) {
         return false
       }
@@ -336,7 +340,19 @@ const HistorySection = ({ entries, loading, onCopy, onDelete, onClear }: History
 
       return true
     })
-  }, [dateFilter, entries, languageFilter, providerFilter, query])
+  }, [dateFilter, entries, languageFilter, providerFilter])
+
+  const providerOptions = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          entries
+            .map((entry) => entry.provider.trim())
+            .filter((provider): provider is string => provider.length > 0),
+        ),
+      ).sort((a, b) => a.localeCompare(b)),
+    [entries],
+  )
 
   if (loading) {
     return (
@@ -351,18 +367,7 @@ const HistorySection = ({ entries, loading, onCopy, onDelete, onClear }: History
   return (
     <div className="space-y-4">
       <Card>
-        <CardContent className="grid gap-3 pt-5 md:grid-cols-[1fr_auto_auto_auto_auto]">
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-            <Input
-              className="pl-8"
-              placeholder="Search transcriptions..."
-              value={query}
-              onChange={(event) => {
-                setQuery(event.target.value)
-              }}
-            />
-          </div>
+        <CardContent className="grid gap-2 pt-4 sm:grid-cols-3">
 
           <select
             className="app-no-drag h-9 rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 px-2.5 text-sm"
@@ -387,8 +392,11 @@ const HistorySection = ({ entries, loading, onCopy, onDelete, onClear }: History
             }}
           >
             <option value="all">Provider: all</option>
-            <option value="Whisper">Whisper</option>
-            <option value="Parakeet">Parakeet</option>
+            {providerOptions.map((provider) => (
+              <option key={provider} value={provider}>
+                {provider}
+              </option>
+            ))}
           </select>
 
           <select
@@ -403,16 +411,6 @@ const HistorySection = ({ entries, loading, onCopy, onDelete, onClear }: History
             <option value="7d">Last 7 days</option>
             <option value="30d">Last 30 days</option>
           </select>
-
-          <Button
-            variant="destructive"
-            onClick={() => {
-              setConfirmOpen(true)
-            }}
-            disabled={entries.length === 0}
-          >
-            Clear history
-          </Button>
         </CardContent>
       </Card>
 
@@ -433,11 +431,11 @@ const HistorySection = ({ entries, loading, onCopy, onDelete, onClear }: History
 
           return (
             <Card key={entry.id}>
-              <CardHeader className="pb-3">
+              <CardHeader className="px-4 py-3 pb-2">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="space-y-1">
-                    <CardTitle className="text-sm">{formatTimestamp(entry.timestamp)}</CardTitle>
-                    <CardDescription>
+                  <div className="space-y-0.5">
+                    <CardTitle className="text-xs">{formatTimestamp(entry.timestamp)}</CardTitle>
+                    <CardDescription className="text-xs">
                       {entry.language} | {entry.provider}/{entry.model} | {entry.targetApp}
                     </CardDescription>
                   </div>
@@ -445,6 +443,7 @@ const HistorySection = ({ entries, loading, onCopy, onDelete, onClear }: History
                     <Button
                       variant="outline"
                       size="sm"
+                      className="h-8 px-2.5"
                       onClick={() => {
                         onCopy(entry.text)
                       }}
@@ -455,6 +454,7 @@ const HistorySection = ({ entries, loading, onCopy, onDelete, onClear }: History
                     <Button
                       variant="ghost"
                       size="sm"
+                      className="h-8 px-2.5"
                       onClick={() => {
                         onDelete(entry.id)
                       }}
@@ -465,10 +465,10 @@ const HistorySection = ({ entries, loading, onCopy, onDelete, onClear }: History
                   </div>
                 </div>
               </CardHeader>
-              <CardContent>
+              <CardContent className="px-4 pt-0 pb-3">
                 <p
                   className={cn(
-                    'whitespace-pre-wrap text-sm text-muted-foreground',
+                    'whitespace-pre-wrap text-[13px] leading-5 text-muted-foreground',
                     expanded ? undefined : 'line-clamp-2',
                   )}
                 >
@@ -482,7 +482,7 @@ const HistorySection = ({ entries, loading, onCopy, onDelete, onClear }: History
                       [entry.id]: !expanded,
                     }))
                   }}
-                  className="app-no-drag mt-2 text-xs font-medium text-primary hover:text-primary/80"
+                  className="app-no-drag mt-1.5 text-xs font-medium text-primary hover:text-primary/80"
                 >
                   {expanded ? 'Collapse' : 'Expand'}
                 </button>
@@ -493,9 +493,9 @@ const HistorySection = ({ entries, loading, onCopy, onDelete, onClear }: History
       )}
 
       <Dialog
-        open={confirmOpen}
+        open={clearConfirmOpen}
         onOpenChange={(open) => {
-          setConfirmOpen(open)
+          onClearConfirmOpenChange(open)
         }}
       >
         <DialogContent>
@@ -509,7 +509,7 @@ const HistorySection = ({ entries, loading, onCopy, onDelete, onClear }: History
             <Button
               variant="ghost"
               onClick={() => {
-                setConfirmOpen(false)
+                onClearConfirmOpenChange(false)
               }}
             >
               Cancel
@@ -518,7 +518,7 @@ const HistorySection = ({ entries, loading, onCopy, onDelete, onClear }: History
               variant="destructive"
               onClick={() => {
                 onClear()
-                setConfirmOpen(false)
+                onClearConfirmOpenChange(false)
               }}
             >
               Clear
@@ -2875,6 +2875,7 @@ const ControlPanelScene = () => {
   const [postModels, setPostModels] = useState<ModelState[]>(loadPostModelState)
   const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([])
   const [historyLoading, setHistoryLoading] = useState(true)
+  const [historyClearConfirmOpen, setHistoryClearConfirmOpen] = useState(false)
   const [onboardingDone, setOnboardingDone] = useState(isOnboardingCompleted)
   const [displayServer, setDisplayServer] = useState<DisplayServer>('unknown')
 
@@ -2999,6 +3000,8 @@ const ControlPanelScene = () => {
         <HistorySection
           entries={historyEntries}
           loading={historyLoading}
+          clearConfirmOpen={historyClearConfirmOpen}
+          onClearConfirmOpenChange={setHistoryClearConfirmOpen}
           onCopy={async (text) => {
             try {
               await navigator.clipboard.writeText(text)
@@ -3021,6 +3024,7 @@ const ControlPanelScene = () => {
           onClear={() => {
             clearHistory()
             setHistoryEntries([])
+            setHistoryClearConfirmOpen(false)
             pushToast({
               title: 'Conversations removed',
             })
@@ -3046,6 +3050,70 @@ const ControlPanelScene = () => {
     return null
   }
 
+  const handleWindowControl = async (controlId: 'close' | 'minimize' | 'zoom') => {
+    const tryInvoke = async (callback: () => Promise<void>) => {
+      try {
+        await callback()
+        return true
+      } catch {
+        return false
+      }
+    }
+
+    const requestInternalAction = async (actionURL: string) => {
+      const dispatchedViaBridge = await tryInvoke(() => electronAPI.openExternal(actionURL))
+      if (dispatchedViaBridge) {
+        return true
+      }
+
+      try {
+        window.open(actionURL, '_blank', 'noopener,noreferrer')
+        return true
+      } catch {
+        return false
+      }
+    }
+
+    try {
+      if (controlId === 'close') {
+        const requestedQuit = await requestInternalAction('whispy-action://app/quit')
+        if (!requestedQuit) {
+          const closed = await tryInvoke(() => electronAPI.closeWindow())
+          if (!closed) {
+            await tryInvoke(() => electronAPI.hideWindow())
+            window.close()
+          }
+        }
+        return
+      }
+
+      if (controlId === 'minimize') {
+        const requestedMinimize = await requestInternalAction('whispy-action://window/minimize')
+        if (!requestedMinimize) {
+          const minimized = await tryInvoke(() => electronAPI.minimizeWindow())
+          if (!minimized) {
+            throw new Error('minimize_unavailable')
+          }
+        }
+        return
+      }
+
+      const requestedToggle = await requestInternalAction('whispy-action://window/toggle-maximize')
+      if (!requestedToggle) {
+        const toggled = await tryInvoke(() => electronAPI.toggleMaximizeWindow())
+        if (!toggled) {
+          throw new Error('maximize_unavailable')
+        }
+      }
+    } catch {
+      pushToast({
+        title: 'Window control unavailable',
+        description: 'Native window actions are not available in this runtime.',
+        variant: 'destructive',
+      })
+    }
+  }
+
   const conversationsCountLabel = historyLoading
     ? '...'
     : historyEntries.length > 999
@@ -3054,49 +3122,66 @@ const ControlPanelScene = () => {
 
   return (
     <div className="flex h-screen flex-col bg-[radial-gradient(circle_at_top_right,rgba(99,102,241,0.16),transparent_42%),radial-gradient(circle_at_bottom_left,rgba(37,99,235,0.14),transparent_38%)] text-foreground">
-      <header className="app-drag flex h-12 shrink-0 items-center justify-between border-b border-border-subtle bg-surface-1/90 px-4">
-        <div className="flex items-center gap-2">
-          <div className="group app-no-drag flex items-center gap-1.5 pl-1">
-            {[
+      <header className="flex h-12 shrink-0 items-center border-b border-border-subtle bg-surface-1/90 px-4">
+        <div className="app-no-drag group flex items-center gap-1.5 pl-1">
+            {([
               { id: 'close', color: '#ff5f57', icon: X },
               { id: 'minimize', color: '#febc2e', icon: Minus },
               { id: 'zoom', color: '#28c840', icon: Plus },
-            ].map((control) => {
+            ] as const).map((control) => {
               const Icon = control.icon
               return (
                 <button
                   key={control.id}
                   type="button"
                   aria-label={control.id}
-                  className="relative h-3 w-3 rounded-full border border-black/15 transition-transform duration-150 hover:scale-105"
-                  style={{ backgroundColor: control.color }}
+                  className="app-no-drag inline-flex h-5 w-5 cursor-pointer items-center justify-center rounded-full transition-transform duration-150 hover:scale-105"
+                  onPointerDown={(event) => {
+                    if (event.button !== 0) {
+                      return
+                    }
+
+                    event.preventDefault()
+                    event.stopPropagation()
+                    void handleWindowControl(control.id)
+                  }}
+                  onClick={(event) => {
+                    event.preventDefault()
+                    event.stopPropagation()
+                  }}
                 >
-                  <Icon className="pointer-events-none absolute inset-0 m-auto h-2.5 w-2.5 text-black/85 opacity-20 drop-shadow-[0_0.5px_0_rgba(255,255,255,0.35)] transition-opacity duration-150 group-hover:opacity-100" />
+                  <span
+                    className="relative inline-flex h-3 w-3 items-center justify-center rounded-full border border-black/15"
+                    style={{ backgroundColor: control.color }}
+                  >
+                    <Icon className="pointer-events-none absolute inset-0 m-auto h-2.5 w-2.5 text-black/85 opacity-20 drop-shadow-[0_0.5px_0_rgba(255,255,255,0.35)] transition-opacity duration-150 group-hover:opacity-100" />
+                  </span>
                 </button>
               )
             })}
-          </div>
-          <div className="ml-3 flex items-center gap-2 text-sm font-medium text-muted-foreground">
-            <Sparkles className="h-4 w-4 text-primary" />
-            <span>Whispy Local Control Panel</span>
-            <button
-              type="button"
-              className={cn(
-                'app-no-drag inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors',
-                section === 'settings'
-                  ? 'bg-primary/15 text-primary ring-1 ring-primary/25'
-                  : 'text-muted-foreground hover:bg-surface-2 hover:text-foreground',
-              )}
-              onClick={() => {
-                setSection((current) => (current === 'settings' ? 'conversations' : 'settings'))
-              }}
-            >
-              <Settings className="h-4 w-4" />
-            </button>
-          </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="app-drag ml-3 flex min-w-0 flex-1 items-center gap-2 text-sm font-medium text-muted-foreground">
+          <Sparkles className="h-4 w-4 text-primary" />
+          <span className="truncate">Whispy Local Control Panel</span>
+        </div>
+
+        <div className="app-no-drag flex items-center gap-2">
+          <button
+            type="button"
+            className={cn(
+              'app-no-drag inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors',
+              section === 'settings'
+                ? 'bg-primary/15 text-primary ring-1 ring-primary/25'
+                : 'text-muted-foreground hover:bg-surface-2 hover:text-foreground',
+            )}
+            onClick={() => {
+              setSection((current) => (current === 'settings' ? 'conversations' : 'settings'))
+            }}
+          >
+            <Settings className="h-4 w-4" />
+          </button>
+
           <Button
             variant="ghost"
             size="sm"
@@ -3157,6 +3242,19 @@ const ControlPanelScene = () => {
                   <span className="inline-flex min-w-6 items-center justify-center rounded-full border border-primary/30 bg-primary/15 px-1.5 text-[11px] font-semibold text-primary">
                     {conversationsCountLabel}
                   </span>
+                ) : null}
+                {section === 'conversations' ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      setHistoryClearConfirmOpen(true)
+                    }}
+                    disabled={historyEntries.length === 0}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    Clear history
+                  </Button>
                 ) : null}
               </div>
             </div>

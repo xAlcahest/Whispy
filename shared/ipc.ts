@@ -14,6 +14,9 @@ export interface HotkeyFallbackUsedPayload {
 export const IPCChannels = {
   showDictationPanel: 'ui:show-dictation-panel',
   hideWindow: 'ui:hide-window',
+  closeWindow: 'ui:close-window',
+  minimizeWindow: 'ui:minimize-window',
+  toggleMaximizeWindow: 'ui:toggle-maximize-window',
   resizeMainWindow: 'ui:resize-main-window',
   setMainWindowInteractivity: 'ui:set-main-window-interactivity',
   openControlPanel: 'ui:open-control-panel',

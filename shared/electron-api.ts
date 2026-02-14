@@ -8,6 +8,9 @@ import type {
 export interface ElectronAPI {
   showDictationPanel: () => Promise<void>
   hideWindow: () => Promise<void>
+  closeWindow: () => Promise<void>
+  minimizeWindow: () => Promise<void>
+  toggleMaximizeWindow: () => Promise<void>
   resizeMainWindow: (sizeKey: OverlaySizeKey) => Promise<void>
   setMainWindowInteractivity: (shouldCapture: boolean) => Promise<void>
   openControlPanel: () => Promise<void>

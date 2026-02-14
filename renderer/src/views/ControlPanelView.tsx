@@ -523,55 +523,17 @@ const TranslationModeSection = ({ settings, onChange }: TranslationModeSectionPr
   )
 }
 
-const AccountSettingsPanel = ({ settings, onChange }: Pick<SettingsSectionProps, 'settings' | 'onChange'>) => (
+const AccountSettingsPanel = () => (
   <div className="space-y-4">
     <Card>
       <CardHeader>
         <CardTitle>Account</CardTitle>
-        <CardDescription>Local profile and primary activation controls.</CardDescription>
+        <CardDescription>Account management panel is not available yet.</CardDescription>
       </CardHeader>
-      <CardContent className="space-y-2 text-sm text-muted-foreground">
-        <p>Profile type: Local user</p>
-        <p>Agent identity: {settings.agentName || 'Agent'}</p>
-      </CardContent>
-    </Card>
-
-    <Card>
-      <CardHeader>
-        <CardTitle>Activation</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="space-y-2">
-          <p className="text-sm font-medium">Hotkey</p>
-          <HotkeyInput
-            value={settings.hotkey}
-            onChange={(hotkey) => {
-              onChange({ hotkey })
-            }}
-          />
+      <CardContent>
+        <div className="rounded-[var(--radius-premium)] border border-primary/35 bg-primary/10 px-4 py-5 text-center">
+          <p className="text-lg font-semibold tracking-wide text-primary">COMING SOON!</p>
         </div>
-
-        <Tabs
-          value={settings.activationMode}
-          onValueChange={(value) => {
-            onChange({ activationMode: value as AppSettings['activationMode'] })
-          }}
-        >
-          <TabsList>
-            <TabsTrigger value="tap">Tap to talk</TabsTrigger>
-            <TabsTrigger value="hold">Hold to talk</TabsTrigger>
-          </TabsList>
-          <TabsContent value="tap">
-            <p className="rounded-md border border-border-subtle bg-surface-0 p-3 text-sm text-muted-foreground">
-              Press {settings.hotkey} to start and press again to stop.
-            </p>
-          </TabsContent>
-          <TabsContent value="hold">
-            <p className="rounded-md border border-border-subtle bg-surface-0 p-3 text-sm text-muted-foreground">
-              Hold {settings.hotkey} while speaking. Release to send.
-            </p>
-          </TabsContent>
-        </Tabs>
       </CardContent>
     </Card>
   </div>
@@ -624,6 +586,42 @@ const PreferencesSettingsPanel = ({
             </option>
           ))}
         </select>
+      </div>
+
+      <div className="space-y-3 rounded-md border border-border-subtle bg-surface-0 px-3 py-2.5">
+        <p className="text-sm font-medium">Activation</p>
+
+        <div className="space-y-2">
+          <p className="text-sm">Hotkey</p>
+          <HotkeyInput
+            value={settings.hotkey}
+            onChange={(hotkey) => {
+              onChange({ hotkey })
+            }}
+          />
+        </div>
+
+        <Tabs
+          value={settings.activationMode}
+          onValueChange={(value) => {
+            onChange({ activationMode: value as AppSettings['activationMode'] })
+          }}
+        >
+          <TabsList>
+            <TabsTrigger value="tap">Tap to talk</TabsTrigger>
+            <TabsTrigger value="hold">Hold to talk</TabsTrigger>
+          </TabsList>
+          <TabsContent value="tap">
+            <p className="rounded-md border border-border-subtle bg-surface-1 p-3 text-sm text-muted-foreground">
+              Press {settings.hotkey} to start and press again to stop.
+            </p>
+          </TabsContent>
+          <TabsContent value="hold">
+            <p className="rounded-md border border-border-subtle bg-surface-1 p-3 text-sm text-muted-foreground">
+              Hold {settings.hotkey} while speaking. Release to send.
+            </p>
+          </TabsContent>
+        </Tabs>
       </div>
 
       {[
@@ -1804,7 +1802,7 @@ const SettingsWorkspace = ({
 
   const renderContent = () => {
     if (activeNode === 'account') {
-      return <AccountSettingsPanel settings={settings} onChange={onSettingsChange} />
+      return <AccountSettingsPanel />
     }
 
     if (activeNode === 'preferences') {

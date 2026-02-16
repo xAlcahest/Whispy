@@ -4,7 +4,82 @@ import type { DisplayServer } from '../../../shared/ipc'
 const noopUnsubscribe = () => {}
 
 const fallbackElectronAPI: ElectronAPI = {
-  showDictationPanel: async () => {},
+  getBackendState: async () => null,
+  setBackendSettings: async () => {},
+  setBackendHistory: async () => {},
+  clearBackendHistory: async () => {},
+  setBackendModels: async () => {},
+  setBackendPostModels: async () => {},
+  setBackendOnboardingCompleted: async () => {},
+  scanCustomModels: async () => {
+    throw new Error('scanCustomModels unavailable outside Electron runtime')
+  },
+  runPromptTest: async () => {
+    throw new Error('runPromptTest unavailable outside Electron runtime')
+  },
+  downloadLocalModel: async () => {
+    throw new Error('downloadLocalModel unavailable outside Electron runtime')
+  },
+  cancelLocalModelDownload: async () => false,
+  removeLocalModel: async () => {
+    throw new Error('removeLocalModel unavailable outside Electron runtime')
+  },
+  getWhisperRuntimeStatus: async () => ({
+    cpuInstalled: false,
+    cudaInstalled: false,
+    activeVariant: 'cpu' as const,
+    runtimeDirectory: '',
+    downloadUrls: {
+      cpu: null,
+      cuda: null,
+    },
+  }),
+  getWhisperRuntimeDiagnostics: async () => ({
+    checkedAt: Date.now(),
+    selectedVariant: 'cpu' as const,
+    running: false,
+    healthy: false,
+    pid: null,
+    port: null,
+    activeVariant: null,
+    commandPath: null,
+    commandSource: null,
+    modelPath: null,
+    processRssMB: null,
+    nvidiaSmiAvailable: false,
+    cudaProcessDetected: false,
+    vramUsedMB: null,
+    notes: 'Runtime diagnostics unavailable outside Electron runtime.',
+  }),
+  downloadWhisperRuntime: async () => {
+    throw new Error('downloadWhisperRuntime unavailable outside Electron runtime')
+  },
+  removeWhisperRuntime: async () => {
+    throw new Error('removeWhisperRuntime unavailable outside Electron runtime')
+  },
+  getMicrophonePermissionStatus: async () => true,
+  requestMicrophonePermission: async () => true,
+  getAccessibilityPermissionStatus: async () => true,
+  requestAccessibilityPermission: async () => true,
+  getDictationStatus: async () => 'IDLE',
+  toggleDictation: async () => ({
+    accepted: false,
+    reason: 'processing',
+  }),
+  cancelDictation: async () => false,
+  performAutoPaste: async () => ({
+    success: false,
+    details: 'performAutoPaste unavailable outside Electron runtime',
+  }),
+  showDictationPanel: async () => {
+    if (typeof window === 'undefined') {
+      return
+    }
+
+    if (window.location.hash !== '#/overlay') {
+      window.location.hash = '/overlay'
+    }
+  },
   hideWindow: async () => {},
   closeWindow: async () => {
     throw new Error('closeWindow unavailable outside Electron runtime')
@@ -15,6 +90,20 @@ const fallbackElectronAPI: ElectronAPI = {
   toggleMaximizeWindow: async () => {
     throw new Error('toggleMaximizeWindow unavailable outside Electron runtime')
   },
+  getWindowMaximized: async () => false,
+  getAutoPasteBackendSupport: async () => {
+    throw new Error('getAutoPasteBackendSupport unavailable outside Electron runtime')
+  },
+  getSecretStorageStatus: async () => {
+    throw new Error('getSecretStorageStatus unavailable outside Electron runtime')
+  },
+  migrateSecretsToKeyring: async () => {
+    throw new Error('migrateSecretsToKeyring unavailable outside Electron runtime')
+  },
+  getDebugLogStatus: async () => {
+    throw new Error('getDebugLogStatus unavailable outside Electron runtime')
+  },
+  openDebugLogFile: async () => {},
   resizeMainWindow: async () => {},
   setMainWindowInteractivity: async () => {},
   openControlPanel: async () => {},
@@ -28,6 +117,12 @@ const fallbackElectronAPI: ElectronAPI = {
   },
   getDisplayServer: async () =>
     (navigator.userAgent.toLowerCase().includes('wayland') ? 'wayland' : 'unknown') as DisplayServer,
+  openAppDataDirectory: async () => {},
+  onWindowMaximizeChanged: () => noopUnsubscribe,
+  onDictationStatusChanged: () => noopUnsubscribe,
+  onDictationResult: () => noopUnsubscribe,
+  onDictationError: () => noopUnsubscribe,
+  onModelDownloadProgress: () => noopUnsubscribe,
   onFloatingIconAutoHideChanged: () => noopUnsubscribe,
   onHotkeyRegistrationFailed: () => noopUnsubscribe,
   onHotkeyFallbackUsed: () => noopUnsubscribe,

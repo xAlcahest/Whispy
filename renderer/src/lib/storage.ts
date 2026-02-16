@@ -1,5 +1,13 @@
-import { DEFAULT_SETTINGS, MODEL_PRESETS, POST_LOCAL_MODEL_PRESETS, STORAGE_KEYS } from './constants'
+import {
+  STORAGE_KEYS,
+  createDefaultModelState,
+  createDefaultPostModelState,
+  normalizeModelState,
+  normalizeSettings,
+} from './constants'
+import { electronAPI } from './electron-api'
 import type { AppSettings, HistoryEntry, ModelState } from '../types/app'
+import { SECRET_SETTING_KEYS, stripSecretsFromSettings } from '../../../shared/secrets'
 
 const parseStorage = <T>(rawValue: string | null, fallback: T) => {
   if (!rawValue) {
@@ -13,45 +21,132 @@ const parseStorage = <T>(rawValue: string | null, fallback: T) => {
   }
 }
 
+const isElectronRuntime = () => typeof window !== 'undefined' && typeof window.electronAPI !== 'undefined'
+
+let runtimeSettingsCache: AppSettings | null = null
+
+const persistSettingsLocally = (settings: AppSettings) => {
+  if (isElectronRuntime()) {
+    localStorage.setItem(STORAGE_KEYS.settings, JSON.stringify(stripSecretsFromSettings(settings)))
+    return
+  }
+
+  localStorage.setItem(STORAGE_KEYS.settings, JSON.stringify(settings))
+}
+
+const syncToBackend = (effect: () => Promise<void>) => {
+  if (!isElectronRuntime()) {
+    return
+  }
+
+  void effect().catch(() => {
+    // Keep local cache authoritative in fallback/error conditions.
+  })
+}
+
+const sortHistory = (entries: HistoryEntry[]) => {
+  return [...entries].sort((left, right) => right.timestamp - left.timestamp)
+}
+
+export const hydrateStorageFromBackend = async () => {
+  if (!isElectronRuntime()) {
+    return false
+  }
+
+  try {
+    const snapshot = await electronAPI.getBackendState()
+    if (!snapshot) {
+      const localSettings = loadSettings()
+      const localHistory = loadHistory()
+      const localModels = loadModelState()
+      const localPostModels = loadPostModelState()
+      const onboardingCompleted = isOnboardingCompleted()
+
+      runtimeSettingsCache = localSettings
+      persistSettingsLocally(localSettings)
+
+      await Promise.allSettled([
+        electronAPI.setBackendSettings(localSettings),
+        electronAPI.setBackendHistory(localHistory),
+        electronAPI.setBackendModels(localModels),
+        electronAPI.setBackendPostModels(localPostModels),
+        electronAPI.setBackendOnboardingCompleted(onboardingCompleted),
+      ])
+
+      return false
+    }
+
+    runtimeSettingsCache = snapshot.settings
+    persistSettingsLocally(snapshot.settings)
+    localStorage.setItem(STORAGE_KEYS.history, JSON.stringify(snapshot.history))
+    localStorage.setItem(STORAGE_KEYS.models, JSON.stringify(snapshot.models))
+    localStorage.setItem(STORAGE_KEYS.postModels, JSON.stringify(snapshot.postModels))
+    localStorage.setItem(STORAGE_KEYS.onboardingCompleted, String(snapshot.onboardingCompleted))
+    return true
+  } catch {
+    return false
+  }
+}
+
+export const refreshSettingsFromBackend = async (): Promise<AppSettings> => {
+  if (!isElectronRuntime()) {
+    return loadSettings()
+  }
+
+  try {
+    const snapshot = await electronAPI.getBackendState()
+    if (snapshot) {
+      runtimeSettingsCache = snapshot.settings
+      persistSettingsLocally(snapshot.settings)
+      return normalizeSettings(snapshot.settings)
+    }
+  } catch {
+    // Ignore backend refresh errors and fallback to local cache.
+  }
+
+  return loadSettings()
+}
+
 export const loadSettings = (): AppSettings => {
   const parsed = parseStorage<Partial<AppSettings>>(localStorage.getItem(STORAGE_KEYS.settings), {})
-  const mergedSettings: AppSettings = {
-    ...DEFAULT_SETTINGS,
+  const mergedWithRuntimeSecrets = {
     ...parsed,
   }
 
-  mergedSettings.autoPaste = true
-
-  if (!['wtype', 'xdotools', 'ydotools'].includes(mergedSettings.autoPasteBackend)) {
-    mergedSettings.autoPasteBackend = DEFAULT_SETTINGS.autoPasteBackend
+  if (isElectronRuntime() && runtimeSettingsCache) {
+    for (const key of SECRET_SETTING_KEYS) {
+      if (runtimeSettingsCache[key]) {
+        mergedWithRuntimeSecrets[key] = runtimeSettingsCache[key]
+      }
+    }
   }
 
-  if (typeof mergedSettings.microphoneAccess !== 'boolean') {
-    mergedSettings.microphoneAccess = DEFAULT_SETTINGS.microphoneAccess
+  const settings = normalizeSettings(mergedWithRuntimeSecrets)
+
+  if (isElectronRuntime()) {
+    runtimeSettingsCache = settings
   }
 
-  if (typeof mergedSettings.debugModeEnabled !== 'boolean') {
-    mergedSettings.debugModeEnabled = DEFAULT_SETTINGS.debugModeEnabled
-  }
-
-  if (!mergedSettings.agentName || mergedSettings.agentName === 'ActionAgent') {
-    mergedSettings.agentName = 'Agent'
-  }
-
-  return mergedSettings
+  return settings
 }
 
 export const saveSettings = (settings: AppSettings) => {
-  localStorage.setItem(STORAGE_KEYS.settings, JSON.stringify(settings))
+  const normalizedSettings = normalizeSettings(settings)
+
+  runtimeSettingsCache = normalizedSettings
+  persistSettingsLocally(normalizedSettings)
+  syncToBackend(() => electronAPI.setBackendSettings(normalizedSettings))
 }
 
 export const loadHistory = (): HistoryEntry[] => {
   const entries = parseStorage<HistoryEntry[]>(localStorage.getItem(STORAGE_KEYS.history), [])
-  return [...entries].sort((left, right) => right.timestamp - left.timestamp)
+  return sortHistory(entries)
 }
 
 export const saveHistory = (entries: HistoryEntry[]) => {
-  localStorage.setItem(STORAGE_KEYS.history, JSON.stringify(entries))
+  const sortedEntries = sortHistory(entries)
+  localStorage.setItem(STORAGE_KEYS.history, JSON.stringify(sortedEntries))
+  syncToBackend(() => electronAPI.setBackendHistory(sortedEntries))
 }
 
 export const appendHistoryEntry = (entry: HistoryEntry) => {
@@ -62,6 +157,7 @@ export const appendHistoryEntry = (entry: HistoryEntry) => {
 
 export const clearHistory = () => {
   localStorage.removeItem(STORAGE_KEYS.history)
+  syncToBackend(() => electronAPI.clearBackendHistory())
 }
 
 export const isOnboardingCompleted = () =>
@@ -69,44 +165,29 @@ export const isOnboardingCompleted = () =>
 
 export const setOnboardingCompleted = (value: boolean) => {
   localStorage.setItem(STORAGE_KEYS.onboardingCompleted, String(value))
+  syncToBackend(() => electronAPI.setBackendOnboardingCompleted(value))
 }
 
 export const loadModelState = (): ModelState[] => {
-  const fallback: ModelState[] = MODEL_PRESETS.map((model) => ({
-    ...model,
-    downloaded: model.id === 'small',
-    downloading: false,
-    progress: model.id === 'small' ? 100 : 0,
-  }))
+  const fallback = createDefaultModelState()
 
   const parsed = parseStorage<ModelState[]>(localStorage.getItem(STORAGE_KEYS.models), fallback)
-  return parsed.map((model) => ({
-    ...model,
-    downloading: false,
-    progress: model.downloaded ? 100 : model.progress,
-  }))
+  return normalizeModelState(parsed, fallback)
 }
 
 export const saveModelState = (models: ModelState[]) => {
   localStorage.setItem(STORAGE_KEYS.models, JSON.stringify(models))
+  syncToBackend(() => electronAPI.setBackendModels(models))
 }
 
 export const loadPostModelState = (): ModelState[] => {
-  const fallback: ModelState[] = POST_LOCAL_MODEL_PRESETS.map((model, index) => ({
-    ...model,
-    downloaded: index === 0,
-    downloading: false,
-    progress: index === 0 ? 100 : 0,
-  }))
+  const fallback = createDefaultPostModelState()
 
   const parsed = parseStorage<ModelState[]>(localStorage.getItem(STORAGE_KEYS.postModels), fallback)
-  return parsed.map((model) => ({
-    ...model,
-    downloading: false,
-    progress: model.downloaded ? 100 : model.progress,
-  }))
+  return normalizeModelState(parsed, fallback)
 }
 
 export const savePostModelState = (models: ModelState[]) => {
   localStorage.setItem(STORAGE_KEYS.postModels, JSON.stringify(models))
+  syncToBackend(() => electronAPI.setBackendPostModels(models))
 }

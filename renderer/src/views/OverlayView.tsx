@@ -1,14 +1,19 @@
 import { Mic, AudioLines, X, Loader2 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Dropdown } from '../components/ui/dropdown'
 import { emitAppNotification } from '../lib/app-notifications'
 import { cn } from '../lib/cn'
 import { CLOUD_TRANSCRIPTION_CATALOG, MODEL_PRESETS, STORAGE_KEYS } from '../lib/constants'
 import { electronAPI } from '../lib/electron-api'
-import { appendHistoryEntry, loadSettings } from '../lib/storage'
+import { appendHistoryEntry, loadSettings, refreshSettingsFromBackend } from '../lib/storage'
 import { fakeTranscriptionService } from '../services/fakeTranscriptionService'
 import type { AppSettings, DictationStatus } from '../types/app'
-import type { OverlaySizeKey } from '../../../shared/ipc'
+import type {
+  DictationResultPayload,
+  OverlaySizeKey,
+  WhisperRuntimeDiagnosticsPayload,
+  WhisperRuntimeStatusPayload,
+} from '../../../shared/ipc'
 
 const resolveTranscriptionProviderLabel = (settings: AppSettings) => {
   if (settings.transcriptionRuntime === 'local') {
@@ -42,65 +47,180 @@ const resolveTranscriptionModelLabel = (settings: AppSettings) => {
 }
 
 const OverlayScene = () => {
-  const [status, setStatus] = useState<DictationStatus>(fakeTranscriptionService.getStatus())
+  const [status, setStatus] = useState<DictationStatus>('IDLE')
   const [hovered, setHovered] = useState(false)
   const [contextMenuAnchor, setContextMenuAnchor] = useState<{ x: number; y: number } | null>(null)
+  const [settings, setSettings] = useState<AppSettings>(loadSettings)
   const [autoHideEnabled, setAutoHideEnabled] = useState(() => loadSettings().autoHideFloatingIcon)
+  const [runtimeStatus, setRuntimeStatus] = useState<WhisperRuntimeStatusPayload | null>(null)
+  const [runtimeDiagnostics, setRuntimeDiagnostics] = useState<WhisperRuntimeDiagnosticsPayload | null>(null)
 
   const pointerState = useRef<{ x: number; y: number; dragged: boolean } | null>(null)
   const autoHideTimer = useRef<number | null>(null)
   const contextMenuOpen = contextMenuAnchor !== null
 
-  useEffect(() => {
-    return fakeTranscriptionService.subscribeStatus((nextStatus) => {
-      setStatus(nextStatus)
-    })
+  const refreshRuntimeBadge = useCallback(async () => {
+    const latestSettings = loadSettings()
+    if (latestSettings.transcriptionRuntime !== 'local') {
+      setRuntimeStatus(null)
+      setRuntimeDiagnostics(null)
+      return
+    }
+
+    if (typeof window.electronAPI === 'undefined') {
+      setRuntimeStatus({
+        cpuInstalled: false,
+        cudaInstalled: false,
+        activeVariant: latestSettings.whisperCppRuntimeVariant,
+        runtimeDirectory: '',
+        downloadUrls: {
+          cpu: null,
+          cuda: null,
+        },
+      })
+      setRuntimeDiagnostics({
+        checkedAt: Date.now(),
+        selectedVariant: latestSettings.whisperCppRuntimeVariant,
+        running: false,
+        healthy: false,
+        pid: null,
+        port: null,
+        activeVariant: null,
+        commandPath: null,
+        commandSource: null,
+        modelPath: null,
+        processRssMB: null,
+        nvidiaSmiAvailable: false,
+        cudaProcessDetected: false,
+        vramUsedMB: null,
+        notes: 'Runtime diagnostics unavailable outside Electron runtime.',
+      })
+      return
+    }
+
+    try {
+      const [nextRuntimeStatus, nextRuntimeDiagnostics] = await Promise.all([
+        electronAPI.getWhisperRuntimeStatus(),
+        electronAPI.getWhisperRuntimeDiagnostics(),
+      ])
+      setRuntimeStatus(nextRuntimeStatus)
+      setRuntimeDiagnostics(nextRuntimeDiagnostics)
+    } catch {
+      setRuntimeStatus(null)
+      setRuntimeDiagnostics(null)
+    }
   }, [])
 
-  useEffect(() => {
-    return fakeTranscriptionService.subscribeResult(async (result) => {
-      const nextSettings = loadSettings()
-      const resolvedLanguage =
-        nextSettings.preferredLanguage === 'Auto-detect' ? result.language : nextSettings.preferredLanguage
-      const historyEntry = {
-        id: crypto.randomUUID(),
-        timestamp: Date.now(),
-        language: resolvedLanguage,
-        provider: resolveTranscriptionProviderLabel(nextSettings),
-        model: resolveTranscriptionModelLabel(nextSettings),
-        targetApp: result.targetApp,
-        text: result.text,
-      }
+  const handleDictationResult = useCallback(async (result: DictationResultPayload) => {
+    const nextSettings = loadSettings()
+    const resolvedLanguage =
+      nextSettings.preferredLanguage === 'Auto-detect' ? result.language : nextSettings.preferredLanguage
+    const historyEntry = {
+      id: crypto.randomUUID(),
+      timestamp: Date.now(),
+      language: resolvedLanguage,
+      provider: resolveTranscriptionProviderLabel(nextSettings),
+      model: resolveTranscriptionModelLabel(nextSettings),
+      targetApp: result.targetApp,
+      text: result.text,
+    }
 
-      appendHistoryEntry(historyEntry)
+    appendHistoryEntry(historyEntry)
 
-      if (nextSettings.autoPaste) {
-        try {
-          await navigator.clipboard.writeText(result.text)
-        } catch {
+    if (nextSettings.autoPaste) {
+      if (typeof window.electronAPI !== 'undefined') {
+        const autoPasteResult = await electronAPI.performAutoPaste(result.text, nextSettings.autoPasteBackend)
+
+        if (autoPasteResult.success) {
           emitAppNotification({
-            title: 'Clipboard unavailable',
-            description: 'Transcription saved to local history (mock).',
-            variant: 'destructive',
+            title: 'Text pasted successfully',
+            description: autoPasteResult.details,
+            variant: 'success',
           })
           return
         }
 
         emitAppNotification({
-          title: 'Text copied and ready to paste (mock)',
-          description: result.targetApp,
-          variant: 'success',
+          title: 'Auto-paste failed',
+          description: `${autoPasteResult.details} Transcription saved to history.`,
+          variant: 'destructive',
         })
-      } else {
-        emitAppNotification({
-          title: 'Transcription completed (mock)',
-          description: result.text,
-          variant: 'success',
-          duration: 3600,
-        })
+        return
       }
-    })
+
+      try {
+        await navigator.clipboard.writeText(result.text)
+      } catch {
+        emitAppNotification({
+          title: 'Clipboard unavailable',
+          description: 'Transcription saved to local history.',
+          variant: 'destructive',
+        })
+        return
+      }
+
+      emitAppNotification({
+        title: 'Text copied and ready to paste',
+        description: 'Ready to paste in the focused input field.',
+        variant: 'success',
+      })
+    } else {
+      emitAppNotification({
+        title: 'Transcription completed',
+        description: result.text,
+        variant: 'success',
+        duration: 3600,
+      })
+    }
   }, [])
+
+  useEffect(() => {
+    if (typeof window.electronAPI === 'undefined') {
+      return fakeTranscriptionService.subscribeStatus((nextStatus) => {
+        setStatus(nextStatus)
+      })
+    }
+
+    let alive = true
+
+    void electronAPI
+      .getDictationStatus()
+      .then((nextStatus) => {
+        if (alive) {
+          setStatus(nextStatus)
+        }
+      })
+      .catch(() => {
+        if (alive) {
+          setStatus('IDLE')
+        }
+      })
+
+    const offStatus = electronAPI.onDictationStatusChanged((nextStatus) => {
+      setStatus(nextStatus)
+    })
+
+    return () => {
+      alive = false
+      offStatus()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (typeof window.electronAPI === 'undefined') {
+      return fakeTranscriptionService.subscribeResult((result) => {
+        void handleDictationResult(result)
+      })
+    }
+
+    const offResult = electronAPI.onDictationResult((result) => {
+      void handleDictationResult(result)
+    })
+
+    return () => {
+      offResult()
+    }
+  }, [handleDictationResult])
 
   useEffect(() => {
     const offAutoHide = electronAPI.onFloatingIconAutoHideChanged((enabled) => {
@@ -118,8 +238,17 @@ const OverlayScene = () => {
 
     const offFallback = electronAPI.onHotkeyFallbackUsed((payload) => {
       emitAppNotification({
-        title: 'Fallback hotkey enabled (mock)',
+        title: 'Fallback hotkey enabled',
         description: payload.details,
+      })
+    })
+
+    const offDictationError = electronAPI.onDictationError((message) => {
+      emitAppNotification({
+        title: 'Dictation failed',
+        description: message,
+        variant: 'destructive',
+        duration: 4600,
       })
     })
 
@@ -127,6 +256,7 @@ const OverlayScene = () => {
       offAutoHide()
       offFailure()
       offFallback()
+      offDictationError()
     }
   }, [])
 
@@ -136,15 +266,60 @@ const OverlayScene = () => {
         return
       }
 
-      const nextSettings = loadSettings()
-      setAutoHideEnabled(nextSettings.autoHideFloatingIcon)
+      void refreshSettingsFromBackend().then((nextSettings) => {
+        setSettings(nextSettings)
+        setAutoHideEnabled(nextSettings.autoHideFloatingIcon)
+        void refreshRuntimeBadge()
+      })
     }
 
     window.addEventListener('storage', onStorage)
     return () => {
       window.removeEventListener('storage', onStorage)
     }
-  }, [])
+  }, [refreshRuntimeBadge])
+
+  useEffect(() => {
+    void refreshSettingsFromBackend().then((nextSettings) => {
+      setSettings(nextSettings)
+      setAutoHideEnabled(nextSettings.autoHideFloatingIcon)
+      void refreshRuntimeBadge()
+    })
+  }, [refreshRuntimeBadge])
+
+  useEffect(() => {
+    if (settings.transcriptionRuntime !== 'local') {
+      setRuntimeStatus(null)
+      setRuntimeDiagnostics(null)
+      return
+    }
+
+    void refreshRuntimeBadge()
+  }, [refreshRuntimeBadge, settings.transcriptionRuntime, settings.whisperCppRuntimeVariant])
+
+  useEffect(() => {
+    if (settings.transcriptionRuntime !== 'local') {
+      return
+    }
+
+    if (!settings.overlayRuntimeBadgeEnabled && status === 'IDLE' && !hovered) {
+      return
+    }
+
+    const timer = window.setInterval(() => {
+      void refreshRuntimeBadge()
+    }, 2400)
+
+    return () => {
+      window.clearInterval(timer)
+    }
+  }, [
+    hovered,
+    refreshRuntimeBadge,
+    settings.overlayRuntimeBadgeEnabled,
+    settings.transcriptionRuntime,
+    status,
+  ])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -204,18 +379,54 @@ const OverlayScene = () => {
   }, [autoHideEnabled, contextMenuOpen, status])
 
   const startOrStopDictation = () => {
-    const result = fakeTranscriptionService.toggleListening()
+    if (typeof window.electronAPI === 'undefined') {
+      const result = fakeTranscriptionService.toggleListening()
 
-    if (!result.accepted) {
-      emitAppNotification({
-        title: 'Processing in progress',
-        description: 'Wait for completion before trying again.',
-      })
+      if (!result.accepted) {
+        emitAppNotification({
+          title: 'Processing in progress',
+          description: 'Wait for completion before trying again.',
+        })
+      }
+
       return
     }
+
+    void electronAPI
+      .toggleDictation()
+      .then((result) => {
+        if (!result.accepted) {
+          emitAppNotification({
+            title: result.reason === 'unavailable' ? 'Dictation unavailable' : 'Processing in progress',
+            description:
+              result.reason === 'unavailable'
+                ? 'Microphone recorder is unavailable. Install recorder dependencies and grant microphone permission.'
+                : 'Wait for completion before trying again.',
+          })
+        }
+      })
+      .catch(() => {
+        emitAppNotification({
+          title: 'Dictation unavailable',
+          description: 'Unable to start dictation in this runtime.',
+          variant: 'destructive',
+        })
+      })
   }
 
   const cancelActiveStep = () => {
+    if (typeof window.electronAPI !== 'undefined') {
+      void electronAPI.cancelDictation().then((canceled) => {
+        if (canceled) {
+          emitAppNotification({
+            title: 'Transcription canceled',
+            description: 'Operation stopped manually.',
+          })
+        }
+      })
+      return
+    }
+
     const canceled =
       (status === 'RECORDING' && fakeTranscriptionService.cancelRecording()) ||
       (status === 'PROCESSING' && fakeTranscriptionService.cancelProcessing())
@@ -249,6 +460,25 @@ const OverlayScene = () => {
     },
   ]
 
+  const showRuntimeBadge = settings.transcriptionRuntime === 'local' && settings.overlayRuntimeBadgeEnabled
+  const effectiveRuntimeVariant =
+    runtimeDiagnostics?.activeVariant ?? runtimeStatus?.activeVariant ?? settings.whisperCppRuntimeVariant
+  const runtimeHealthClass = runtimeDiagnostics?.running
+    ? runtimeDiagnostics.healthy
+      ? 'bg-emerald-400'
+      : 'bg-amber-400'
+    : 'bg-slate-400'
+  const runtimeRssMB = runtimeDiagnostics?.processRssMB ?? null
+  const runtimeRssLabel = runtimeRssMB === null ? 'RAM --' : `RAM ${Math.round(runtimeRssMB)}M`
+  const runtimeVramLabel =
+    effectiveRuntimeVariant === 'cuda'
+      ? runtimeDiagnostics?.cudaProcessDetected
+        ? `VRAM ${Math.round(runtimeDiagnostics?.vramUsedMB ?? 0)}M`
+        : runtimeDiagnostics?.nvidiaSmiAvailable
+          ? 'VRAM --'
+          : 'VRAM n/a'
+      : 'VRAM cpu'
+
   return (
     <div className="h-screen w-screen p-2 app-drag">
       <div
@@ -269,63 +499,74 @@ const OverlayScene = () => {
           <div className="pointer-events-none absolute inset-0 rounded-full ring-2 ring-primary/50 animate-pulse" />
         ) : null}
 
-        <button
-          type="button"
-          className="app-no-drag relative z-10 flex h-10 w-10 items-center justify-center rounded-full border border-white/40 bg-black/35 text-white transition-all hover:scale-105"
-          onPointerDown={(event) => {
-            pointerState.current = {
-              x: event.clientX,
-              y: event.clientY,
-              dragged: false,
-            }
-          }}
-          onPointerMove={(event) => {
-            const pointer = pointerState.current
-            if (!pointer || pointer.dragged) {
-              return
-            }
+        <div className="relative z-10 flex flex-col items-center gap-1">
+          <button
+            type="button"
+            className="app-no-drag relative z-10 flex h-10 w-10 items-center justify-center rounded-full border border-white/40 bg-black/35 text-white transition-all hover:scale-105"
+            onPointerDown={(event) => {
+              pointerState.current = {
+                x: event.clientX,
+                y: event.clientY,
+                dragged: false,
+              }
+            }}
+            onPointerMove={(event) => {
+              const pointer = pointerState.current
+              if (!pointer || pointer.dragged) {
+                return
+              }
 
-            const deltaX = Math.abs(event.clientX - pointer.x)
-            const deltaY = Math.abs(event.clientY - pointer.y)
-            if (Math.hypot(deltaX, deltaY) > 5) {
-              pointer.dragged = true
-            }
-          }}
-          onPointerUp={() => {
-            window.setTimeout(() => {
-              pointerState.current = null
-            }, 0)
-          }}
-          onClick={() => {
-            if (pointerState.current?.dragged) {
-              return
-            }
+              const deltaX = Math.abs(event.clientX - pointer.x)
+              const deltaY = Math.abs(event.clientY - pointer.y)
+              if (Math.hypot(deltaX, deltaY) > 5) {
+                pointer.dragged = true
+              }
+            }}
+            onPointerUp={() => {
+              window.setTimeout(() => {
+                pointerState.current = null
+              }, 0)
+            }}
+            onClick={() => {
+              if (pointerState.current?.dragged) {
+                return
+              }
 
-            startOrStopDictation()
-          }}
-          onContextMenu={(event) => {
-            event.preventDefault()
-            setContextMenuAnchor({
-              x: event.clientX + 8,
-              y: event.clientY + 8,
-            })
-          }}
-        >
-          {status === 'PROCESSING' ? (
-            <div className="flex items-end gap-0.5">
-              <span className="h-2 w-1 animate-[wave_0.8s_ease-in-out_infinite] rounded-sm bg-white/90" />
-              <span className="h-3 w-1 animate-[wave_0.8s_ease-in-out_0.12s_infinite] rounded-sm bg-white/90" />
-              <span className="h-4 w-1 animate-[wave_0.8s_ease-in-out_0.2s_infinite] rounded-sm bg-white/90" />
-              <span className="h-3 w-1 animate-[wave_0.8s_ease-in-out_0.32s_infinite] rounded-sm bg-white/90" />
+              startOrStopDictation()
+            }}
+            onContextMenu={(event) => {
+              event.preventDefault()
+              setContextMenuAnchor({
+                x: event.clientX + 8,
+                y: event.clientY + 8,
+              })
+            }}
+          >
+            {status === 'PROCESSING' ? (
+              <div className="flex items-end gap-0.5">
+                <span className="h-2 w-1 animate-[wave_0.8s_ease-in-out_infinite] rounded-sm bg-white/90" />
+                <span className="h-3 w-1 animate-[wave_0.8s_ease-in-out_0.12s_infinite] rounded-sm bg-white/90" />
+                <span className="h-4 w-1 animate-[wave_0.8s_ease-in-out_0.2s_infinite] rounded-sm bg-white/90" />
+                <span className="h-3 w-1 animate-[wave_0.8s_ease-in-out_0.32s_infinite] rounded-sm bg-white/90" />
+              </div>
+            ) : status === 'RECORDING' ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : hovered ? (
+              <AudioLines className="h-4 w-4" />
+            ) : (
+              <Mic className="h-4 w-4" />
+            )}
+          </button>
+
+          {showRuntimeBadge ? (
+            <div className="app-no-drag pointer-events-none inline-flex items-center gap-1 rounded-full border border-white/20 bg-black/55 px-1.5 py-0.5 text-[9px] font-medium leading-none text-white/90">
+              <span className={cn('inline-flex h-1.5 w-1.5 rounded-full', runtimeHealthClass)} />
+              <span>{effectiveRuntimeVariant.toUpperCase()}</span>
+              <span className="text-white/65">{runtimeRssLabel}</span>
+              <span className="text-white/65">{runtimeVramLabel}</span>
             </div>
-          ) : status === 'RECORDING' ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : hovered ? (
-            <AudioLines className="h-4 w-4" />
-          ) : (
-            <Mic className="h-4 w-4" />
-          )}
-        </button>
+          ) : null}
+        </div>
 
         {hovered && (status === 'RECORDING' || status === 'PROCESSING') ? (
           <button
@@ -336,6 +577,7 @@ const OverlayScene = () => {
             <X className="h-3.5 w-3.5" />
           </button>
         ) : null}
+
       </div>
 
       <Dropdown

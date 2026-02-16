@@ -2,6 +2,7 @@ import React, { Component, type ReactNode } from 'react'
 import ReactDOM from 'react-dom/client'
 import { App } from './App'
 import { I18nProvider } from './i18n'
+import { hydrateStorageFromBackend } from './lib/storage'
 import './styles.css'
 
 interface ErrorBoundaryState {
@@ -40,12 +41,21 @@ class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBoundaryStat
   }
 }
 
-ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
-  <React.StrictMode>
-    <ErrorBoundary>
-      <I18nProvider>
-        <App />
-      </I18nProvider>
-    </ErrorBoundary>
-  </React.StrictMode>,
-)
+const renderApp = () => {
+  ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
+    <React.StrictMode>
+      <ErrorBoundary>
+        <I18nProvider>
+          <App />
+        </I18nProvider>
+      </ErrorBoundary>
+    </React.StrictMode>,
+  )
+}
+
+const bootstrap = async () => {
+  await hydrateStorageFromBackend()
+  renderApp()
+}
+
+void bootstrap()

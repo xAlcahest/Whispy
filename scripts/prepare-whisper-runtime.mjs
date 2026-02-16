@@ -1,0 +1,365 @@
+#!/usr/bin/env node
+
+import { spawnSync } from 'node:child_process'
+import { createWriteStream, existsSync, mkdirSync, readdirSync, rmSync, statSync, copyFileSync, chmodSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
+import { Readable } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
+import { fileURLToPath } from 'node:url'
+
+const OFFICIAL_RUNTIME_ASSETS = {
+  'win32-x64': {
+    cpu: 'https://github.com/ggml-org/whisper.cpp/releases/latest/download/whisper-bin-x64.zip',
+    cuda: 'https://github.com/ggml-org/whisper.cpp/releases/latest/download/whisper-cublas-12.4.0-bin-x64.zip',
+  },
+  'win32-ia32': {
+    cpu: 'https://github.com/ggml-org/whisper.cpp/releases/latest/download/whisper-bin-Win32.zip',
+  },
+}
+
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const CACHE_ROOT = join(REPO_ROOT, '.cache', 'whispercpp')
+const BUNDLED_RUNTIME_ROOT = join(REPO_ROOT, 'resources', 'bin', 'whispercpp')
+const WHISPER_CPP_REPOSITORY_URL = 'https://github.com/ggml-org/whisper.cpp.git'
+
+const parseArgs = () => {
+  const options = {
+    platform: process.platform,
+    arch: process.arch,
+    variants: ['cpu', 'cuda'],
+    force: false,
+    current: false,
+  }
+
+  for (const arg of process.argv.slice(2)) {
+    if (arg === '--force') {
+      options.force = true
+      continue
+    }
+
+    if (arg === '--current') {
+      options.current = true
+      continue
+    }
+
+    if (arg.startsWith('--platform=')) {
+      options.platform = arg.split('=')[1] || options.platform
+      continue
+    }
+
+    if (arg.startsWith('--arch=')) {
+      options.arch = arg.split('=')[1] || options.arch
+      continue
+    }
+
+    if (arg.startsWith('--variants=')) {
+      const raw = arg.split('=')[1] ?? ''
+      const nextVariants = raw
+        .split(',')
+        .map((value) => value.trim().toLowerCase())
+        .filter((value) => value === 'cpu' || value === 'cuda')
+
+      if (nextVariants.length > 0) {
+        options.variants = Array.from(new Set(nextVariants))
+      }
+      continue
+    }
+  }
+
+  if (options.current) {
+    options.platform = process.platform
+    options.arch = process.arch
+  }
+
+  return options
+}
+
+const run = (command, args, options = {}) => {
+  const result = spawnSync(command, args, {
+    encoding: 'utf8',
+    stdio: 'pipe',
+    windowsHide: true,
+    ...options,
+  })
+
+  if (result.status !== 0) {
+    const details = result.stderr.trim() || result.stdout.trim() || `Command failed: ${command}`
+    throw new Error(details)
+  }
+
+  return result.stdout.trim()
+}
+
+const commandExists = (command) => {
+  const lookup = spawnSync(process.platform === 'win32' ? 'where' : 'which', [command], {
+    encoding: 'utf8',
+    timeout: 1400,
+    windowsHide: true,
+  })
+
+  return lookup.status === 0
+}
+
+const ensureDirectory = (directoryPath) => {
+  mkdirSync(directoryPath, { recursive: true })
+}
+
+const extractZip = (archivePath, destinationPath) => {
+  ensureDirectory(destinationPath)
+
+  if (process.platform === 'win32') {
+    run('powershell', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-Command',
+      `Expand-Archive -Path '${archivePath.replace(/'/g, "''")}' -DestinationPath '${destinationPath.replace(/'/g, "''")}' -Force`,
+    ])
+    return
+  }
+
+  if (!commandExists('unzip')) {
+    throw new Error('unzip is required to extract whisper runtime archives on this platform.')
+  }
+
+  run('unzip', ['-o', archivePath, '-d', destinationPath])
+}
+
+const findFileRecursive = (rootPath, matcher) => {
+  if (!existsSync(rootPath)) {
+    return null
+  }
+
+  const stack = [rootPath]
+  while (stack.length > 0) {
+    const current = stack.pop()
+    if (!current) {
+      break
+    }
+
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      const entryPath = join(current, entry.name)
+      if (entry.isDirectory()) {
+        stack.push(entryPath)
+        continue
+      }
+
+      if (matcher(entry.name, entryPath)) {
+        return entryPath
+      }
+    }
+  }
+
+  return null
+}
+
+const collectCompanionLibraries = (binaryDirectory) => {
+  if (!existsSync(binaryDirectory)) {
+    return []
+  }
+
+  return readdirSync(binaryDirectory)
+    .filter((fileName) => /\.(dll|dylib|so(\.\d+)*)$/i.test(fileName))
+    .map((fileName) => join(binaryDirectory, fileName))
+}
+
+const copyRuntimeArtifacts = ({
+  sourceRoot,
+  targetDirectory,
+  targetBinaryName,
+  executableSuffix,
+}) => {
+  const sourceBinary = findFileRecursive(sourceRoot, (fileName) => fileName.toLowerCase() === `whisper-server${executableSuffix}`)
+  if (!sourceBinary) {
+    throw new Error('whisper-server binary was not found in prepared runtime artifacts.')
+  }
+
+  ensureDirectory(targetDirectory)
+  const targetBinaryPath = join(targetDirectory, targetBinaryName)
+  copyFileSync(sourceBinary, targetBinaryPath)
+
+  if (executableSuffix !== '.exe') {
+    chmodSync(targetBinaryPath, 0o755)
+  }
+
+  const companionLibraries = collectCompanionLibraries(dirname(sourceBinary))
+  for (const libraryPath of companionLibraries) {
+    copyFileSync(libraryPath, join(targetDirectory, libraryPath.split(/[/\\]/).pop() ?? ''))
+  }
+
+  return targetBinaryPath
+}
+
+const downloadToFile = async (url, targetPath) => {
+  const response = await fetch(url)
+  if (!response.ok || !response.body) {
+    throw new Error(`Unable to download runtime asset (${response.status}) from ${url}`)
+  }
+
+  ensureDirectory(dirname(targetPath))
+  const destination = createWriteStream(targetPath)
+  const source = Readable.fromWeb(response.body)
+  await pipeline(source, destination)
+}
+
+const prepareFromOfficialAsset = async ({
+  url,
+  platform,
+  arch,
+  variant,
+  targetDirectory,
+}) => {
+  const tempDirectory = join(CACHE_ROOT, 'downloads', `${platform}-${arch}-${variant}`)
+  const archivePath = join(tempDirectory, `runtime-${variant}.zip`)
+  const extractDirectory = join(tempDirectory, 'extract')
+
+  rmSync(tempDirectory, { recursive: true, force: true })
+  ensureDirectory(tempDirectory)
+
+  await downloadToFile(url, archivePath)
+  extractZip(archivePath, extractDirectory)
+
+  return copyRuntimeArtifacts({
+    sourceRoot: extractDirectory,
+    targetDirectory,
+    targetBinaryName: `whisper-server-${platform}-${arch}-${variant}${platform === 'win32' ? '.exe' : ''}`,
+    executableSuffix: platform === 'win32' ? '.exe' : '',
+  })
+}
+
+const prepareFromSource = ({
+  platform,
+  arch,
+  variant,
+  targetDirectory,
+}) => {
+  if (platform !== process.platform || arch !== process.arch) {
+    throw new Error(
+      `Source build for ${platform}-${arch} must run on a matching host platform. Current host: ${process.platform}-${process.arch}.`,
+    )
+  }
+
+  if (!commandExists('git') || !commandExists('cmake')) {
+    throw new Error('git and cmake are required to build whisper.cpp from source.')
+  }
+
+  if (variant === 'cuda' && platform === 'darwin') {
+    throw new Error('CUDA build is not available on macOS hosts.')
+  }
+
+  const sourceDirectory = join(CACHE_ROOT, 'source', 'whisper.cpp')
+  if (!existsSync(sourceDirectory)) {
+    ensureDirectory(dirname(sourceDirectory))
+    run('git', ['clone', '--depth', '1', WHISPER_CPP_REPOSITORY_URL, sourceDirectory])
+  }
+
+  const versionOverride = process.env.WHISPY_WHISPER_CPP_VERSION?.trim()
+  if (versionOverride) {
+    run('git', ['fetch', '--tags', '--force'], { cwd: sourceDirectory })
+    run('git', ['checkout', versionOverride], { cwd: sourceDirectory })
+  }
+
+  const buildDirectory = join(CACHE_ROOT, 'build', `${platform}-${arch}-${variant}`)
+  ensureDirectory(buildDirectory)
+
+  const configureArgs = [
+    '-S',
+    sourceDirectory,
+    '-B',
+    buildDirectory,
+    '-DWHISPER_BUILD_SERVER=ON',
+    '-DWHISPER_BUILD_EXAMPLES=ON',
+    '-DWHISPER_BUILD_TESTS=OFF',
+  ]
+
+  if (variant === 'cuda') {
+    configureArgs.push('-DGGML_CUDA=ON')
+  }
+
+  run('cmake', configureArgs)
+  run('cmake', ['--build', buildDirectory, '--config', 'Release', '--parallel'])
+
+  return copyRuntimeArtifacts({
+    sourceRoot: buildDirectory,
+    targetDirectory,
+    targetBinaryName: `whisper-server-${platform}-${arch}-${variant}${platform === 'win32' ? '.exe' : ''}`,
+    executableSuffix: platform === 'win32' ? '.exe' : '',
+  })
+}
+
+const prepareVariant = async ({ platform, arch, variant, force }) => {
+  const platformArch = `${platform}-${arch}`
+  const outputDirectory = join(BUNDLED_RUNTIME_ROOT, platformArch, variant)
+  const outputBinaryName = `whisper-server-${platform}-${arch}-${variant}${platform === 'win32' ? '.exe' : ''}`
+  const outputBinaryPath = join(outputDirectory, outputBinaryName)
+
+  if (existsSync(outputBinaryPath) && !force) {
+    const sizeMB = Math.round(statSync(outputBinaryPath).size / 1024 / 1024)
+    console.log(`[whisper-runtime] ${platformArch}/${variant}: already prepared (${sizeMB} MB)`)
+    return outputBinaryPath
+  }
+
+  ensureDirectory(outputDirectory)
+  const officialAssetUrl = OFFICIAL_RUNTIME_ASSETS[platformArch]?.[variant] ?? null
+
+  if (officialAssetUrl) {
+    console.log(`[whisper-runtime] ${platformArch}/${variant}: downloading official asset`)
+    const outputPath = await prepareFromOfficialAsset({
+      url: officialAssetUrl,
+      platform,
+      arch,
+      variant,
+      targetDirectory: outputDirectory,
+    })
+    console.log(`[whisper-runtime] ${platformArch}/${variant}: prepared (${outputPath})`)
+    return outputPath
+  }
+
+  console.log(`[whisper-runtime] ${platformArch}/${variant}: no official prebuilt asset, compiling from source`)
+  const outputPath = prepareFromSource({
+    platform,
+    arch,
+    variant,
+    targetDirectory: outputDirectory,
+  })
+  console.log(`[whisper-runtime] ${platformArch}/${variant}: built (${outputPath})`)
+  return outputPath
+}
+
+const main = async () => {
+  const options = parseArgs()
+  const platformArch = `${options.platform}-${options.arch}`
+  const requireCudaRuntime = process.env.WHISPY_REQUIRE_CUDA_RUNTIME === '1'
+
+  console.log(`[whisper-runtime] target ${platformArch} variants=${options.variants.join(',')}`)
+
+  for (const variant of options.variants) {
+    try {
+      await prepareVariant({
+        platform: options.platform,
+        arch: options.arch,
+        variant,
+        force: options.force,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      console.error(`[whisper-runtime] ${platformArch}/${variant}: failed - ${message}`)
+
+      if (variant === 'cuda' && !requireCudaRuntime) {
+        console.warn(
+          `[whisper-runtime] ${platformArch}/${variant}: continuing without CUDA binary (set WHISPY_REQUIRE_CUDA_RUNTIME=1 to enforce)`,
+        )
+        continue
+      }
+
+      process.exitCode = 1
+    }
+  }
+}
+
+main().catch((error) => {
+  const message = error instanceof Error ? error.message : String(error)
+  console.error(`[whisper-runtime] fatal: ${message}`)
+  process.exitCode = 1
+})

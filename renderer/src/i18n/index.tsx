@@ -95,7 +95,7 @@ export const I18nProvider = ({ children }: PropsWithChildren) => {
       t,
       setLocale,
     }),
-    [locale, t],
+    [locale, setLocale, t],
   )
 
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>

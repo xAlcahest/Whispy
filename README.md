@@ -27,10 +27,17 @@ It combines a floating always-on overlay for instant speech capture with a full 
   - Grok (xAI)
   - Meta
   - Custom
-- Local model management with download/remove actions and progress simulation
-- Conversation history with filters, search, expand/collapse, copy, delete, and bulk clear flow
+- Local model management with backend download/remove actions
+- Embedded local `whisper-server` runtime orchestration with CPU/CUDA selection
+- Runtime diagnostics for local STT (PID, RSS, CUDA/VRAM visibility via `nvidia-smi`)
+- Conversation history with expand/collapse, copy, delete, and bulk clear flow
 - Onboarding wizard for first-run setup
 - Dark/light theme support with consistent design tokens and custom scrollbar styling
+- Backend persistence and runtime services:
+  - SQLite state store (`better-sqlite3`)
+  - OS keychain secret storage (`keytar`, encrypted fallback when available)
+  - Main-process dictation runtime and prompt pipeline
+  - Real auto-paste execution by selected backend
 
 ## Product Experience
 
@@ -82,6 +89,10 @@ Core stack:
 - Tailwind CSS v4 with tokenized design variables
 - Lucide icon set
 - Reusable component primitives (button, card, dialog, toast, tabs, input, textarea, switch, dropdown)
+- `better-sqlite3` for local state persistence
+- `openai` for cloud transcription/post-processing provider compatibility
+- `node-record-lpcm16` for microphone capture in main process
+- `keytar` for secure API key storage on supported systems
 
 ## Privacy and Local-First Design
 
@@ -95,8 +106,56 @@ Whispy is designed around local-first operation and user control:
 
 ```bash
 npm install
+npm run doctor
 npm run dev
 ```
+
+### Optional local runtime commands
+
+Set these environment variables only if you want local runtime execution:
+
+- `WHISPY_LOCAL_STT_COMMAND`: command used for local speech-to-text (receives audio file path as first argument)
+- `WHISPY_LOCAL_LLM_COMMAND`: command used for local post-processing (receives JSON `{ prompt, input }` on stdin)
+- `WHISPY_WHISPER_SERVER_COMMAND`: explicit `whisper-server` binary path override
+- `WHISPY_WHISPER_RUNTIME_CPU_URL`: override CPU runtime download URL used by in-app runtime installer
+- `WHISPY_WHISPER_RUNTIME_CUDA_URL`: override CUDA runtime download URL used by in-app runtime installer
+
+You can start from `.env.example` and export the values in your shell before running `npm run dev`.
+
+If these variables are not set, Whispy attempts built-in local CLI fallbacks:
+
+- `whisper-cli` for local STT
+- `llama-cli` for local post-processing
+
+Whispy prefers `whisper-server` for local STT when available (keeps model loaded in memory/VRAM),
+then falls back to `whisper-cli` if needed.
+
+### Preparing Whisper runtime artifacts for builds
+
+Build helper scripts prepare official `ggml-org/whisper.cpp` artifacts into `resources/bin/whispercpp/`.
+
+```bash
+npm run prepare:whisper-runtime
+```
+
+Platform-targeted wrappers:
+
+```bash
+npm run build:linux
+npm run build:win
+npm run build:mac
+```
+
+Notes:
+
+- Windows uses official prebuilt assets (`whisper-bin` / `whisper-cublas`).
+- If no official prebuilt is available for the target platform, the script builds `whisper-server` from official source.
+- CUDA runtime preparation is best-effort by default; set `WHISPY_REQUIRE_CUDA_RUNTIME=1` to hard-fail when unavailable.
+
+### FFmpeg in this setup
+
+Current default recording path writes 16kHz mono WAV directly, so local STT does not require FFmpeg for normal dictation.
+FFmpeg is still surfaced in diagnostics for compatibility/future conversion paths and custom workflows.
 
 Build production bundles:
 

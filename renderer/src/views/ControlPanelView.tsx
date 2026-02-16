@@ -4,12 +4,12 @@ import {
   BookOpen,
   Cloud,
   Copy,
+  KeyRound,
   Link,
   Lock,
-  Mic,
+  Languages,
   Minus,
   Moon,
-  PanelRight,
   Plus,
   Save,
   Search,
@@ -23,12 +23,12 @@ import {
   X,
 } from 'lucide-react'
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
   type Dispatch,
-  type MutableRefObject,
   type SetStateAction,
 } from 'react'
 import openaiLogoSvg from '@lobehub/icons-static-svg/icons/openai.svg?raw'
@@ -67,6 +67,7 @@ import {
   loadModelState,
   loadPostModelState,
   loadSettings,
+  refreshSettingsFromBackend,
   saveHistory,
   saveModelState,
   savePostModelState,
@@ -74,7 +75,20 @@ import {
   setOnboardingCompleted,
 } from '../lib/storage'
 import type { AppSettings, HistoryEntry, ModelState } from '../types/app'
-import type { DisplayServer } from '../../../shared/ipc'
+import type {
+  AutoPasteBackendSupportPayload,
+  DebugLogStatusPayload,
+  DisplayServer,
+  ModelDownloadProgressPayload,
+  SecretStorageStatusPayload,
+  WhisperRuntimeDiagnosticsPayload,
+  WhisperRuntimeStatusPayload,
+} from '../../../shared/ipc'
+import {
+  CUSTOM_MODEL_FETCH_ERROR,
+  deriveModelsEndpointFromBaseUrl,
+  extractModelIdsFromPayload,
+} from '../../../shared/model-discovery'
 
 type PanelSection = 'conversations' | 'settings'
 
@@ -85,6 +99,7 @@ const formatTimestamp = (value: number) =>
   }).format(value)
 
 const isMacOS = navigator.userAgent.includes('Mac')
+const useCustomWindowChrome = isMacOS
 
 const normalizeKey = (key: string) => {
   if (key === ' ') {
@@ -135,104 +150,46 @@ const createDictionaryRule = (): AppSettings['postProcessingDictionaryRules'][nu
   target: '',
 })
 
-const deriveModelsEndpointFromBaseUrl = (baseUrl: string) => {
-  const trimmedUrl = baseUrl.trim()
-  if (!trimmedUrl) {
-    return null
-  }
-
-  let parsedUrl: URL
-  try {
-    parsedUrl = new URL(trimmedUrl)
-  } catch {
-    return null
-  }
-
-  const rawPath = parsedUrl.pathname.replace(/\/+$/, '')
-  const normalizedPath = rawPath.toLowerCase()
-
-  let modelsPath = ''
-
-  if (normalizedPath.endsWith('/v1/models') || normalizedPath.endsWith('/models')) {
-    modelsPath = rawPath || '/models'
-  } else if (normalizedPath.endsWith('/v1/audio/transcriptions')) {
-    modelsPath = `${rawPath.slice(0, -'/v1/audio/transcriptions'.length)}/v1/models`
-  } else if (normalizedPath.endsWith('/v1/transcriptions')) {
-    modelsPath = `${rawPath.slice(0, -'/v1/transcriptions'.length)}/v1/models`
-  } else if (normalizedPath.endsWith('/v1/chat/completions')) {
-    modelsPath = `${rawPath.slice(0, -'/v1/chat/completions'.length)}/v1/models`
-  } else if (normalizedPath.endsWith('/v1/completions')) {
-    modelsPath = `${rawPath.slice(0, -'/v1/completions'.length)}/v1/models`
-  } else if (normalizedPath.endsWith('/v1')) {
-    modelsPath = `${rawPath}/models`
-  } else if (rawPath) {
-    modelsPath = `${rawPath}/models`
-  } else {
-    modelsPath = '/models'
-  }
-
-  parsedUrl.pathname = modelsPath.startsWith('/') ? modelsPath : `/${modelsPath}`
-  parsedUrl.search = ''
-  parsedUrl.hash = ''
-
-  return parsedUrl.toString()
-}
-
-const extractModelIdsFromPayload = (payload: unknown) => {
-  const entries: unknown[] = []
-
-  if (Array.isArray(payload)) {
-    entries.push(...payload)
-  }
-
-  if (payload && typeof payload === 'object') {
-    const record = payload as Record<string, unknown>
-    if (Array.isArray(record.data)) {
-      entries.push(...record.data)
-    }
-    if (Array.isArray(record.models)) {
-      entries.push(...record.models)
-    }
-    if (Array.isArray(record.results)) {
-      entries.push(...record.results)
-    }
-  }
-
-  const modelIds = entries
-    .map((entry) => {
-      if (typeof entry === 'string') {
-        return entry
-      }
-
-      if (entry && typeof entry === 'object') {
-        const record = entry as Record<string, unknown>
-        if (typeof record.id === 'string') {
-          return record.id
-        }
-        if (typeof record.model === 'string') {
-          return record.model
-        }
-        if (typeof record.name === 'string') {
-          return record.name
-        }
-      }
-
-      return null
-    })
-    .filter((value): value is string => Boolean(value?.trim()))
-    .map((value) => value.trim())
-
-  return Array.from(new Set(modelIds))
-}
-
-const CUSTOM_MODEL_FETCH_ERROR =
-  'Unable to fetch models because the API used does not respond to this endpoint call, or the endpoint does not exist.'
-
 const AUTO_PASTE_BACKENDS: Array<{ id: AppSettings['autoPasteBackend']; label: string }> = [
   { id: 'wtype', label: 'wtype' },
   { id: 'xdotools', label: 'xdotools' },
   { id: 'ydotools', label: 'ydotools' },
 ]
+
+const OPENAI_COMPATIBLE_BASE_URL_BY_PROVIDER: Record<string, string> = {
+  openai: 'https://api.openai.com/v1',
+  groq: 'https://api.groq.com/openai/v1',
+  grok: 'https://api.x.ai/v1',
+  meta: 'https://api.llama.com/compat/v1',
+}
+
+const isAutoPasteSupportPayload = (value: unknown): value is AutoPasteBackendSupportPayload => {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+
+  const payload = value as Partial<AutoPasteBackendSupportPayload>
+  if (
+    !Array.isArray(payload.statuses) ||
+    typeof payload.checkedAt !== 'number' ||
+    typeof payload.compositorName !== 'string'
+  ) {
+    return false
+  }
+
+  return payload.statuses.every((status) => {
+    if (!status || typeof status !== 'object') {
+      return false
+    }
+
+    const parsed = status as { id?: unknown; available?: unknown; details?: unknown }
+    return (
+      (parsed.id === 'wtype' || parsed.id === 'xdotools' || parsed.id === 'ydotools') &&
+      typeof parsed.available === 'boolean' &&
+      typeof parsed.details === 'string'
+    )
+  })
+}
 
 interface HotkeyInputProps {
   value: string
@@ -245,6 +202,7 @@ const HotkeyInput = ({ value, onChange }: HotkeyInputProps) => {
   return (
     <div className="space-y-1.5">
       <Input
+        className="font-mono text-[13px] tracking-wide"
         value={value}
         onFocus={() => {
           setFocused(true)
@@ -307,52 +265,7 @@ const HistorySection = ({
   onDelete,
   onClear,
 }: HistorySectionProps) => {
-  const [languageFilter, setLanguageFilter] = useState('all')
-  const [providerFilter, setProviderFilter] = useState('all')
-  const [dateFilter, setDateFilter] = useState<'all' | 'today' | '7d' | '30d'>('all')
   const [expandedEntries, setExpandedEntries] = useState<Record<string, boolean>>({})
-
-  const filteredEntries = useMemo(() => {
-    const now = Date.now()
-
-    return entries.filter((entry) => {
-      if (languageFilter !== 'all' && entry.language !== languageFilter) {
-        return false
-      }
-
-      if (providerFilter !== 'all' && entry.provider !== providerFilter) {
-        return false
-      }
-
-      if (dateFilter === 'today') {
-        const today = new Date()
-        const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime()
-        return entry.timestamp >= startOfDay
-      }
-
-      if (dateFilter === '7d') {
-        return now - entry.timestamp <= 7 * 24 * 60 * 60 * 1000
-      }
-
-      if (dateFilter === '30d') {
-        return now - entry.timestamp <= 30 * 24 * 60 * 60 * 1000
-      }
-
-      return true
-    })
-  }, [dateFilter, entries, languageFilter, providerFilter])
-
-  const providerOptions = useMemo(
-    () =>
-      Array.from(
-        new Set(
-          entries
-            .map((entry) => entry.provider.trim())
-            .filter((provider): provider is string => provider.length > 0),
-        ),
-      ).sort((a, b) => a.localeCompare(b)),
-    [entries],
-  )
 
   if (loading) {
     return (
@@ -366,67 +279,19 @@ const HistorySection = ({
 
   return (
     <div className="space-y-4">
-      <Card>
-        <CardContent className="grid gap-2 pt-4 sm:grid-cols-3">
-
-          <select
-            className="app-no-drag h-9 rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 px-2.5 text-sm"
-            value={languageFilter}
-            onChange={(event) => {
-              setLanguageFilter(event.target.value)
-            }}
-          >
-            <option value="all">Language: all</option>
-            {LANGUAGES.map((language) => (
-              <option key={language} value={language}>
-                {language}
-              </option>
-            ))}
-          </select>
-
-          <select
-            className="app-no-drag h-9 rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 px-2.5 text-sm"
-            value={providerFilter}
-            onChange={(event) => {
-              setProviderFilter(event.target.value)
-            }}
-          >
-            <option value="all">Provider: all</option>
-            {providerOptions.map((provider) => (
-              <option key={provider} value={provider}>
-                {provider}
-              </option>
-            ))}
-          </select>
-
-          <select
-            className="app-no-drag h-9 rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 px-2.5 text-sm"
-            value={dateFilter}
-            onChange={(event) => {
-              setDateFilter(event.target.value as 'all' | 'today' | '7d' | '30d')
-            }}
-          >
-            <option value="all">Date: all</option>
-            <option value="today">Today</option>
-            <option value="7d">Last 7 days</option>
-            <option value="30d">Last 30 days</option>
-          </select>
-        </CardContent>
-      </Card>
-
-      {filteredEntries.length === 0 ? (
+      {entries.length === 0 ? (
         <Card className="py-12">
           <CardContent className="flex flex-col items-center justify-center gap-2 text-center">
             <BookOpen className="h-10 w-10 text-muted-foreground" />
             <p className="font-medium">No transcriptions found</p>
             <p className="max-w-md text-sm text-muted-foreground">
-              Start dictation from the floating panel. Transcriptions appear here with metadata,
-              filters, and quick actions.
+              Start dictation from the floating panel. Transcriptions appear here with metadata and
+              quick actions.
             </p>
           </CardContent>
         </Card>
       ) : (
-        filteredEntries.map((entry) => {
+        entries.map((entry) => {
           const expanded = Boolean(expandedEntries[entry.id])
 
           return (
@@ -436,7 +301,7 @@ const HistorySection = ({
                   <div className="space-y-0.5">
                     <CardTitle className="text-xs">{formatTimestamp(entry.timestamp)}</CardTitle>
                     <CardDescription className="text-xs">
-                      {entry.language} | {entry.provider}/{entry.model} | {entry.targetApp}
+                      {entry.language} | {entry.provider}/{entry.model}
                     </CardDescription>
                   </div>
                   <div className="flex items-center gap-1.5">
@@ -534,6 +399,9 @@ interface SettingsSectionProps {
   settings: AppSettings
   autoDetectSupported: boolean
   displayServer: DisplayServer
+  autoPasteSupport: AutoPasteBackendSupportPayload | null
+  autoPasteSupportLoading: boolean
+  onRefreshAutoPasteSupport: () => void
   onChange: (next: Partial<AppSettings>) => void
 }
 
@@ -543,18 +411,12 @@ interface TranslationModeSectionProps {
 }
 
 const TranslationModeSection = ({ settings, onChange }: TranslationModeSectionProps) => {
-  const translationComboHotkey = buildTranslationComboHotkey(settings.hotkey)
-  const translationHotkey =
-    settings.translationHotkeyMode === 'combo' ? translationComboHotkey : settings.translationCustomHotkey
-
   return (
     <div className="space-y-4">
       <Card id="settings-node-translation" className="scroll-mt-6">
         <CardHeader>
           <CardTitle>Translation mode</CardTitle>
-          <CardDescription>
-            Configure translation behavior directly inside Preferences.
-          </CardDescription>
+          <CardDescription>Configure translation behavior inside the Post-Processing workflow.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex items-center justify-between gap-3">
@@ -572,30 +434,9 @@ const TranslationModeSection = ({ settings, onChange }: TranslationModeSectionPr
             />
           </div>
 
-          <Tabs
-            value={settings.translationHotkeyMode}
-            onValueChange={(value) => {
-              onChange({ translationHotkeyMode: value as AppSettings['translationHotkeyMode'] })
-            }}
-          >
-            <TabsList>
-              <TabsTrigger value="combo">Use combo with main hotkey</TabsTrigger>
-              <TabsTrigger value="custom">Use custom hotkey</TabsTrigger>
-            </TabsList>
-            <TabsContent value="combo" className="mt-3">
-              <div className="rounded-md border border-border-subtle bg-surface-1 px-3 py-2 text-sm">
-                Translation hotkey: <span className="font-semibold">{translationComboHotkey}</span>
-              </div>
-            </TabsContent>
-            <TabsContent value="custom" className="mt-3">
-              <HotkeyInput
-                value={settings.translationCustomHotkey}
-                onChange={(hotkey) => {
-                  onChange({ translationCustomHotkey: hotkey })
-                }}
-              />
-            </TabsContent>
-          </Tabs>
+          <div className="rounded-md border border-border-subtle bg-surface-1 px-3 py-2 text-sm text-muted-foreground">
+            Translation hotkey is configured in Preferences under Activation keys.
+          </div>
 
           <div className="grid gap-3 md:grid-cols-2">
             <div className="space-y-1.5">
@@ -633,9 +474,6 @@ const TranslationModeSection = ({ settings, onChange }: TranslationModeSectionPr
             </div>
           </div>
 
-          <div className="rounded-md border border-border-subtle bg-surface-0 px-3 py-2 text-sm text-muted-foreground">
-            Active translation hotkey: <span className="font-semibold text-foreground">{translationHotkey}</span>
-          </div>
         </CardContent>
       </Card>
     </div>
@@ -897,11 +735,12 @@ const AccountSettingsPanel = () => (
     <Card>
       <CardHeader>
         <CardTitle>Account</CardTitle>
-        <CardDescription>Account management panel is not available yet.</CardDescription>
+        <CardDescription>Workspace identity and access metadata.</CardDescription>
       </CardHeader>
       <CardContent>
-        <div className="rounded-[var(--radius-premium)] border border-primary/35 bg-primary/10 px-4 py-5 text-center">
-          <p className="text-lg font-semibold tracking-wide text-primary">COMING SOON!</p>
+        <div className="rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 px-4 py-5 text-sm text-muted-foreground">
+          Account data is fully local in this build. Cloud credentials are stored in your OS keychain
+          when available.
         </div>
       </CardContent>
     </Card>
@@ -912,15 +751,127 @@ const PreferencesSettingsPanel = ({
   settings,
   autoDetectSupported,
   displayServer,
+  autoPasteSupport,
+  autoPasteSupportLoading,
+  onRefreshAutoPasteSupport,
   onChange,
-}: SettingsSectionProps) => (
-  <div className="space-y-4">
+}: SettingsSectionProps) => {
+  const translationComboHotkey = buildTranslationComboHotkey(settings.hotkey)
+  const translationHotkey =
+    settings.translationHotkeyMode === 'combo' ? translationComboHotkey : settings.translationCustomHotkey
+
+  return (
+    <div className="space-y-4">
     <Card>
       <CardHeader>
         <CardTitle>Preferences</CardTitle>
         <CardDescription>Language and behavior defaults for daily usage.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
+        <div className="space-y-3 rounded-md border border-border-subtle bg-surface-0 px-3 py-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-sm font-medium">Activation keys</p>
+            <Badge tone="primary">{settings.activationMode === 'tap' ? 'Tap mode' : 'Hold mode'}</Badge>
+          </div>
+
+          <div className="space-y-3 rounded-md border border-border-subtle bg-surface-1/70 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-sm font-medium">Primary dictation</p>
+              <span className="inline-flex items-center rounded-md border border-border-subtle bg-surface-0 px-2 py-1 text-xs font-semibold text-foreground">
+                {settings.hotkey}
+              </span>
+            </div>
+
+            <HotkeyInput
+              value={settings.hotkey}
+              onChange={(hotkey) => {
+                onChange({ hotkey })
+              }}
+            />
+
+            <Tabs
+              value={settings.activationMode}
+              onValueChange={(value) => {
+                onChange({ activationMode: value as AppSettings['activationMode'] })
+              }}
+            >
+              <TabsList className="grid w-full grid-cols-2">
+                <TabsTrigger value="tap">Tap to talk</TabsTrigger>
+                <TabsTrigger value="hold">Hold to talk</TabsTrigger>
+              </TabsList>
+              <TabsContent value="tap" className="mt-3">
+                <p className="rounded-md border border-border-subtle bg-surface-0 p-3 text-sm text-muted-foreground">
+                  Press {settings.hotkey} to start and press again to stop.
+                </p>
+              </TabsContent>
+              <TabsContent value="hold" className="mt-3">
+                <p className="rounded-md border border-border-subtle bg-surface-0 p-3 text-sm text-muted-foreground">
+                  Hold {settings.hotkey} while speaking. Release to send.
+                </p>
+              </TabsContent>
+            </Tabs>
+          </div>
+
+          <div className="space-y-3 rounded-md border border-border-subtle bg-surface-1/70 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-sm font-medium">Translation trigger</p>
+              <span className="inline-flex items-center rounded-md border border-border-subtle bg-surface-0 px-2 py-1 text-xs font-semibold text-foreground">
+                {translationHotkey || 'Not set'}
+              </span>
+            </div>
+
+            <Tabs
+              value={settings.translationHotkeyMode}
+              onValueChange={(value) => {
+                onChange({ translationHotkeyMode: value as AppSettings['translationHotkeyMode'] })
+              }}
+            >
+              <TabsList className="grid w-full grid-cols-2">
+                <TabsTrigger value="combo">Combo</TabsTrigger>
+                <TabsTrigger value="custom">Custom</TabsTrigger>
+              </TabsList>
+              <TabsContent value="combo" className="mt-3">
+                <div className="rounded-md border border-border-subtle bg-surface-0 px-3 py-2 text-sm text-muted-foreground">
+                  Uses main hotkey combo: <span className="font-semibold text-foreground">{translationComboHotkey}</span>
+                </div>
+              </TabsContent>
+              <TabsContent value="custom" className="mt-3">
+                <HotkeyInput
+                  value={settings.translationCustomHotkey}
+                  onChange={(hotkey) => {
+                    onChange({ translationCustomHotkey: hotkey })
+                  }}
+                />
+              </TabsContent>
+            </Tabs>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between rounded-md border border-border-subtle bg-surface-0 px-3 py-2.5">
+          <p className="text-sm">Auto-hide floating icon</p>
+          <Switch
+            checked={settings.autoHideFloatingIcon}
+            onCheckedChange={(checked) => {
+              onChange({ autoHideFloatingIcon: checked })
+            }}
+          />
+        </div>
+
+        <div className="space-y-2 rounded-md border border-border-subtle bg-surface-0 px-3 py-2.5">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-sm">Show runtime monitor on floating icon</p>
+              <p className="text-xs text-muted-foreground">Always show CPU/CUDA mode with RAM and VRAM usage in the mic badge.</p>
+            </div>
+            <Switch
+              checked={settings.overlayRuntimeBadgeEnabled}
+              onCheckedChange={(checked) => {
+                onChange({ overlayRuntimeBadgeEnabled: checked })
+              }}
+            />
+          </div>
+        </div>
+
         <div className="rounded-md border border-border-subtle bg-surface-0 px-3 py-2.5">
           <p className="mb-2 text-sm">Interface language</p>
           <select
@@ -959,42 +910,6 @@ const PreferencesSettingsPanel = ({
           </select>
         </div>
 
-        <div className="space-y-3 rounded-md border border-border-subtle bg-surface-0 px-3 py-2.5">
-          <p className="text-sm font-medium">Activation</p>
-
-          <div className="space-y-2">
-            <p className="text-sm">Hotkey</p>
-            <HotkeyInput
-              value={settings.hotkey}
-              onChange={(hotkey) => {
-                onChange({ hotkey })
-              }}
-            />
-          </div>
-
-          <Tabs
-            value={settings.activationMode}
-            onValueChange={(value) => {
-              onChange({ activationMode: value as AppSettings['activationMode'] })
-            }}
-          >
-            <TabsList>
-              <TabsTrigger value="tap">Tap to talk</TabsTrigger>
-              <TabsTrigger value="hold">Hold to talk</TabsTrigger>
-            </TabsList>
-            <TabsContent value="tap">
-              <p className="rounded-md border border-border-subtle bg-surface-1 p-3 text-sm text-muted-foreground">
-                Press {settings.hotkey} to start and press again to stop.
-              </p>
-            </TabsContent>
-            <TabsContent value="hold">
-              <p className="rounded-md border border-border-subtle bg-surface-1 p-3 text-sm text-muted-foreground">
-                Hold {settings.hotkey} while speaking. Release to send.
-              </p>
-            </TabsContent>
-          </Tabs>
-        </div>
-
         <div className="space-y-2 rounded-md border border-border-subtle bg-surface-0 px-3 py-2.5">
           <div className="flex items-center justify-between gap-3">
             <p className="text-sm font-medium">Auto-paste</p>
@@ -1013,54 +928,84 @@ const PreferencesSettingsPanel = ({
             </select>
           </div>
 
-          {displayServer === 'wayland' && settings.autoPasteBackend === 'wtype' ? (
-            <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-destructive">
-              <p className="text-sm font-semibold">wtype /!\</p>
-              <p className="mt-1 text-xs">
-                wtype isn't supported in your current compositor, consider using xdotools or ydotools (recommended)
-              </p>
+          <div className="rounded-md border border-border-subtle bg-surface-1/70 p-2.5">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Backend detection</p>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 px-2"
+                onClick={onRefreshAutoPasteSupport}
+                disabled={autoPasteSupportLoading}
+              >
+                {autoPasteSupportLoading ? 'Checking...' : 'Re-check'}
+              </Button>
             </div>
-          ) : null}
+
+            <p className="mb-2 text-[11px] text-muted-foreground">
+              Runs a non-destructive probe for all three backends together (no clipboard access).
+            </p>
+
+            <div className="space-y-1.5">
+              {AUTO_PASTE_BACKENDS.map((backend) => {
+                const detectedStatus = autoPasteSupport?.statuses.find((status) => status.id === backend.id)
+                const available = Boolean(detectedStatus?.available)
+                const isWaylandWtypeError =
+                  backend.id === 'wtype' &&
+                  (autoPasteSupport?.detectedDisplayServer ?? displayServer) === 'wayland' &&
+                  !available
+
+                return (
+                  <div
+                    key={backend.id}
+                    className="flex items-center justify-between rounded-md border border-border-subtle bg-surface-0 px-2.5 py-2"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-sm">{backend.label}</p>
+                      <p className="truncate text-[11px] text-muted-foreground">
+                        {detectedStatus?.details ?? 'No detection result yet'}
+                      </p>
+                    </div>
+                    <Badge
+                      tone={available ? 'success' : 'warning'}
+                      className={cn('shrink-0', isWaylandWtypeError ? 'border-destructive/30 bg-destructive/10 text-destructive' : undefined)}
+                    >
+                      {isWaylandWtypeError ? 'ERROR' : available ? 'Detected' : 'Missing'}
+                    </Badge>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+
+          {(() => {
+            const currentWtypeStatus = autoPasteSupport?.statuses.find((status) => status.id === 'wtype')
+            const shouldShowWtypeError =
+              settings.autoPasteBackend === 'wtype' &&
+              (autoPasteSupport?.detectedDisplayServer ?? displayServer) === 'wayland' &&
+              Boolean(currentWtypeStatus) &&
+              !currentWtypeStatus?.available
+
+            if (!shouldShowWtypeError) {
+              return null
+            }
+
+            const compositorName = autoPasteSupport?.compositorName ?? 'current compositor'
+
+            return (
+            <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-destructive">
+              <p className="text-sm font-semibold">ERROR</p>
+              <p className="mt-1 text-xs">Your compositor ({compositorName}) does not support wtype. Use ydotools instead.</p>
+            </div>
+            )
+          })()}
         </div>
 
-        {[
-          {
-            label: 'Microphone access',
-            key: 'microphoneAccess',
-            value: settings.microphoneAccess,
-          },
-          {
-            label: 'Auto-hide floating icon',
-            key: 'autoHideFloatingIcon',
-            value: settings.autoHideFloatingIcon,
-          },
-          {
-            label: 'Launch at login',
-            key: 'launchAtLogin',
-            value: settings.launchAtLogin,
-          },
-          {
-            label: 'Sounds',
-            key: 'sounds',
-            value: settings.sounds,
-          },
-        ].map((item) => (
-          <div key={item.key} className="flex items-center justify-between rounded-md border border-border-subtle bg-surface-0 px-3 py-2.5">
-            <p className="text-sm">{item.label}</p>
-            <Switch
-              checked={item.value}
-              onCheckedChange={(checked) => {
-                onChange({ [item.key]: checked } as Partial<AppSettings>)
-              }}
-            />
-          </div>
-        ))}
       </CardContent>
     </Card>
-
-    <TranslationModeSection settings={settings} onChange={onChange} />
   </div>
-)
+  )
+}
 
 const PrivacyPanel = () => (
   <Card>
@@ -1070,7 +1015,7 @@ const PrivacyPanel = () => (
     </CardHeader>
     <CardContent>
       <div className="rounded-[var(--radius-premium)] border border-primary/30 bg-primary/10 p-4 text-sm text-primary">
-        Local processing: voice data is never uploaded online in this mock mode.
+        Local processing keeps voice data on-device when a local runtime command is configured.
       </div>
     </CardContent>
   </Card>
@@ -1134,30 +1079,31 @@ const ModelsSection = ({
   onPostModelsChange,
 }: ModelsSectionProps) => {
   const { pushToast } = useToast()
-  const transcriptionIntervals = useRef<Record<string, number>>({})
-  const postIntervals = useRef<Record<string, number>>({})
   const [customTranscriptionModelScanLoading, setCustomTranscriptionModelScanLoading] = useState(false)
   const [customPostModelScanLoading, setCustomPostModelScanLoading] = useState(false)
   const [customTranscriptionModelScanError, setCustomTranscriptionModelScanError] = useState<string | null>(null)
   const [customPostModelScanError, setCustomPostModelScanError] = useState<string | null>(null)
   const [customTranscriptionScannedModels, setCustomTranscriptionScannedModels] = useState<string[]>([])
   const [customPostScannedModels, setCustomPostScannedModels] = useState<string[]>([])
+  const [transcriptionCloudModelLayout, setTranscriptionCloudModelLayout] = useState<'single' | 'double'>('double')
+  const [transcriptionScannedModelsByProvider, setTranscriptionScannedModelsByProvider] = useState<Record<string, string[]>>({})
+  const [postScannedModelsByProvider, setPostScannedModelsByProvider] = useState<Record<string, string[]>>({})
+  const [transcriptionProviderAutoScanLoading, setTranscriptionProviderAutoScanLoading] = useState(false)
+  const [postProviderAutoScanLoading, setPostProviderAutoScanLoading] = useState(false)
+  const [transcriptionProviderAutoScanError, setTranscriptionProviderAutoScanError] = useState<string | null>(null)
+  const [postProviderAutoScanError, setPostProviderAutoScanError] = useState<string | null>(null)
+  const [whisperRuntimeStatus, setWhisperRuntimeStatus] = useState<WhisperRuntimeStatusPayload | null>(null)
+  const [whisperRuntimeDiagnostics, setWhisperRuntimeDiagnostics] = useState<WhisperRuntimeDiagnosticsPayload | null>(null)
+  const [whisperRuntimeStatusLoading, setWhisperRuntimeStatusLoading] = useState(false)
+  const [whisperRuntimeDiagnosticsLoading, setWhisperRuntimeDiagnosticsLoading] = useState(false)
+  const [whisperRuntimeActionLoading, setWhisperRuntimeActionLoading] = useState<'cpu' | 'cuda' | null>(null)
+  const transcriptionAutoScanRequestKeyRef = useRef('')
+  const postAutoScanRequestKeyRef = useRef('')
 
-  useEffect(() => {
-    return () => {
-      Object.values(transcriptionIntervals.current).forEach((intervalId) => {
-        window.clearInterval(intervalId)
-      })
-      Object.values(postIntervals.current).forEach((intervalId) => {
-        window.clearInterval(intervalId)
-      })
-    }
-  }, [])
-
-  const setModelDownloading = (
+  const setModelDownloading = async (
+    scope: 'transcription' | 'post',
     modelId: string,
     setModels: Dispatch<SetStateAction<ModelState[]>>,
-    timerStore: MutableRefObject<Record<string, number>>,
   ) => {
     setModels((current) =>
       current.map((model) =>
@@ -1165,58 +1111,124 @@ const ModelsSection = ({
           ? {
               ...model,
               downloading: true,
-              progress: 3,
+              progress: 0,
             }
           : model,
       ),
     )
 
-    timerStore.current[modelId] = window.setInterval(() => {
+    try {
+      if (typeof window.electronAPI !== 'undefined') {
+        await electronAPI.downloadLocalModel(scope, modelId)
+      } else {
+        await new Promise<void>((resolve) => {
+          window.setTimeout(() => {
+            resolve()
+          }, 800)
+        })
+      }
+
       setModels((current) =>
         current.map((model) => {
           if (model.id !== modelId) {
             return model
           }
 
-          const nextProgress = Math.min(100, model.progress + 8 + Math.floor(Math.random() * 10))
           return {
             ...model,
-            progress: nextProgress,
-            downloading: nextProgress < 100,
-            downloaded: nextProgress === 100,
+            progress: 100,
+            downloading: false,
+            downloaded: true,
           }
         }),
       )
-    }, 320)
+
+      return true
+    } catch {
+      setModels((current) =>
+        current.map((model) =>
+          model.id === modelId
+            ? {
+                ...model,
+                downloading: false,
+                progress: model.downloaded ? 100 : 0,
+              }
+            : model,
+        ),
+      )
+
+      return false
+    }
   }
 
-  useEffect(() => {
-    models.forEach((model) => {
-      if (model.downloading) {
-        return
+  const cancelModelDownloading = async (
+    scope: 'transcription' | 'post',
+    modelId: string,
+    setModels: Dispatch<SetStateAction<ModelState[]>>,
+  ) => {
+    if (typeof window.electronAPI !== 'undefined') {
+      const canceled = await electronAPI.cancelLocalModelDownload(scope, modelId)
+
+      if (canceled) {
+        setModels((current) =>
+          current.map((model) =>
+            model.id === modelId
+              ? {
+                  ...model,
+                  downloading: false,
+                  progress: model.downloaded ? 100 : 0,
+                }
+              : model,
+          ),
+        )
       }
 
-      const currentTimer = transcriptionIntervals.current[model.id]
-      if (currentTimer) {
-        window.clearInterval(currentTimer)
-        delete transcriptionIntervals.current[model.id]
-      }
-    })
-  }, [models])
+      return canceled
+    }
 
-  useEffect(() => {
-    postModels.forEach((model) => {
-      if (model.downloading) {
-        return
-      }
+    setModels((current) =>
+      current.map((model) =>
+        model.id === modelId
+          ? {
+              ...model,
+              downloading: false,
+              progress: model.downloaded ? 100 : 0,
+            }
+          : model,
+      ),
+    )
 
-      const currentTimer = postIntervals.current[model.id]
-      if (currentTimer) {
-        window.clearInterval(currentTimer)
-        delete postIntervals.current[model.id]
+    return true
+  }
+
+  const removeModel = async (
+    scope: 'transcription' | 'post',
+    modelId: string,
+    setModels: Dispatch<SetStateAction<ModelState[]>>,
+  ) => {
+    try {
+      if (typeof window.electronAPI !== 'undefined') {
+        await electronAPI.removeLocalModel(scope, modelId)
       }
-    })
-  }, [postModels])
+    } catch {
+      return false
+    }
+
+    setModels((current) =>
+      current.map((item) =>
+        item.id === modelId
+          ? {
+              ...item,
+              downloaded: false,
+              downloading: false,
+              progress: 0,
+            }
+          : item,
+      ),
+    )
+
+    return true
+  }
 
   const downloadedModels = models.filter((model) => model.downloaded).length
   const downloadedPostModels = postModels.filter((model) => model.downloaded).length
@@ -1232,7 +1244,37 @@ const ModelsSection = ({
   const transcriptionModelsEndpoint = deriveModelsEndpointFromBaseUrl(settings.transcriptionCustomBaseUrl)
   const postProcessingModelsEndpoint = deriveModelsEndpointFromBaseUrl(settings.postProcessingCustomBaseUrl)
 
-  const fetchCustomModels = async (modelsEndpoint: string, apiKey: string) => {
+  const displayedTranscriptionCloudModels =
+    selectedTranscriptionProvider.providerId === 'custom'
+      ? []
+      : (transcriptionScannedModelsByProvider[selectedTranscriptionProvider.providerId]?.map((modelId) => ({
+          id: modelId,
+          label: modelId,
+        })) ?? selectedTranscriptionProvider.models)
+
+  const displayedPostCloudModels =
+    selectedPostProcessingProvider.providerId === 'custom'
+      ? []
+      : (postScannedModelsByProvider[selectedPostProcessingProvider.providerId]?.map((modelId) => ({
+          id: modelId,
+          label: modelId,
+        })) ?? selectedPostProcessingProvider.models)
+
+  const transcriptionModelGridClass =
+    transcriptionCloudModelLayout === 'single'
+      ? 'grid gap-2 grid-cols-1'
+      : 'grid gap-2 grid-cols-1 md:grid-cols-2'
+
+  const fetchCustomModels = async (baseUrl: string, apiKey: string) => {
+    if (typeof window.electronAPI !== 'undefined') {
+      return electronAPI.scanCustomModels(baseUrl, apiKey)
+    }
+
+    const modelsEndpoint = deriveModelsEndpointFromBaseUrl(baseUrl)
+    if (!modelsEndpoint) {
+      throw new Error(CUSTOM_MODEL_FETCH_ERROR)
+    }
+
     const headers = new Headers({
       Accept: 'application/json',
     })
@@ -1261,6 +1303,190 @@ const ModelsSection = ({
     return modelIds
   }
 
+  const refreshWhisperRuntimeStatus = useCallback(async () => {
+    if (typeof window.electronAPI === 'undefined') {
+      setWhisperRuntimeStatus({
+        cpuInstalled: false,
+        cudaInstalled: false,
+        activeVariant: settings.whisperCppRuntimeVariant,
+        runtimeDirectory: '',
+        downloadUrls: {
+          cpu: null,
+          cuda: null,
+        },
+      })
+      return
+    }
+
+    setWhisperRuntimeStatusLoading(true)
+    try {
+      const status = await electronAPI.getWhisperRuntimeStatus()
+      setWhisperRuntimeStatus(status)
+    } finally {
+      setWhisperRuntimeStatusLoading(false)
+    }
+  }, [settings.whisperCppRuntimeVariant])
+
+  const refreshWhisperRuntimeDiagnostics = useCallback(async () => {
+    if (typeof window.electronAPI === 'undefined') {
+      setWhisperRuntimeDiagnostics({
+        checkedAt: Date.now(),
+        selectedVariant: settings.whisperCppRuntimeVariant,
+        running: false,
+        healthy: false,
+        pid: null,
+        port: null,
+        activeVariant: null,
+        commandPath: null,
+        commandSource: null,
+        modelPath: null,
+        processRssMB: null,
+        nvidiaSmiAvailable: false,
+        cudaProcessDetected: false,
+        vramUsedMB: null,
+        notes: 'Runtime diagnostics unavailable outside Electron runtime.',
+      })
+      return
+    }
+
+    setWhisperRuntimeDiagnosticsLoading(true)
+    try {
+      const diagnostics = await electronAPI.getWhisperRuntimeDiagnostics()
+      setWhisperRuntimeDiagnostics(diagnostics)
+    } finally {
+      setWhisperRuntimeDiagnosticsLoading(false)
+    }
+  }, [settings.whisperCppRuntimeVariant])
+
+  useEffect(() => {
+    void refreshWhisperRuntimeStatus()
+    void refreshWhisperRuntimeDiagnostics()
+  }, [refreshWhisperRuntimeDiagnostics, refreshWhisperRuntimeStatus])
+
+  useEffect(() => {
+    if (scope !== 'transcriptions' || mode !== 'local') {
+      return
+    }
+
+    const timer = window.setInterval(() => {
+      void refreshWhisperRuntimeDiagnostics()
+    }, 4500)
+
+    return () => {
+      window.clearInterval(timer)
+    }
+  }, [mode, refreshWhisperRuntimeDiagnostics, scope])
+
+  const autoScanProviderModels = useCallback(
+    async (scopeKey: 'transcription' | 'post', providerId: string, apiKey: string) => {
+      const baseUrl = OPENAI_COMPATIBLE_BASE_URL_BY_PROVIDER[providerId]
+      if (!baseUrl || !apiKey.trim()) {
+        return
+      }
+
+      if (scopeKey === 'transcription') {
+        setTranscriptionProviderAutoScanLoading(true)
+        setTranscriptionProviderAutoScanError(null)
+      } else {
+        setPostProviderAutoScanLoading(true)
+        setPostProviderAutoScanError(null)
+      }
+
+      try {
+        const modelIds = await fetchCustomModels(baseUrl, apiKey)
+
+        if (scopeKey === 'transcription') {
+          setTranscriptionScannedModelsByProvider((current) => ({
+            ...current,
+            [providerId]: modelIds,
+          }))
+
+          if (!modelIds.includes(settings.transcriptionCloudModelId) && modelIds[0]) {
+            onSettingsChange({
+              transcriptionCloudModelId: modelIds[0],
+            })
+          }
+        } else {
+          setPostScannedModelsByProvider((current) => ({
+            ...current,
+            [providerId]: modelIds,
+          }))
+
+          if (!modelIds.includes(settings.postProcessingCloudModelId) && modelIds[0]) {
+            onSettingsChange({
+              postProcessingCloudModelId: modelIds[0],
+            })
+          }
+        }
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : CUSTOM_MODEL_FETCH_ERROR
+        if (scopeKey === 'transcription') {
+          setTranscriptionProviderAutoScanError(message)
+        } else {
+          setPostProviderAutoScanError(message)
+        }
+      } finally {
+        if (scopeKey === 'transcription') {
+          setTranscriptionProviderAutoScanLoading(false)
+        } else {
+          setPostProviderAutoScanLoading(false)
+        }
+      }
+    },
+    [
+      fetchCustomModels,
+      onSettingsChange,
+      settings.postProcessingCloudModelId,
+      settings.transcriptionCloudModelId,
+    ],
+  )
+
+  useEffect(() => {
+    if (selectedTranscriptionProvider.providerId === 'custom') {
+      return
+    }
+
+    const apiKey = getTranscriptionApiKey(selectedTranscriptionProvider.providerId)
+    const requestKey = `${selectedTranscriptionProvider.providerId}:${apiKey}`
+    if (!apiKey.trim() || transcriptionAutoScanRequestKeyRef.current === requestKey) {
+      return
+    }
+
+    transcriptionAutoScanRequestKeyRef.current = requestKey
+    void autoScanProviderModels('transcription', selectedTranscriptionProvider.providerId, apiKey)
+  }, [
+    autoScanProviderModels,
+    getTranscriptionApiKey,
+    selectedTranscriptionProvider.providerId,
+    settings.transcriptionOpenAIApiKey,
+    settings.transcriptionGroqApiKey,
+    settings.transcriptionGrokApiKey,
+    settings.transcriptionMetaApiKey,
+  ])
+
+  useEffect(() => {
+    if (selectedPostProcessingProvider.providerId === 'custom') {
+      return
+    }
+
+    const apiKey = getPostProcessingApiKey(selectedPostProcessingProvider.providerId)
+    const requestKey = `${selectedPostProcessingProvider.providerId}:${apiKey}`
+    if (!apiKey.trim() || postAutoScanRequestKeyRef.current === requestKey) {
+      return
+    }
+
+    postAutoScanRequestKeyRef.current = requestKey
+    void autoScanProviderModels('post', selectedPostProcessingProvider.providerId, apiKey)
+  }, [
+    autoScanProviderModels,
+    getPostProcessingApiKey,
+    selectedPostProcessingProvider.providerId,
+    settings.postProcessingOpenAIApiKey,
+    settings.postProcessingGroqApiKey,
+    settings.postProcessingGrokApiKey,
+    settings.postProcessingMetaApiKey,
+  ])
+
   const handleCustomTranscriptionModelScan = async () => {
     if (!transcriptionModelsEndpoint) {
       setCustomTranscriptionModelScanError(CUSTOM_MODEL_FETCH_ERROR)
@@ -1272,7 +1498,7 @@ const ModelsSection = ({
     setCustomTranscriptionModelScanError(null)
 
     try {
-      const modelIds = await fetchCustomModels(transcriptionModelsEndpoint, settings.transcriptionCustomApiKey)
+      const modelIds = await fetchCustomModels(settings.transcriptionCustomBaseUrl, settings.transcriptionCustomApiKey)
       setCustomTranscriptionScannedModels(modelIds)
 
       if (!settings.transcriptionCustomModel.trim() && modelIds[0]) {
@@ -1308,7 +1534,7 @@ const ModelsSection = ({
     setCustomPostModelScanError(null)
 
     try {
-      const modelIds = await fetchCustomModels(postProcessingModelsEndpoint, settings.postProcessingCustomApiKey)
+      const modelIds = await fetchCustomModels(settings.postProcessingCustomBaseUrl, settings.postProcessingCustomApiKey)
       setCustomPostScannedModels(modelIds)
 
       if (!settings.postProcessingCustomModel.trim() && modelIds[0]) {
@@ -1363,7 +1589,7 @@ const ModelsSection = ({
     custom: 'postProcessingCustomApiKey',
   }
 
-  const getTranscriptionApiKey = (providerId: string) => {
+  function getTranscriptionApiKey(providerId: string) {
     const key = transcriptionApiKeyFieldByProvider[providerId]
     if (!key) {
       return ''
@@ -1383,7 +1609,7 @@ const ModelsSection = ({
     } as Partial<AppSettings>)
   }
 
-  const getPostProcessingApiKey = (providerId: string) => {
+  function getPostProcessingApiKey(providerId: string) {
     const key = postProcessingApiKeyFieldByProvider[providerId]
     if (!key) {
       return ''
@@ -1474,7 +1700,39 @@ const ModelsSection = ({
           <div className="rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 p-3">
             <div className="mb-3 flex items-center justify-between gap-2">
               <p className="text-sm font-medium">{selectedTranscriptionProvider.providerLabel}</p>
-              <Badge tone="primary">Cloud STT</Badge>
+              <div className="flex items-center gap-2">
+                <Badge tone="primary">Cloud STT</Badge>
+                <div className="inline-flex overflow-hidden rounded-md border border-border-subtle bg-surface-1">
+                  <button
+                    type="button"
+                    className={cn(
+                      'app-no-drag px-2.5 py-1 text-[11px] font-medium transition-colors',
+                      transcriptionCloudModelLayout === 'single'
+                        ? 'bg-primary/12 text-primary'
+                        : 'text-muted-foreground hover:text-foreground',
+                    )}
+                    onClick={() => {
+                      setTranscriptionCloudModelLayout('single')
+                    }}
+                  >
+                    1 per row
+                  </button>
+                  <button
+                    type="button"
+                    className={cn(
+                      'app-no-drag px-2.5 py-1 text-[11px] font-medium transition-colors',
+                      transcriptionCloudModelLayout === 'double'
+                        ? 'bg-primary/12 text-primary'
+                        : 'text-muted-foreground hover:text-foreground',
+                    )}
+                    onClick={() => {
+                      setTranscriptionCloudModelLayout('double')
+                    }}
+                  >
+                    2 per row
+                  </button>
+                </div>
+              </div>
             </div>
 
             {selectedTranscriptionProvider.providerId === 'custom' ? (
@@ -1620,10 +1878,20 @@ const ModelsSection = ({
                       .
                     </p>
                   ) : null}
+
+                  {transcriptionProviderAutoScanLoading ? (
+                    <p className="text-xs text-muted-foreground">Auto-scanning provider endpoint models...</p>
+                  ) : null}
+
+                  {transcriptionProviderAutoScanError ? (
+                    <p className="rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-2 text-xs text-destructive">
+                      {transcriptionProviderAutoScanError}
+                    </p>
+                  ) : null}
                 </div>
 
-                <div className="grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(210px,1fr))]">
-                  {selectedTranscriptionProvider.models.map((model) => {
+                <div className={transcriptionModelGridClass}>
+                  {displayedTranscriptionCloudModels.map((model) => {
                     const active = settings.transcriptionCloudModelId === model.id
 
                     return (
@@ -1661,10 +1929,194 @@ const ModelsSection = ({
         <CardHeader>
           <CardTitle>Transcriptions | Local</CardTitle>
           <CardDescription>
-            {downloadedModels} downloaded models | storage path: ~/Library/Application Support/Whispy/models
+            {downloadedModels} downloaded models | stored in app data directory
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-2">
+          <div className="space-y-3 rounded-md border border-border-subtle bg-surface-0 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-sm font-medium">Whisper.cpp runtime</p>
+              <select
+                className="app-no-drag h-8 rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 px-2 text-xs"
+                value={settings.whisperCppRuntimeVariant}
+                onChange={(event) => {
+                  onSettingsChange({
+                    whisperCppRuntimeVariant: event.target.value as AppSettings['whisperCppRuntimeVariant'],
+                  })
+                }}
+              >
+                <option value="cpu">CPU runtime</option>
+                <option value="cuda">CUDA runtime</option>
+              </select>
+            </div>
+
+            <p className="text-xs text-muted-foreground">
+              Download official whisper.cpp runtime binaries or use a system whisper-server install. Active runtime:{' '}
+              {settings.whisperCppRuntimeVariant.toUpperCase()}
+            </p>
+
+            {whisperRuntimeStatus ? (
+              <div className="space-y-1 text-xs text-muted-foreground">
+                <p>Runtime directory: {whisperRuntimeStatus.runtimeDirectory}</p>
+                <p>
+                  CPU source:{' '}
+                  {whisperRuntimeStatus.downloadUrls.cpu ? (
+                    <span className="break-all text-foreground/80">{whisperRuntimeStatus.downloadUrls.cpu}</span>
+                  ) : (
+                    <span className="text-amber-500">No official prebuilt URL for this platform (download will build from source)</span>
+                  )}
+                </p>
+                <p>
+                  CUDA source:{' '}
+                  {whisperRuntimeStatus.downloadUrls.cuda ? (
+                    <span className="break-all text-foreground/80">{whisperRuntimeStatus.downloadUrls.cuda}</span>
+                  ) : (
+                    <span className="text-amber-500">No official prebuilt URL for this platform (download will build from source)</span>
+                  )}
+                </p>
+              </div>
+            ) : null}
+
+            <div className="rounded-md border border-border-subtle bg-surface-1/60 p-2">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <p className="text-xs font-medium">Runtime diagnostics</p>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 px-2 text-xs"
+                  disabled={whisperRuntimeDiagnosticsLoading}
+                  onClick={() => {
+                    void refreshWhisperRuntimeDiagnostics()
+                  }}
+                >
+                  {whisperRuntimeDiagnosticsLoading ? 'Checking...' : 'Run check'}
+                </Button>
+              </div>
+
+              {whisperRuntimeDiagnostics ? (
+                <div className="space-y-1 text-[11px] text-muted-foreground">
+                  <p>
+                    Server: {whisperRuntimeDiagnostics.running ? 'running' : 'stopped'}
+                    {whisperRuntimeDiagnostics.running && whisperRuntimeDiagnostics.healthy ? ' (healthy)' : ''}
+                    {whisperRuntimeDiagnostics.pid ? ` | PID ${whisperRuntimeDiagnostics.pid}` : ''}
+                    {whisperRuntimeDiagnostics.port ? ` | Port ${whisperRuntimeDiagnostics.port}` : ''}
+                  </p>
+                  <p>
+                    Active variant: {whisperRuntimeDiagnostics.activeVariant ?? 'n/a'} | Selected variant:{' '}
+                    {whisperRuntimeDiagnostics.selectedVariant}
+                  </p>
+                  <p>Command: {whisperRuntimeDiagnostics.commandPath ?? 'not resolved'}</p>
+                  <p>
+                    Source: {whisperRuntimeDiagnostics.commandSource ?? 'n/a'} | RSS:{' '}
+                    {whisperRuntimeDiagnostics.processRssMB === null
+                      ? 'n/a'
+                      : `${whisperRuntimeDiagnostics.processRssMB.toFixed(1)} MB`}
+                  </p>
+                  <p>
+                    CUDA visibility: {whisperRuntimeDiagnostics.nvidiaSmiAvailable ? 'nvidia-smi detected' : 'nvidia-smi missing'}
+                    {whisperRuntimeDiagnostics.cudaProcessDetected
+                      ? ` | VRAM ${whisperRuntimeDiagnostics.vramUsedMB?.toFixed(1) ?? '0.0'} MB`
+                      : ''}
+                  </p>
+                  <p className="text-foreground/80">{whisperRuntimeDiagnostics.notes}</p>
+                </div>
+              ) : (
+                <p className="text-[11px] text-muted-foreground">Runtime diagnostics unavailable.</p>
+              )}
+            </div>
+
+            <div className="grid gap-2 sm:grid-cols-2">
+              {(['cpu', 'cuda'] as const).map((variant) => {
+                const installed = variant === 'cpu' ? whisperRuntimeStatus?.cpuInstalled : whisperRuntimeStatus?.cudaInstalled
+
+                return (
+                  <div key={variant} className="rounded-md border border-border-subtle bg-surface-1/60 p-2">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <p className="text-xs font-medium uppercase tracking-wide">{variant}</p>
+                      <Badge tone={installed ? 'success' : 'warning'}>{installed ? 'Installed' : 'Missing'}</Badge>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-8 w-full"
+                        disabled={whisperRuntimeActionLoading !== null || whisperRuntimeStatusLoading}
+                        onClick={() => {
+                          setWhisperRuntimeActionLoading(variant)
+
+                          void electronAPI
+                            .downloadWhisperRuntime(variant)
+                            .then(() => {
+                              pushToast({
+                                title: `Whisper ${variant.toUpperCase()} runtime downloaded`,
+                                variant: 'success',
+                              })
+                            })
+                            .catch((error: unknown) => {
+                              const message =
+                                error instanceof Error
+                                  ? error.message
+                                  : `Unable to download Whisper ${variant.toUpperCase()} runtime.`
+
+                              pushToast({
+                                title: `Whisper ${variant.toUpperCase()} runtime download failed`,
+                                description: message,
+                                variant: 'destructive',
+                              })
+                            })
+                            .finally(() => {
+                              setWhisperRuntimeActionLoading(null)
+                              void refreshWhisperRuntimeStatus()
+                              void refreshWhisperRuntimeDiagnostics()
+                            })
+                        }}
+                      >
+                        {whisperRuntimeActionLoading === variant ? 'Downloading...' : 'Download'}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 px-3"
+                        disabled={whisperRuntimeActionLoading !== null || !installed}
+                        onClick={() => {
+                          setWhisperRuntimeActionLoading(variant)
+
+                          void electronAPI
+                            .removeWhisperRuntime(variant)
+                            .then(() => {
+                              pushToast({
+                                title: `Whisper ${variant.toUpperCase()} runtime removed`,
+                              })
+                            })
+                            .catch((error: unknown) => {
+                              const message =
+                                error instanceof Error
+                                  ? error.message
+                                  : `Unable to remove Whisper ${variant.toUpperCase()} runtime.`
+
+                              pushToast({
+                                title: `Unable to remove Whisper ${variant.toUpperCase()} runtime`,
+                                description: message,
+                                variant: 'destructive',
+                              })
+                            })
+                            .finally(() => {
+                              setWhisperRuntimeActionLoading(null)
+                              void refreshWhisperRuntimeStatus()
+                              void refreshWhisperRuntimeDiagnostics()
+                            })
+                        }}
+                      >
+                        Remove
+                      </Button>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+
           {models.map((model) => (
             <div
               key={model.id}
@@ -1688,35 +2140,53 @@ const ModelsSection = ({
                     size="sm"
                     className="w-full"
                     onClick={() => {
-                      if (model.downloaded) {
-                        onModelsChange((current) =>
-                          current.map((item) =>
-                            item.id === model.id
-                              ? {
-                                  ...item,
-                                  downloaded: false,
-                                  downloading: false,
-                                  progress: 0,
-                                }
-                              : item,
-                          ),
-                        )
-                        pushToast({
-                          title: `${model.label} removed`,
+                      if (model.downloading) {
+                        void cancelModelDownloading('transcription', model.id, onModelsChange).then((canceled) => {
+                          if (canceled) {
+                            pushToast({
+                              title: `${model.label} download canceled`,
+                            })
+                          }
                         })
                         return
                       }
 
-                      if (!model.downloading) {
-                        setModelDownloading(model.id, onModelsChange, transcriptionIntervals)
-                        pushToast({
-                          title: `Download started (${model.label})`,
+                      if (model.downloaded) {
+                        void removeModel('transcription', model.id, onModelsChange).then((removed) => {
+                          if (removed) {
+                            pushToast({
+                              title: `${model.label} removed`,
+                            })
+                            return
+                          }
+
+                          pushToast({
+                            title: 'Remove failed',
+                            description: `Unable to remove ${model.label} from local storage.`,
+                            variant: 'destructive',
+                          })
                         })
+                        return
                       }
+
+                      void setModelDownloading('transcription', model.id, onModelsChange).then((downloaded) => {
+                        if (downloaded) {
+                          pushToast({
+                            title: `${model.label} downloaded`,
+                            variant: 'success',
+                          })
+                          return
+                        }
+
+                        pushToast({
+                          title: 'Download failed',
+                          description: `Unable to download ${model.label}.`,
+                          variant: 'destructive',
+                        })
+                      })
                     }}
-                    disabled={model.downloading}
                   >
-                    {model.downloaded ? 'Remove' : 'Download'}
+                    {model.downloading ? 'Cancel' : model.downloaded ? 'Remove' : 'Download'}
                   </Button>
 
                   <Button
@@ -1940,10 +2410,20 @@ const ModelsSection = ({
                       .
                     </p>
                   ) : null}
+
+                  {postProviderAutoScanLoading ? (
+                    <p className="text-xs text-muted-foreground">Auto-scanning provider endpoint models...</p>
+                  ) : null}
+
+                  {postProviderAutoScanError ? (
+                    <p className="rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-2 text-xs text-destructive">
+                      {postProviderAutoScanError}
+                    </p>
+                  ) : null}
                 </div>
 
                 <div className="grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(210px,1fr))]">
-                  {selectedPostProcessingProvider.models.map((model) => {
+                  {displayedPostCloudModels.map((model) => {
                     const active = settings.postProcessingCloudModelId === model.id
 
                     return (
@@ -2006,35 +2486,53 @@ const ModelsSection = ({
                     size="sm"
                     className="w-full"
                     onClick={() => {
-                      if (model.downloaded) {
-                        onPostModelsChange((current) =>
-                          current.map((item) =>
-                            item.id === model.id
-                              ? {
-                                  ...item,
-                                  downloaded: false,
-                                  downloading: false,
-                                  progress: 0,
-                                }
-                              : item,
-                          ),
-                        )
-                        pushToast({
-                          title: `${model.label} removed`,
+                      if (model.downloading) {
+                        void cancelModelDownloading('post', model.id, onPostModelsChange).then((canceled) => {
+                          if (canceled) {
+                            pushToast({
+                              title: `${model.label} download canceled`,
+                            })
+                          }
                         })
                         return
                       }
 
-                      if (!model.downloading) {
-                        setModelDownloading(model.id, onPostModelsChange, postIntervals)
-                        pushToast({
-                          title: `Download started (${model.label})`,
+                      if (model.downloaded) {
+                        void removeModel('post', model.id, onPostModelsChange).then((removed) => {
+                          if (removed) {
+                            pushToast({
+                              title: `${model.label} removed`,
+                            })
+                            return
+                          }
+
+                          pushToast({
+                            title: 'Remove failed',
+                            description: `Unable to remove ${model.label} from local storage.`,
+                            variant: 'destructive',
+                          })
                         })
+                        return
                       }
+
+                      void setModelDownloading('post', model.id, onPostModelsChange).then((downloaded) => {
+                        if (downloaded) {
+                          pushToast({
+                            title: `${model.label} downloaded`,
+                            variant: 'success',
+                          })
+                          return
+                        }
+
+                        pushToast({
+                          title: 'Download failed',
+                          description: `Unable to download ${model.label}.`,
+                          variant: 'destructive',
+                        })
+                      })
                     }}
-                    disabled={model.downloading}
                   >
-                    {model.downloaded ? 'Remove' : 'Download'}
+                    {model.downloading ? 'Cancel' : model.downloaded ? 'Remove' : 'Download'}
                   </Button>
 
                   <Button
@@ -2114,6 +2612,7 @@ const PromptsSection = ({ settings, onChange }: PromptsSectionProps) => {
   const [view, setView] = useState<PromptView>('preview')
   const [testInput, setTestInput] = useState('')
   const [testOutput, setTestOutput] = useState('')
+  const [testLoading, setTestLoading] = useState(false)
 
   const translationComboHotkey = useMemo(
     () => buildTranslationComboHotkey(settings.hotkey),
@@ -2123,7 +2622,29 @@ const PromptsSection = ({ settings, onChange }: PromptsSectionProps) => {
   const translationHotkey =
     settings.translationHotkeyMode === 'combo' ? translationComboHotkey : settings.translationCustomHotkey
 
-  const runPromptTest = () => {
+  const runPromptTest = async () => {
+    if (typeof window.electronAPI !== 'undefined') {
+      setTestLoading(true)
+
+      try {
+        const result = await electronAPI.runPromptTest(testInput)
+        const routeLabelById: Record<typeof result.route, string> = {
+          normal: 'Normal prompt',
+          agent: 'Agent prompt',
+          translation: 'Translation prompt',
+        }
+
+        setTestOutput(`Route: ${routeLabelById[result.route]}\n\nOutput:\n${result.output}`)
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : 'Unable to run prompt test.'
+        setTestOutput(`Prompt test failed\n\n${message}`)
+      } finally {
+        setTestLoading(false)
+      }
+
+      return
+    }
+
     const normalizedAgent = settings.agentName.trim().toLowerCase()
     const usesAgentRoute = normalizedAgent.length > 0 && testInput.toLowerCase().includes(normalizedAgent)
 
@@ -2250,7 +2771,14 @@ const PromptsSection = ({ settings, onChange }: PromptsSectionProps) => {
                 />
               </div>
               <div className="flex justify-end">
-                <Button onClick={runPromptTest}>Run mock test</Button>
+                <Button
+                  onClick={() => {
+                    void runPromptTest()
+                  }}
+                  disabled={testLoading}
+                >
+                  {testLoading ? 'Running...' : 'Run test'}
+                </Button>
               </div>
               <div className="rounded-md border border-border-subtle bg-surface-0 p-3">
                 <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Result</p>
@@ -2316,7 +2844,14 @@ const InfoSection = ({
   settings: AppSettings
   onChange: (next: Partial<AppSettings>) => void
 }) => {
+  const { pushToast } = useToast()
   const [showBugLogs, setShowBugLogs] = useState(false)
+  const [debugLogStatus, setDebugLogStatus] = useState<DebugLogStatusPayload | null>(null)
+  const [debugLogStatusLoading, setDebugLogStatusLoading] = useState(false)
+  const [showSecretStorage, setShowSecretStorage] = useState(false)
+  const [secretStorageStatus, setSecretStorageStatus] = useState<SecretStorageStatusPayload | null>(null)
+  const [secretStorageStatusLoading, setSecretStorageStatusLoading] = useState(false)
+  const [secretMigrationLoading, setSecretMigrationLoading] = useState(false)
 
   const activeTranscriptionProviderLabel =
     CLOUD_TRANSCRIPTION_CATALOG.find((provider) => provider.providerId === settings.transcriptionCloudProvider)
@@ -2327,11 +2862,105 @@ const InfoSection = ({
       ? `Cloud (${activeTranscriptionProviderLabel})`
       : 'Local'
 
+  const refreshDebugLogStatus = useCallback(
+    async (showErrorToast: boolean) => {
+      setDebugLogStatusLoading(true)
+
+      try {
+        const status = await electronAPI.getDebugLogStatus()
+        setDebugLogStatus(status)
+      } catch {
+        setDebugLogStatus(null)
+        if (showErrorToast) {
+          pushToast({
+            title: 'Debug log status unavailable',
+            description: 'Unable to read debug log status in this runtime.',
+            variant: 'destructive',
+          })
+        }
+      } finally {
+        setDebugLogStatusLoading(false)
+      }
+    },
+    [pushToast],
+  )
+
+  useEffect(() => {
+    if (!showBugLogs) {
+      return
+    }
+
+    void refreshDebugLogStatus(false)
+  }, [refreshDebugLogStatus, showBugLogs])
+
+  const refreshSecretStorageStatus = useCallback(
+    async (showErrorToast: boolean) => {
+      setSecretStorageStatusLoading(true)
+
+      try {
+        const status = await electronAPI.getSecretStorageStatus()
+        setSecretStorageStatus(status)
+      } catch {
+        setSecretStorageStatus(null)
+        if (showErrorToast) {
+          pushToast({
+            title: 'Secret storage status unavailable',
+            description: 'Unable to read keyring/env status in this runtime.',
+            variant: 'destructive',
+          })
+        }
+      } finally {
+        setSecretStorageStatusLoading(false)
+      }
+    },
+    [pushToast],
+  )
+
+  useEffect(() => {
+    if (!showSecretStorage) {
+      return
+    }
+
+    void refreshSecretStorageStatus(false)
+  }, [refreshSecretStorageStatus, showSecretStorage])
+
+  const handleSecretMigration = useCallback(async () => {
+    setSecretMigrationLoading(true)
+
+    try {
+      const migration = await electronAPI.migrateSecretsToKeyring()
+      if (!migration.success) {
+        pushToast({
+          title: 'Keyring migration failed',
+          description: migration.details,
+          variant: 'destructive',
+        })
+        return
+      }
+
+      onChange({ keytarEnabled: true })
+      pushToast({
+        title: 'Keyring migration complete',
+        description: migration.details,
+        variant: 'success',
+      })
+      void refreshSecretStorageStatus(false)
+    } catch {
+      pushToast({
+        title: 'Keyring migration failed',
+        description: 'Unexpected error during migration.',
+        variant: 'destructive',
+      })
+    } finally {
+      setSecretMigrationLoading(false)
+    }
+  }, [onChange, pushToast, refreshSecretStorageStatus])
+
   return (
     <div className="space-y-4">
       <Card>
         <CardHeader>
-          <CardTitle>Bug logs</CardTitle>
+          <CardTitle>Debug logs</CardTitle>
           <CardDescription>Quick debug controls and log locations.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -2341,6 +2970,9 @@ const InfoSection = ({
               checked={settings.debugModeEnabled}
               onCheckedChange={(checked) => {
                 onChange({ debugModeEnabled: checked })
+                window.setTimeout(() => {
+                  void refreshDebugLogStatus(false)
+                }, 50)
               }}
             />
           </div>
@@ -2357,6 +2989,107 @@ const InfoSection = ({
               <p>Renderer logs: ~/.config/whispy/logs/renderer.log</p>
               <p>Main logs: ~/.config/whispy/logs/main.log</p>
               <p>Crash dumps: ~/.config/whispy/logs/crash/</p>
+              {settings.debugModeEnabled ? (
+                <>
+                  <p className="mt-2">Current debug log file:</p>
+                  <p className="text-xs">{debugLogStatus?.currentLogFile ?? 'Loading...'}</p>
+                </>
+              ) : null}
+            </div>
+          ) : null}
+
+          {showBugLogs && settings.debugModeEnabled ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={debugLogStatusLoading}
+                onClick={() => {
+                  void refreshDebugLogStatus(true)
+                }}
+              >
+                {debugLogStatusLoading ? 'Refreshing...' : 'Refresh debug log status'}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  void electronAPI.openDebugLogFile()
+                }}
+              >
+                Open debug logs file
+              </Button>
+            </div>
+          ) : null}
+
+          {showBugLogs ? (
+            <button
+              type="button"
+              className="app-no-drag inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+              onClick={() => {
+                setShowSecretStorage((current) => !current)
+              }}
+            >
+              <KeyRound className="h-3.5 w-3.5" />
+              {showSecretStorage ? 'Hide secret storage' : 'Advanced secret storage'}
+            </button>
+          ) : null}
+
+          {showSecretStorage ? (
+            <div className="space-y-3 rounded-md border border-border-subtle bg-surface-0 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-sm font-medium">Secret storage</p>
+                <Badge tone={settings.keytarEnabled ? 'primary' : 'neutral'}>
+                  {settings.keytarEnabled ? 'Keyring enabled' : 'Plaintext .env (default)'}
+                </Badge>
+              </div>
+
+              <p className="text-xs text-muted-foreground">
+                Default mode keeps API keys in plaintext `.env` storage. You can migrate to the system keyring at any
+                time.
+              </p>
+
+              <p className="text-xs text-muted-foreground">
+                Env path: {secretStorageStatus?.envFilePath ?? 'Loading...'}
+              </p>
+
+              <p className="text-xs text-muted-foreground">
+                {secretStorageStatus?.details ?? 'Status unavailable until checked.'}
+              </p>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={secretStorageStatusLoading}
+                  onClick={() => {
+                    void refreshSecretStorageStatus(true)
+                  }}
+                >
+                  {secretStorageStatusLoading ? 'Checking...' : 'Refresh status'}
+                </Button>
+
+                {!settings.keytarEnabled ? (
+                  <Button size="sm" disabled={secretMigrationLoading} onClick={() => void handleSecretMigration()}>
+                    {secretMigrationLoading ? 'Migrating...' : 'Enable keyring + migrate from .env'}
+                  </Button>
+                ) : (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      onChange({ keytarEnabled: false })
+                      pushToast({
+                        title: 'Plaintext mode enabled',
+                        description: 'API keys will be written to plaintext .env storage.',
+                      })
+                      void refreshSecretStorageStatus(false)
+                    }}
+                  >
+                    Use plaintext .env mode
+                  </Button>
+                )}
+              </div>
             </div>
           ) : null}
         </CardContent>
@@ -2381,15 +3114,15 @@ const InfoSection = ({
       <Card>
         <CardHeader>
           <CardTitle>Whispy Local</CardTitle>
-          <CardDescription>Mock UI version: 0.1.0</CardDescription>
+          <CardDescription>App version: 0.1.0</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="rounded-md border border-border-subtle bg-surface-0 p-3 text-sm text-muted-foreground">
-            Changelog (mock):
+            Changelog:
             <ul className="mt-2 list-disc space-y-1 pl-5">
               <li>Floating overlay with IDLE/RECORDING/PROCESSING states</li>
               <li>Complete control panel with onboarding</li>
-              <li>Models section with simulated download flow</li>
+              <li>Models section with backend-managed download flow</li>
             </ul>
           </div>
         </CardContent>
@@ -2397,10 +3130,10 @@ const InfoSection = ({
           <Button
             variant="outline"
             onClick={() => {
-              electronAPI.openExternal('https://example.com/support')
+              void electronAPI.openAppDataDirectory()
             }}
           >
-            <Link className="h-3.5 w-3.5" /> Support
+            <Link className="h-3.5 w-3.5" /> Open app data folder
           </Button>
         </CardFooter>
       </Card>
@@ -2414,6 +3147,7 @@ type SettingsNodeId =
   | 'transcription'
   | 'dictionary'
   | 'ai-models'
+  | 'translation'
   | 'prompts'
   | 'agent.name'
   | 'privacy'
@@ -2447,6 +3181,7 @@ const SETTINGS_MENU_GROUPS: SettingsMenuGroup[] = [
     label: 'Post-Processing',
     items: [
       { id: 'ai-models', label: 'AI Models', icon: BrainCircuit },
+      { id: 'translation', label: 'Translation', icon: Languages },
       { id: 'agent.name', label: 'Agent', icon: Bot },
       { id: 'prompts', label: 'Prompts', icon: Sparkles },
     ],
@@ -2466,6 +3201,9 @@ interface SettingsWorkspaceProps {
   models: ModelState[]
   postModels: ModelState[]
   displayServer: DisplayServer
+  autoPasteSupport: AutoPasteBackendSupportPayload | null
+  autoPasteSupportLoading: boolean
+  onRefreshAutoPasteSupport: () => void
   onSettingsChange: (next: Partial<AppSettings>) => void
   onModelsChange: Dispatch<SetStateAction<ModelState[]>>
   onPostModelsChange: Dispatch<SetStateAction<ModelState[]>>
@@ -2476,6 +3214,9 @@ const SettingsWorkspace = ({
   models,
   postModels,
   displayServer,
+  autoPasteSupport,
+  autoPasteSupportLoading,
+  onRefreshAutoPasteSupport,
   onSettingsChange,
   onModelsChange,
   onPostModelsChange,
@@ -2524,6 +3265,9 @@ const SettingsWorkspace = ({
           settings={settings}
           autoDetectSupported={autoDetectSupported}
           displayServer={displayServer}
+          autoPasteSupport={autoPasteSupport}
+          autoPasteSupportLoading={autoPasteSupportLoading}
+          onRefreshAutoPasteSupport={onRefreshAutoPasteSupport}
           onChange={onSettingsChange}
         />
       )
@@ -2538,10 +3282,12 @@ const SettingsWorkspace = ({
               setTranscriptionMode(value as 'cloud' | 'local')
             }}
           >
-            <TabsList className="bg-surface-2/80">
-              <TabsTrigger value="cloud">Cloud</TabsTrigger>
-              <TabsTrigger value="local">Local</TabsTrigger>
-            </TabsList>
+            <div className="flex justify-center">
+              <TabsList className="bg-surface-2/80">
+                <TabsTrigger value="cloud">Cloud</TabsTrigger>
+                <TabsTrigger value="local">Local</TabsTrigger>
+              </TabsList>
+            </div>
           </Tabs>
           <ModelsSection
             scope="transcriptions"
@@ -2570,10 +3316,12 @@ const SettingsWorkspace = ({
               setPostProcessingMode(value as 'cloud' | 'local')
             }}
           >
-            <TabsList className="bg-surface-2/80">
-              <TabsTrigger value="cloud">Cloud</TabsTrigger>
-              <TabsTrigger value="local">Local</TabsTrigger>
-            </TabsList>
+            <div className="flex justify-center">
+              <TabsList className="bg-surface-2/80">
+                <TabsTrigger value="cloud">Cloud</TabsTrigger>
+                <TabsTrigger value="local">Local</TabsTrigger>
+              </TabsList>
+            </div>
           </Tabs>
           <ModelsSection
             scope="post"
@@ -2587,6 +3335,10 @@ const SettingsWorkspace = ({
           />
         </div>
       )
+    }
+
+    if (activeNode === 'translation') {
+      return <TranslationModeSection settings={settings} onChange={onSettingsChange} />
     }
 
     if (activeNode === 'prompts') {
@@ -2612,14 +3364,14 @@ const SettingsWorkspace = ({
     cn(
       'relative app-no-drag flex h-10 w-full items-center gap-3 rounded-[10px] px-2.5 text-left text-sm whitespace-nowrap transition-colors',
       activeNode === nodeId
-        ? 'bg-surface-1 text-foreground shadow-[0_0_0_1px_var(--border-hover)]'
-        : 'text-muted-foreground hover:bg-surface-2/60 hover:text-foreground',
+        ? 'bg-surface-0 text-foreground shadow-[0_0_0_1px_var(--border-active)]'
+        : 'text-foreground/80 hover:bg-surface-1 hover:text-foreground',
     )
 
   return (
     <div className="grid h-full min-h-0 grid-cols-[260px_minmax(0,1fr)] gap-4 rounded-[var(--radius-premium)] border border-border-subtle bg-surface-1/70 p-4">
-      <aside className="min-h-0 overflow-y-auto rounded-[var(--radius-premium)] border border-border-subtle bg-[#070a12] p-3">
-        <p className="px-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-[#6f7891]">Settings</p>
+      <aside className="min-h-0 overflow-y-auto rounded-[var(--radius-premium)] border border-border-subtle bg-surface-2/70 p-3">
+        <p className="px-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Settings</p>
         <nav className="mt-4 space-y-4">
           {SETTINGS_MENU_GROUPS.map((group) => {
             const visibleItems = group.items.filter((item) => SHOW_ACCOUNT_SECTION || item.id !== 'account')
@@ -2630,7 +3382,7 @@ const SettingsWorkspace = ({
 
             return (
               <div key={group.label}>
-                <p className="px-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-[#4f586d]">{group.label}</p>
+                <p className="px-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">{group.label}</p>
                 <div className="mt-1.5 space-y-1">
                   {visibleItems.map((item) => {
                     const Icon = item.icon
@@ -2684,6 +3436,31 @@ const OnboardingWizard = ({ settings, models, onSettingsChange, onComplete }: On
   const [micPermission, setMicPermission] = useState(false)
   const [pastePermission, setPastePermission] = useState(false)
   const onboardingAutoDetectSupported = AUTO_DETECT_SUPPORTED_TRANSCRIPTION_MODELS.has(settings.modelId)
+
+  useEffect(() => {
+    let active = true
+
+    void Promise.all([
+      electronAPI.getMicrophonePermissionStatus(),
+      isMacOS ? electronAPI.getAccessibilityPermissionStatus() : Promise.resolve(true),
+    ])
+      .then(([microphoneGranted, accessibilityGranted]) => {
+        if (active) {
+          setMicPermission(microphoneGranted)
+          setPastePermission(accessibilityGranted)
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setMicPermission(true)
+          setPastePermission(true)
+        }
+      })
+
+    return () => {
+      active = false
+    }
+  }, [])
 
   useEffect(() => {
     if (onboardingAutoDetectSupported || settings.preferredLanguage !== AUTO_DETECT_LANGUAGE) {
@@ -2795,16 +3572,60 @@ const OnboardingWizard = ({ settings, models, onSettingsChange, onComplete }: On
 
           {step === 2 ? (
             <div className="space-y-3">
-              <p className="text-sm text-muted-foreground">Confirm required permissions (mock UI).</p>
+              <p className="text-sm text-muted-foreground">Confirm required permissions.</p>
               <div className="space-y-2">
                 <div className="flex items-center justify-between rounded-md border border-border-subtle bg-surface-0 px-3 py-2">
                   <p className="text-sm">Microphone access</p>
-                  <Switch checked={micPermission} onCheckedChange={setMicPermission} />
+                  <Switch
+                    checked={micPermission}
+                    onCheckedChange={(checked) => {
+                      if (!checked) {
+                        setMicPermission(false)
+                        return
+                      }
+
+                      if (typeof window.electronAPI === 'undefined') {
+                        setMicPermission(true)
+                        return
+                      }
+
+                      void electronAPI
+                        .requestMicrophonePermission()
+                        .then((granted) => {
+                          setMicPermission(granted)
+                        })
+                        .catch(() => {
+                          setMicPermission(false)
+                        })
+                    }}
+                  />
                 </div>
                 {isMacOS ? (
                   <div className="flex items-center justify-between rounded-md border border-border-subtle bg-surface-0 px-3 py-2">
-                    <p className="text-sm">Paste permission on macOS</p>
-                    <Switch checked={pastePermission} onCheckedChange={setPastePermission} />
+                    <p className="text-sm">Accessibility enabled for auto-paste</p>
+                    <Switch
+                      checked={pastePermission}
+                      onCheckedChange={(checked) => {
+                        if (!checked) {
+                          setPastePermission(false)
+                          return
+                        }
+
+                        if (typeof window.electronAPI === 'undefined') {
+                          setPastePermission(true)
+                          return
+                        }
+
+                        void electronAPI
+                          .requestAccessibilityPermission()
+                          .then((granted) => {
+                            setPastePermission(granted)
+                          })
+                          .catch(() => {
+                            setPastePermission(false)
+                          })
+                      }}
+                    />
                   </div>
                 ) : null}
               </div>
@@ -2878,6 +3699,9 @@ const ControlPanelScene = () => {
   const [historyClearConfirmOpen, setHistoryClearConfirmOpen] = useState(false)
   const [onboardingDone, setOnboardingDone] = useState(isOnboardingCompleted)
   const [displayServer, setDisplayServer] = useState<DisplayServer>('unknown')
+  const [autoPasteSupport, setAutoPasteSupport] = useState<AutoPasteBackendSupportPayload | null>(null)
+  const [autoPasteSupportLoading, setAutoPasteSupportLoading] = useState(true)
+  const [windowMaximized, setWindowMaximized] = useState(false)
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -2908,6 +3732,149 @@ const ControlPanelScene = () => {
 
     return () => {
       alive = false
+    }
+  }, [])
+
+  const handleModelDownloadProgress = useCallback((payload: ModelDownloadProgressPayload) => {
+    const setScopedModels = payload.scope === 'transcription' ? setModels : setPostModels
+
+    setScopedModels((current) =>
+      current.map((model) => {
+        if (model.id !== payload.modelId) {
+          return model
+        }
+
+        if (payload.state === 'completed') {
+          return {
+            ...model,
+            downloading: false,
+            downloaded: true,
+            progress: 100,
+          }
+        }
+
+        if (payload.state === 'failed' || payload.state === 'canceled') {
+          return {
+            ...model,
+            downloading: false,
+            downloaded: false,
+            progress: 0,
+          }
+        }
+
+        return {
+          ...model,
+          downloading: true,
+          progress: payload.progress,
+        }
+      }),
+    )
+  }, [])
+
+  useEffect(() => {
+    const offModelDownloadProgress = electronAPI.onModelDownloadProgress(handleModelDownloadProgress)
+
+    return () => {
+      offModelDownloadProgress()
+    }
+  }, [handleModelDownloadProgress])
+
+  const requestAutoPasteSupportViaWindowAction = useCallback(async () => {
+    return new Promise<AutoPasteBackendSupportPayload>((resolve, reject) => {
+      const timeout = window.setTimeout(() => {
+        window.removeEventListener('whispy-autopaste-support', onSupportEvent as EventListener)
+        reject(new Error('autopaste_support_timeout'))
+      }, 2200)
+
+      const onSupportEvent = (event: Event) => {
+        const customEvent = event as CustomEvent<unknown>
+        if (!isAutoPasteSupportPayload(customEvent.detail)) {
+          return
+        }
+
+        window.clearTimeout(timeout)
+        window.removeEventListener('whispy-autopaste-support', onSupportEvent as EventListener)
+        resolve(customEvent.detail)
+      }
+
+      window.addEventListener('whispy-autopaste-support', onSupportEvent as EventListener)
+
+      const dispatchDetectionRequest = async () => {
+        try {
+          await electronAPI.openExternal('whispy-action://autopaste/detect')
+          return
+        } catch {
+          try {
+            window.open('whispy-action://autopaste/detect', '_blank', 'noopener,noreferrer')
+            return
+          } catch {
+            window.clearTimeout(timeout)
+            window.removeEventListener('whispy-autopaste-support', onSupportEvent as EventListener)
+            reject(new Error('autopaste_support_dispatch_failed'))
+          }
+        }
+      }
+
+      void dispatchDetectionRequest()
+    })
+  }, [])
+
+  const refreshAutoPasteSupport = useCallback(
+    async (showErrorToast: boolean) => {
+      setAutoPasteSupportLoading(true)
+
+      try {
+        const supportPayload = await electronAPI.getAutoPasteBackendSupport()
+        setAutoPasteSupport(supportPayload)
+      } catch {
+        try {
+          const supportPayload = await requestAutoPasteSupportViaWindowAction()
+          setAutoPasteSupport(supportPayload)
+        } catch {
+          setAutoPasteSupport(null)
+
+          if (showErrorToast) {
+            pushToast({
+              title: 'Auto-paste check failed',
+              description: 'Unable to detect backend availability in this runtime.',
+              variant: 'destructive',
+            })
+          }
+        }
+      } finally {
+        setAutoPasteSupportLoading(false)
+      }
+    },
+    [pushToast, requestAutoPasteSupportViaWindowAction],
+  )
+
+  useEffect(() => {
+    void refreshAutoPasteSupport(false)
+  }, [refreshAutoPasteSupport])
+
+  useEffect(() => {
+    let alive = true
+
+    void electronAPI
+      .getWindowMaximized()
+      .then((maximized) => {
+        if (alive) {
+          setWindowMaximized(maximized)
+        }
+      })
+      .catch(() => {
+        if (alive) {
+          setWindowMaximized(false)
+        }
+      })
+
+    const offWindowMaximizeChanged = electronAPI.onWindowMaximizeChanged((maximized) => {
+      setWindowMaximized(maximized)
+    })
+
+    return () => {
+      alive = false
+      offWindowMaximizeChanged()
     }
   }, [])
 
@@ -2966,7 +3933,9 @@ const ControlPanelScene = () => {
       }
 
       if (event.key === STORAGE_KEYS.settings) {
-        setSettings(loadSettings())
+        void refreshSettingsFromBackend().then((nextSettings) => {
+          setSettings(nextSettings)
+        })
       }
 
       if (event.key === STORAGE_KEYS.postModels) {
@@ -3040,6 +4009,11 @@ const ControlPanelScene = () => {
           models={models}
           postModels={postModels}
           displayServer={displayServer}
+          autoPasteSupport={autoPasteSupport}
+          autoPasteSupportLoading={autoPasteSupportLoading}
+          onRefreshAutoPasteSupport={() => {
+            void refreshAutoPasteSupport(true)
+          }}
           onSettingsChange={handleSettingsChange}
           onModelsChange={setModels}
           onPostModelsChange={setPostModels}
@@ -3121,9 +4095,16 @@ const ControlPanelScene = () => {
       : String(historyEntries.length)
 
   return (
-    <div className="flex h-screen flex-col bg-[radial-gradient(circle_at_top_right,rgba(99,102,241,0.16),transparent_42%),radial-gradient(circle_at_bottom_left,rgba(37,99,235,0.14),transparent_38%)] text-foreground">
-      <header className="flex h-12 shrink-0 items-center border-b border-border-subtle bg-surface-1/90 px-4">
-        <div className="app-no-drag group flex items-center gap-1.5 pl-1">
+    <div
+      className={cn(
+        'flex h-screen flex-col overflow-hidden bg-[radial-gradient(circle_at_top_right,rgba(99,102,241,0.16),transparent_42%),radial-gradient(circle_at_bottom_left,rgba(37,99,235,0.14),transparent_38%)] text-foreground transition-[border-radius] duration-150',
+        useCustomWindowChrome ? 'border border-border-subtle' : 'border-0',
+        useCustomWindowChrome && !windowMaximized ? 'rounded-[12px]' : 'rounded-none',
+      )}
+    >
+      <header className={cn('relative flex h-12 shrink-0 items-center border-b border-border-subtle bg-surface-1/90 px-4', useCustomWindowChrome ? 'app-drag' : '')}>
+        {useCustomWindowChrome ? (
+        <div className="app-no-drag group z-10 flex items-center gap-1.5 pl-1">
             {([
               { id: 'close', color: '#ff5f57', icon: X },
               { id: 'minimize', color: '#febc2e', icon: Minus },
@@ -3157,16 +4138,33 @@ const ControlPanelScene = () => {
                     <Icon className="pointer-events-none absolute inset-0 m-auto h-2.5 w-2.5 text-black/85 opacity-20 drop-shadow-[0_0.5px_0_rgba(255,255,255,0.35)] transition-opacity duration-150 group-hover:opacity-100" />
                   </span>
                 </button>
-              )
-            })}
+                )
+              })}
+        </div>
+        ) : (
+          <div className="z-10 w-8" />
+        )}
+
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+          <div className={cn('inline-flex items-center gap-2 text-sm font-semibold text-muted-foreground', useCustomWindowChrome ? 'app-drag' : '')}>
+            <Sparkles className="h-4 w-4 text-primary" />
+            <span>Whispy</span>
+          </div>
         </div>
 
-        <div className="app-drag ml-3 flex min-w-0 flex-1 items-center gap-2 text-sm font-medium text-muted-foreground">
-          <Sparkles className="h-4 w-4 text-primary" />
-          <span className="truncate">Whispy Local Control Panel</span>
-        </div>
+        <div className="app-no-drag z-10 ml-auto flex items-center gap-2">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => {
+              handleSettingsChange({
+                theme: settings.theme === 'dark' ? 'light' : 'dark',
+              })
+            }}
+          >
+            {settings.theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+          </Button>
 
-        <div className="app-no-drag flex items-center gap-2">
           <button
             type="button"
             className={cn(
@@ -3182,28 +4180,6 @@ const ControlPanelScene = () => {
             <Settings className="h-4 w-4" />
           </button>
 
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => {
-              electronAPI.showDictationPanel()
-            }}
-          >
-            <PanelRight className="h-3.5 w-3.5" />
-            Show overlay
-          </Button>
-
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => {
-              handleSettingsChange({
-                theme: settings.theme === 'dark' ? 'light' : 'dark',
-              })
-            }}
-          >
-            {settings.theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-          </Button>
         </div>
       </header>
 

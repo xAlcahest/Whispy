@@ -1,4 +1,22 @@
-import type { AppSettings, ModelDescriptor } from '../types/app'
+import {
+  DEFAULT_SETTINGS,
+  MODEL_PRESETS,
+  POST_LOCAL_MODEL_PRESETS,
+  createDefaultModelState,
+  createDefaultPostModelState,
+  normalizeModelState,
+  normalizeSettings,
+} from '../../../shared/defaults'
+
+export {
+  DEFAULT_SETTINGS,
+  MODEL_PRESETS,
+  POST_LOCAL_MODEL_PRESETS,
+  createDefaultModelState,
+  createDefaultPostModelState,
+  normalizeModelState,
+  normalizeSettings,
+}
 
 export const STORAGE_KEYS = {
   settings: 'whispy.settings',
@@ -8,59 +26,6 @@ export const STORAGE_KEYS = {
   postModels: 'whispy.post-models',
   appNotification: 'whispy.app.notification',
 } as const
-
-export const DEFAULT_SETTINGS: AppSettings = {
-  uiLanguage: 'en',
-  hotkey: 'Ctrl+Shift+K',
-  activationMode: 'tap',
-  autoPaste: true,
-  autoPasteBackend: 'ydotools',
-  microphoneAccess: true,
-  autoHideFloatingIcon: false,
-  launchAtLogin: false,
-  sounds: true,
-  theme: 'dark',
-  preferredLanguage: 'English',
-  provider: 'whisper',
-  modelId: 'small',
-  transcriptionRuntime: 'cloud',
-  transcriptionCloudProvider: 'openai',
-  transcriptionCloudModelId: 'gpt-4o-transcribe',
-  transcriptionOpenAIApiKey: '',
-  transcriptionGrokApiKey: '',
-  transcriptionGroqApiKey: '',
-  transcriptionMetaApiKey: '',
-  transcriptionCustomBaseUrl: '',
-  transcriptionCustomApiKey: '',
-  transcriptionCustomModel: 'custom-stt-model',
-  transcriptionLocalModelId: 'small',
-  postProcessingRuntime: 'cloud',
-  postProcessingCloudProvider: 'openai',
-  postProcessingCloudModelId: 'gpt-4.1-mini',
-  postProcessingOpenAIApiKey: '',
-  postProcessingGrokApiKey: '',
-  postProcessingGroqApiKey: '',
-  postProcessingMetaApiKey: '',
-  postProcessingCustomBaseUrl: '',
-  postProcessingCustomApiKey: '',
-  postProcessingCustomModel: 'custom-llm-model',
-  postProcessingLocalModelId: 'llama-3.1-8b-instruct',
-  normalPrompt:
-    'Rewrite the transcription clearly, keep the original meaning, and return plain text only.',
-  agentName: 'Agent',
-  agentPrompt:
-    'If the user explicitly says the agent name, execute the requested action format and return concise actionable output.',
-  translationModeEnabled: false,
-  translationHotkeyMode: 'combo',
-  translationCustomHotkey: 'Ctrl+Shift+T',
-  translationSourceLanguage: 'Auto-detect',
-  translationTargetLanguage: 'English',
-  translationPrompt:
-    'Translate the transcription from {source_language} to {target_language} while preserving intent and tone.',
-  postProcessingDictionaryEnabled: false,
-  postProcessingDictionaryRules: [],
-  debugModeEnabled: false,
-}
 
 export const AUTO_DETECT_LANGUAGE = 'Auto-detect'
 
@@ -100,39 +65,6 @@ export const PROVIDERS = [
   { id: 'whisper', label: 'Whisper (local)' },
   { id: 'parakeet', label: 'Parakeet (NVIDIA)' },
 ] as const
-
-export const MODEL_PRESETS: ModelDescriptor[] = [
-  { id: 'tiny', label: 'Tiny', size: '75 MB', speed: 'Fast', quality: 'Basic' },
-  { id: 'base', label: 'Base', size: '142 MB', speed: 'Fast', quality: 'Good' },
-  { id: 'small', label: 'Small', size: '466 MB', speed: 'Balanced', quality: 'Great' },
-  { id: 'medium', label: 'Medium', size: '1.5 GB', speed: 'Balanced', quality: 'Great' },
-  { id: 'large', label: 'Large', size: '2.9 GB', speed: 'Accurate', quality: 'Best' },
-  { id: 'turbo', label: 'Turbo', size: '809 MB', speed: 'Fast', quality: 'Great' },
-]
-
-export const POST_LOCAL_MODEL_PRESETS: ModelDescriptor[] = [
-  {
-    id: 'llama-3.1-8b-instruct',
-    label: 'Llama 3.1 8B Instruct',
-    size: '4.7 GB',
-    speed: 'Balanced',
-    quality: 'Great',
-  },
-  {
-    id: 'qwen-2.5-7b-instruct',
-    label: 'Qwen 2.5 7B Instruct',
-    size: '4.3 GB',
-    speed: 'Balanced',
-    quality: 'Good',
-  },
-  {
-    id: 'phi-3.5-mini-instruct',
-    label: 'Phi 3.5 Mini Instruct',
-    size: '2.1 GB',
-    speed: 'Fast',
-    quality: 'Good',
-  },
-]
 
 export const CLOUD_TRANSCRIPTION_CATALOG = [
   {
@@ -221,4 +153,4 @@ export const AUTO_DETECT_SUPPORTED_TRANSCRIPTION_MODELS = new Set<string>([
   ),
 ])
 
-export const TARGET_APPS = ['VS Code', 'Notion', 'Slack', 'Cursor', 'Chrome', 'Terminal']
+export const TARGET_APPS = ['Google Chrome', 'Visual Studio Code', 'Terminal']

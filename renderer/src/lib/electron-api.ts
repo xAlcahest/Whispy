@@ -17,6 +17,9 @@ const fallbackElectronAPI: ElectronAPI = {
   runPromptTest: async () => {
     throw new Error('runPromptTest unavailable outside Electron runtime')
   },
+  runNoteEnhancement: async () => {
+    throw new Error('runNoteEnhancement unavailable outside Electron runtime')
+  },
   downloadLocalModel: async () => {
     throw new Error('downloadLocalModel unavailable outside Electron runtime')
   },
@@ -64,7 +67,11 @@ const fallbackElectronAPI: ElectronAPI = {
   getDictationStatus: async () => 'IDLE',
   toggleDictation: async () => ({
     accepted: false,
-    reason: 'processing',
+    reason: 'unavailable',
+  }),
+  toggleDictationTranscriptionOnly: async () => ({
+    accepted: false,
+    reason: 'unavailable',
   }),
   cancelDictation: async () => false,
   performAutoPaste: async () => ({
@@ -115,6 +122,7 @@ const fallbackElectronAPI: ElectronAPI = {
 
     throw new Error('Unsupported external URL scheme in fallback runtime')
   },
+  logNotesEvent: async () => {},
   getDisplayServer: async () =>
     (navigator.userAgent.toLowerCase().includes('wayland') ? 'wayland' : 'unknown') as DisplayServer,
   openAppDataDirectory: async () => {},

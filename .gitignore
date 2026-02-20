@@ -14,3 +14,4 @@ opencode_wrkspc.txt
 docs/
 .cache/
 resources/bin/whispercpp/
+.reference/

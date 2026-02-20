@@ -226,7 +226,16 @@ export class WhisperServerManager {
 
   constructor(private readonly deps: WhisperServerDependencies) {}
 
-  async transcribeAudioFile(audioFilePath: string, modelPath: string, variant: WhisperRuntimeVariant): Promise<string> {
+  async ensureReady(modelPath: string, variant: WhisperRuntimeVariant): Promise<void> {
+    await this.ensureStarted(modelPath, variant)
+  }
+
+  async transcribeAudioFile(
+    audioFilePath: string,
+    modelPath: string,
+    variant: WhisperRuntimeVariant,
+    promptHint?: string,
+  ): Promise<string> {
     await this.ensureStarted(modelPath, variant)
 
     if (!this.activePort) {
@@ -234,7 +243,7 @@ export class WhisperServerManager {
     }
 
     const audioPayload = readFileSync(audioFilePath)
-    const responsePayload = await this.callInference(this.activePort, audioPayload)
+    const responsePayload = await this.callInference(this.activePort, audioPayload, promptHint)
     const text = extractTranscribedText(responsePayload)
 
     if (!text) {
@@ -400,7 +409,7 @@ export class WhisperServerManager {
     const resolvedCommand = this.resolveServerCommand(variant)
     if (!resolvedCommand) {
       throw new Error(
-        'Whisper server runtime unavailable. Download runtime binaries, install whisper-server, or set WHISPY_WHISPER_SERVER_COMMAND.',
+        'Whisper server runtime unavailable. Rebuild/reinstall package with bundled runtime, install whisper-server, or set WHISPY_WHISPER_SERVER_COMMAND.',
       )
     }
 
@@ -490,7 +499,7 @@ export class WhisperServerManager {
     throw new Error(`whisper-server failed to start within ${WHISPER_SERVER_STARTUP_TIMEOUT_MS}ms.`)
   }
 
-  private async callInference(port: number, wavAudioBuffer: Buffer) {
+  private async callInference(port: number, wavAudioBuffer: Buffer, promptHint?: string) {
     const boundary = `----WhispyBoundary${Date.now()}`
     const parts: Buffer[] = [
       Buffer.from(
@@ -501,9 +510,15 @@ export class WhisperServerManager {
       wavAudioBuffer,
       Buffer.from('\r\n'),
       Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="language"\r\n\r\nauto\r\n`),
-      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="response_format"\r\n\r\njson\r\n`),
-      Buffer.from(`--${boundary}--\r\n`),
     ]
+
+    const normalizedPromptHint = promptHint?.trim()
+    if (normalizedPromptHint) {
+      parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="prompt"\r\n\r\n${normalizedPromptHint}\r\n`))
+    }
+
+    parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="response_format"\r\n\r\njson\r\n`))
+    parts.push(Buffer.from(`--${boundary}--\r\n`))
 
     const body = Buffer.concat(parts)
 

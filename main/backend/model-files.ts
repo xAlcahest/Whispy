@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { copyFileSync, createWriteStream, existsSync, mkdirSync, readdirSync } from 'node:fs'
+import { createWriteStream, existsSync, mkdirSync, readdirSync } from 'node:fs'
 import { chmod, rename, rm } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -27,18 +27,22 @@ const TRANSCRIPTION_MODEL_URLS: Record<string, string> = {
   turbo: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin',
 }
 
-const OFFICIAL_WHISPER_RUNTIME_URLS: Record<string, Partial<Record<WhisperRuntimeVariant, string>>> = {
-  'win32-x64': {
-    cpu: 'https://github.com/ggml-org/whisper.cpp/releases/latest/download/whisper-bin-x64.zip',
-    cuda: 'https://github.com/ggml-org/whisper.cpp/releases/latest/download/whisper-cublas-12.4.0-bin-x64.zip',
+const WHISPER_RUNTIME_BINARY_URLS: Record<string, Partial<Record<WhisperRuntimeVariant, string>>> = {
+  'linux-x64': {
+    cpu: 'https://github.com/OpenWhispr/whisper.cpp/releases/download/0.0.6/whisper-server-linux-x64-cpu.zip',
+    cuda: 'https://github.com/OpenWhispr/whisper.cpp/releases/download/0.0.6/whisper-server-linux-x64-cuda.zip',
   },
-  'win32-ia32': {
-    cpu: 'https://github.com/ggml-org/whisper.cpp/releases/latest/download/whisper-bin-Win32.zip',
+  'win32-x64': {
+    cpu: 'https://github.com/OpenWhispr/whisper.cpp/releases/download/0.0.6/whisper-server-win32-x64-cpu.zip',
+    cuda: 'https://github.com/OpenWhispr/whisper.cpp/releases/download/0.0.6/whisper-server-win32-x64-cuda.zip',
+  },
+  'darwin-arm64': {
+    cpu: 'https://github.com/OpenWhispr/whisper.cpp/releases/download/0.0.6/whisper-server-darwin-arm64.zip',
+  },
+  'darwin-x64': {
+    cpu: 'https://github.com/OpenWhispr/whisper.cpp/releases/download/0.0.6/whisper-server-darwin-x64.zip',
   },
 }
-
-const WHISPER_CPP_REPOSITORY_URL = 'https://github.com/ggml-org/whisper.cpp.git'
-const WHISPER_CPP_VERSION_OVERRIDE_ENV = 'WHISPY_WHISPER_CPP_VERSION'
 
 const resolveWhisperRuntimeUrl = (variant: WhisperRuntimeVariant) => {
   const envKey = variant === 'cpu' ? 'WHISPY_WHISPER_RUNTIME_CPU_URL' : 'WHISPY_WHISPER_RUNTIME_CUDA_URL'
@@ -48,12 +52,53 @@ const resolveWhisperRuntimeUrl = (variant: WhisperRuntimeVariant) => {
   }
 
   const platformKey = `${process.platform}-${process.arch}`
-  const targetRuntimeUrls = OFFICIAL_WHISPER_RUNTIME_URLS[platformKey]
+  const targetRuntimeUrls = WHISPER_RUNTIME_BINARY_URLS[platformKey]
   return targetRuntimeUrls?.[variant] ?? null
+}
+
+const withRetryQueryParam = (url: string, attempt: number) => {
+  if (attempt <= 1) {
+    return url
+  }
+
+  const retryMarker = `${Date.now()}-${attempt}`
+
+  try {
+    const parsedUrl = new URL(url)
+    parsedUrl.searchParams.set('whispy_retry', retryMarker)
+    return parsedUrl.toString()
+  } catch {
+    return `${url}${url.includes('?') ? '&' : '?'}whispy_retry=${retryMarker}`
+  }
+}
+
+const resolveRuntimeBinaryNameFromUrl = (runtimeUrl: string) => {
+  const urlTail = (() => {
+    try {
+      return basename(new URL(runtimeUrl).pathname).toLowerCase()
+    } catch {
+      return runtimeUrl.toLowerCase()
+    }
+  })()
+
+  return urlTail.includes('cli') && !urlTail.includes('server') ? getWhisperCliBinaryName() : getWhisperServerBinaryName()
 }
 
 const getWhisperServerBinaryName = () => (process.platform === 'win32' ? 'whisper-server.exe' : 'whisper-server')
 const getWhisperCliBinaryName = () => (process.platform === 'win32' ? 'whisper-cli.exe' : 'whisper-cli')
+
+const matchesWhisperBinaryName = (fileName: string, baseName: 'whisper-server' | 'whisper-cli') => {
+  const normalized = fileName.toLowerCase()
+  if (process.platform === 'win32') {
+    return normalized === `${baseName}.exe` || (normalized.startsWith(`${baseName}-`) && normalized.endsWith('.exe'))
+  }
+
+  return normalized === baseName || normalized.startsWith(`${baseName}-`)
+}
+
+const findWhisperBinaryRecursive = (rootPath: string, baseName: 'whisper-server' | 'whisper-cli') => {
+  return findFileRecursive(rootPath, '', (entryName) => matchesWhisperBinaryName(entryName, baseName))
+}
 
 const escapePowerShellLiteral = (value: string) => value.replace(/'/g, "''")
 
@@ -93,7 +138,11 @@ const extractZipArchive = async (archivePath: string, destinationPath: string) =
   }
 }
 
-const findFileRecursive = (rootPath: string, targetFileName: string): string | null => {
+const findFileRecursive = (
+  rootPath: string,
+  targetFileName: string,
+  customMatcher?: (entryName: string) => boolean,
+): string | null => {
   if (!existsSync(rootPath)) {
     return null
   }
@@ -112,94 +161,13 @@ const findFileRecursive = (rootPath: string, targetFileName: string): string | n
         continue
       }
 
-      if (entry.name.toLowerCase() === targetFileName.toLowerCase()) {
+      if (customMatcher ? customMatcher(entry.name) : entry.name.toLowerCase() === targetFileName.toLowerCase()) {
         return entryPath
       }
     }
   }
 
   return null
-}
-
-const commandExists = (command: string) => {
-  const lookupCommand = process.platform === 'win32' ? 'where' : 'which'
-  const lookup = spawnSync(lookupCommand, [command], {
-    encoding: 'utf8',
-    timeout: 1400,
-    windowsHide: true,
-  })
-
-  return lookup.status === 0
-}
-
-const runCommand = (command: string, args: string[], cwd?: string) => {
-  const result = spawnSync(command, args, {
-    cwd,
-    encoding: 'utf8',
-    timeout: 600_000,
-    windowsHide: true,
-  })
-
-  if (result.status !== 0) {
-    const detailsRaw = result.stderr.trim() || result.stdout.trim() || `Failed command: ${command}`
-    const details = detailsRaw
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0)
-      .slice(0, 6)
-      .join(' | ')
-    throw new Error(details)
-  }
-}
-
-const getWhisperServerRuntimeFallbackBinaryName = () => (process.platform === 'win32' ? 'server.exe' : 'server')
-
-const collectSharedLibraries = (directoryPath: string) => {
-  if (!existsSync(directoryPath)) {
-    return []
-  }
-
-  return readdirSync(directoryPath)
-    .filter((fileName) => /\.(dll|dylib|so(\.\d+)*)$/i.test(fileName))
-    .map((fileName) => join(directoryPath, fileName))
-}
-
-const copyWhisperRuntimeArtifacts = async (sourceRoot: string, targetDirectory: string) => {
-  const primaryServerBinary = findFileRecursive(sourceRoot, getWhisperServerBinaryName())
-  const fallbackServerBinary = primaryServerBinary
-    ? null
-    : findFileRecursive(sourceRoot, getWhisperServerRuntimeFallbackBinaryName())
-  const sourceServerBinary = primaryServerBinary ?? fallbackServerBinary
-
-  if (!sourceServerBinary) {
-    throw new Error('Whisper source build did not produce a server binary.')
-  }
-
-  await rm(targetDirectory, { recursive: true, force: true })
-  mkdirSync(targetDirectory, { recursive: true })
-
-  const targetServerBinary = join(targetDirectory, getWhisperServerBinaryName())
-  copyFileSync(sourceServerBinary, targetServerBinary)
-  if (process.platform !== 'win32') {
-    await chmod(targetServerBinary, 0o755)
-  }
-
-  const sourceCliBinary = findFileRecursive(sourceRoot, getWhisperCliBinaryName())
-  if (sourceCliBinary) {
-    const targetCliBinary = join(targetDirectory, getWhisperCliBinaryName())
-    copyFileSync(sourceCliBinary, targetCliBinary)
-    if (process.platform !== 'win32') {
-      await chmod(targetCliBinary, 0o755)
-    }
-  }
-
-  const sourceDirectory = dirname(sourceServerBinary)
-  const sharedLibraries = collectSharedLibraries(sourceDirectory)
-  for (const libraryPath of sharedLibraries) {
-    copyFileSync(libraryPath, join(targetDirectory, basename(libraryPath)))
-  }
-
-  return targetServerBinary
 }
 
 const POST_MODEL_URLS: Record<string, string> = {
@@ -247,12 +215,12 @@ export class LocalModelStore {
   }
 
   resolveDownloadedWhisperServerPath(variant: WhisperRuntimeVariant) {
-    return findFileRecursive(this.getWhisperRuntimeDirectory(variant), getWhisperServerBinaryName())
+    return findWhisperBinaryRecursive(this.getWhisperRuntimeDirectory(variant), 'whisper-server')
   }
 
   resolveDownloadedWhisperRuntimePath(variant: WhisperRuntimeVariant) {
     const runtimeDirectory = this.getWhisperRuntimeDirectory(variant)
-    const cliPath = findFileRecursive(runtimeDirectory, getWhisperCliBinaryName())
+    const cliPath = findWhisperBinaryRecursive(runtimeDirectory, 'whisper-cli')
     if (cliPath) {
       return cliPath
     }
@@ -262,95 +230,6 @@ export class LocalModelStore {
 
   getWhisperRuntimeDownloadUrl(variant: WhisperRuntimeVariant) {
     return resolveWhisperRuntimeUrl(variant)
-  }
-
-  private async buildWhisperRuntimeFromSource(
-    variant: WhisperRuntimeVariant,
-    onProgress?: (payload: ModelDownloadProgress) => void,
-  ) {
-    if (!commandExists('git') || !commandExists('cmake')) {
-      throw new Error('Source build requires git and cmake to be installed.')
-    }
-
-    if (variant === 'cuda' && process.platform === 'darwin') {
-      throw new Error('CUDA runtime build is not available on macOS.')
-    }
-
-    const runtimeModelId = `whisper-runtime-${variant}`
-    const runtimeDirectory = this.getWhisperRuntimeDirectory(variant)
-    const buildRootDirectory = join(this.rootDirectory, 'runtime', 'whispercpp', '_build')
-    const sourceRootDirectory = join(this.rootDirectory, 'runtime', 'whispercpp', '_source')
-    const sourceDirectory = join(sourceRootDirectory, 'whisper.cpp')
-    const buildDirectory = join(buildRootDirectory, `${process.platform}-${process.arch}-${variant}`)
-
-    mkdirSync(sourceRootDirectory, { recursive: true })
-    mkdirSync(buildRootDirectory, { recursive: true })
-
-    onProgress?.({
-      scope: 'transcription',
-      modelId: runtimeModelId,
-      progress: 5,
-      downloadedBytes: 0,
-      totalBytes: null,
-      state: 'downloading',
-    })
-
-    if (!existsSync(sourceDirectory)) {
-      runCommand('git', ['clone', '--depth', '1', WHISPER_CPP_REPOSITORY_URL, sourceDirectory])
-    }
-
-    const versionOverride = process.env[WHISPER_CPP_VERSION_OVERRIDE_ENV]?.trim()
-    if (versionOverride) {
-      runCommand('git', ['fetch', '--tags', '--force'], sourceDirectory)
-      runCommand('git', ['checkout', versionOverride], sourceDirectory)
-    }
-
-    onProgress?.({
-      scope: 'transcription',
-      modelId: runtimeModelId,
-      progress: 25,
-      downloadedBytes: 0,
-      totalBytes: null,
-      state: 'downloading',
-    })
-
-    const configureArgs = [
-      '-S',
-      sourceDirectory,
-      '-B',
-      buildDirectory,
-      '-DWHISPER_BUILD_SERVER=ON',
-      '-DWHISPER_BUILD_EXAMPLES=ON',
-      '-DWHISPER_BUILD_TESTS=OFF',
-    ]
-
-    if (variant === 'cuda') {
-      configureArgs.push('-DGGML_CUDA=ON')
-    }
-
-    runCommand('cmake', configureArgs)
-
-    onProgress?.({
-      scope: 'transcription',
-      modelId: runtimeModelId,
-      progress: 55,
-      downloadedBytes: 0,
-      totalBytes: null,
-      state: 'downloading',
-    })
-
-    runCommand('cmake', ['--build', buildDirectory, '--config', 'Release', '--parallel'])
-
-    onProgress?.({
-      scope: 'transcription',
-      modelId: runtimeModelId,
-      progress: 90,
-      downloadedBytes: 0,
-      totalBytes: null,
-      state: 'downloading',
-    })
-
-    return copyWhisperRuntimeArtifacts(buildDirectory, runtimeDirectory)
   }
 
   async downloadModel(
@@ -493,10 +372,12 @@ export class LocalModelStore {
 
     const runtimeRootDirectory = join(this.rootDirectory, 'runtime', 'whispercpp')
     const runtimeDirectory = this.getWhisperRuntimeDirectory(variant)
+    const stagingRuntimeDirectory = `${runtimeDirectory}.staging`
     const downloadsArchive = runtimeUrl ? runtimeUrl.toLowerCase().includes('.zip') : false
     const downloadExtension = downloadsArchive ? 'zip' : 'bin'
     const tempDownloadPath = runtimeUrl ? join(runtimeRootDirectory, `${variant}.${downloadExtension}.part`) : null
     const finalDownloadPath = runtimeUrl ? join(runtimeRootDirectory, `${variant}.${downloadExtension}`) : null
+    const maxAttempts = downloadsArchive ? 2 : 1
 
     const controller = new AbortController()
     this.activeDownloads.set(downloadKey, controller)
@@ -505,118 +386,126 @@ export class LocalModelStore {
       mkdirSync(runtimeRootDirectory, { recursive: true })
 
       if (!runtimeUrl) {
-        const builtRuntimePath = await this.buildWhisperRuntimeFromSource(variant, onProgress)
-        const runtimePath = this.resolveDownloadedWhisperRuntimePath(variant)
-        if (!runtimePath) {
-          throw new Error('Built runtime does not contain whisper-server or whisper-cli binaries.')
-        }
-
-        onProgress?.({
-          scope: 'transcription',
-          modelId: runtimeModelId,
-          progress: 100,
-          downloadedBytes: 0,
-          totalBytes: null,
-          state: 'completed',
-        })
-
-        return builtRuntimePath ?? runtimePath
+        const platformKey = `${process.platform}-${process.arch}`
+        throw new Error(
+          `No prebuilt Whisper ${variant.toUpperCase()} runtime configured for ${platformKey}. Set WHISPY_WHISPER_RUNTIME_${variant.toUpperCase()}_URL.`,
+        )
       }
 
       if (!tempDownloadPath || !finalDownloadPath) {
         throw new Error('Runtime download paths could not be resolved.')
       }
 
-      const response = await fetch(runtimeUrl, {
-        signal: controller.signal,
-      })
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        try {
+          const attemptRuntimeUrl = withRetryQueryParam(runtimeUrl, attempt)
+          const response = await fetch(attemptRuntimeUrl, {
+            signal: controller.signal,
+          })
 
-      if (!response.ok || !response.body) {
-        throw new Error(`Unable to download Whisper runtime (${response.status})`)
-      }
-
-      const totalBytesRaw = Number(response.headers.get('content-length') ?? '')
-      const totalBytes = Number.isFinite(totalBytesRaw) && totalBytesRaw > 0 ? totalBytesRaw : null
-
-      let downloadedBytes = 0
-
-      onProgress?.({
-        scope: 'transcription',
-        modelId: runtimeModelId,
-        progress: 0,
-        downloadedBytes: 0,
-        totalBytes,
-        state: 'downloading',
-      })
-
-      const source = Readable.fromWeb(
-        response.body as unknown as import('node:stream/web').ReadableStream<Uint8Array>,
-      )
-
-      source.on('data', (chunk: Buffer | string) => {
-        downloadedBytes += typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.byteLength
-        const progress = totalBytes ? Math.min(99, Math.round((downloadedBytes / totalBytes) * 100)) : 0
-
-        onProgress?.({
-          scope: 'transcription',
-          modelId: runtimeModelId,
-          progress,
-          downloadedBytes,
-          totalBytes,
-          state: 'downloading',
-        })
-      })
-
-      const destination = createWriteStream(tempDownloadPath)
-      await pipeline(source, destination)
-
-      await rename(tempDownloadPath, finalDownloadPath)
-      await rm(runtimeDirectory, { recursive: true, force: true })
-      mkdirSync(runtimeDirectory, { recursive: true })
-
-      if (downloadsArchive) {
-        await extractZipArchive(finalDownloadPath, runtimeDirectory)
-      } else {
-        const urlTail = (() => {
-          try {
-            return basename(new URL(runtimeUrl).pathname).toLowerCase()
-          } catch {
-            return runtimeUrl.toLowerCase()
+          if (!response.ok || !response.body) {
+            throw new Error(`Unable to download Whisper runtime (${response.status})`)
           }
-        })()
 
-        const runtimeBinaryName =
-          urlTail.includes('cli') && !urlTail.includes('server') ? getWhisperCliBinaryName() : getWhisperServerBinaryName()
-        await rename(finalDownloadPath, join(runtimeDirectory, runtimeBinaryName))
-      }
+          const totalBytesRaw = Number(response.headers.get('content-length') ?? '')
+          const totalBytes = Number.isFinite(totalBytesRaw) && totalBytesRaw > 0 ? totalBytesRaw : null
 
-      const serverRuntimePath = this.resolveDownloadedWhisperServerPath(variant)
-      const runtimePath = this.resolveDownloadedWhisperRuntimePath(variant)
+          let downloadedBytes = 0
 
-      if (!serverRuntimePath && !runtimePath) {
-        throw new Error('Downloaded runtime does not contain whisper-server or whisper-cli binaries.')
-      }
+          onProgress?.({
+            scope: 'transcription',
+            modelId: runtimeModelId,
+            progress: 0,
+            downloadedBytes: 0,
+            totalBytes,
+            state: 'downloading',
+          })
 
-      if (process.platform !== 'win32') {
-        if (serverRuntimePath) {
-          await chmod(serverRuntimePath, 0o755)
+          const source = Readable.fromWeb(
+            response.body as unknown as import('node:stream/web').ReadableStream<Uint8Array>,
+          )
+
+          source.on('data', (chunk: Buffer | string) => {
+            downloadedBytes += typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.byteLength
+            const progress = totalBytes ? Math.min(99, Math.round((downloadedBytes / totalBytes) * 100)) : 0
+
+            onProgress?.({
+              scope: 'transcription',
+              modelId: runtimeModelId,
+              progress,
+              downloadedBytes,
+              totalBytes,
+              state: 'downloading',
+            })
+          })
+
+          const destination = createWriteStream(tempDownloadPath)
+          await pipeline(source, destination)
+
+          if (totalBytes !== null && downloadedBytes !== totalBytes) {
+            throw new Error(`Whisper runtime download incomplete (${downloadedBytes}/${totalBytes} bytes).`)
+          }
+
+          await rename(tempDownloadPath, finalDownloadPath)
+          await rm(stagingRuntimeDirectory, { recursive: true, force: true })
+          mkdirSync(stagingRuntimeDirectory, { recursive: true })
+
+          if (downloadsArchive) {
+            await extractZipArchive(finalDownloadPath, stagingRuntimeDirectory)
+          } else {
+            const runtimeBinaryName = resolveRuntimeBinaryNameFromUrl(runtimeUrl)
+            await rename(finalDownloadPath, join(stagingRuntimeDirectory, runtimeBinaryName))
+          }
+
+          const stagedServerRuntimePath = findWhisperBinaryRecursive(stagingRuntimeDirectory, 'whisper-server')
+          const stagedRuntimePath = findWhisperBinaryRecursive(stagingRuntimeDirectory, 'whisper-cli') ?? stagedServerRuntimePath
+
+          if (!stagedServerRuntimePath && !stagedRuntimePath) {
+            throw new Error('Downloaded runtime does not contain whisper-server or whisper-cli binaries.')
+          }
+
+          if (process.platform !== 'win32') {
+            if (stagedServerRuntimePath) {
+              await chmod(stagedServerRuntimePath, 0o755)
+            }
+
+            if (stagedRuntimePath && stagedRuntimePath !== stagedServerRuntimePath) {
+              await chmod(stagedRuntimePath, 0o755)
+            }
+          }
+
+          await rm(runtimeDirectory, { recursive: true, force: true })
+          await rename(stagingRuntimeDirectory, runtimeDirectory)
+
+          const serverRuntimePath = this.resolveDownloadedWhisperServerPath(variant)
+          const runtimePath = this.resolveDownloadedWhisperRuntimePath(variant)
+
+          if (!serverRuntimePath && !runtimePath) {
+            throw new Error('Downloaded runtime does not contain whisper-server or whisper-cli binaries.')
+          }
+
+          onProgress?.({
+            scope: 'transcription',
+            modelId: runtimeModelId,
+            progress: 100,
+            downloadedBytes: totalBytes ?? downloadedBytes,
+            totalBytes,
+            state: 'completed',
+          })
+
+          return serverRuntimePath ?? runtimePath
+        } catch (attemptError: unknown) {
+          await rm(tempDownloadPath, { force: true })
+          await rm(finalDownloadPath, { force: true })
+          await rm(stagingRuntimeDirectory, { recursive: true, force: true })
+
+          if (controller.signal.aborted || attempt >= maxAttempts) {
+            throw attemptError
+          }
         }
-
-        if (runtimePath && runtimePath !== serverRuntimePath) {
-          await chmod(runtimePath, 0o755)
-        }
       }
 
-      onProgress?.({
-        scope: 'transcription',
-        modelId: runtimeModelId,
-        progress: 100,
-        downloadedBytes: totalBytes ?? downloadedBytes,
-        totalBytes,
-        state: 'completed',
-      })
-
-      return serverRuntimePath ?? runtimePath
+      throw new Error('Whisper runtime download failed after retry attempts.')
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : 'Whisper runtime download failed'
 
@@ -640,6 +529,8 @@ export class LocalModelStore {
       if (finalDownloadPath) {
         await rm(finalDownloadPath, { force: true })
       }
+
+      await rm(stagingRuntimeDirectory, { recursive: true, force: true })
     }
   }
 

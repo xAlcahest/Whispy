@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { safeStorage } from 'electron'
 import type { SecretSettingKey, SecretSettingsMap, SecretStorageMode } from '../../shared/secrets'
@@ -12,6 +12,8 @@ interface KeytarModule {
 
 export interface SecretStorageStatus {
   mode: SecretStorageMode
+  activeBackend: SecretStorageMode
+  fallbackActive: boolean
   keyringSupported: boolean
   envFilePath: string
   details: string
@@ -51,6 +53,7 @@ export class SecretStore {
   private keytarPromise: Promise<KeytarModule | null> | null = null
   private keytarUnavailableReason =
     'Your desktop environment and/or compositor is not supported for system keyring integration.'
+  private keyringFallbackReason: string | null = null
 
   constructor(
     private readonly fallbackEncryptedSecretsPath: string,
@@ -61,12 +64,14 @@ export class SecretStore {
 
   async getSecrets(mode: SecretStorageMode): Promise<SecretSettingsMap> {
     if (mode === 'env') {
+      this.keyringFallbackReason = null
       return this.getPlaintextEnvSecrets()
     }
 
     const keytar = await this.loadKeytar()
     if (!keytar) {
-      return this.getFallbackSecretsSnapshot()
+      this.keyringFallbackReason = `${this.keytarUnavailableReason} Falling back to plaintext .env storage.`
+      return this.getPlaintextEnvSecrets()
     }
 
     try {
@@ -84,21 +89,26 @@ export class SecretStore {
         }
       }
 
+      this.keyringFallbackReason = null
+
       return secrets
     } catch {
-      return this.getFallbackSecretsSnapshot()
+      this.keyringFallbackReason = 'Unable to read API keys from the system keyring. Falling back to plaintext .env storage.'
+      return this.getPlaintextEnvSecrets()
     }
   }
 
   async setSecrets(mode: SecretStorageMode, secrets: SecretSettingsMap) {
     if (mode === 'env') {
       this.writePlaintextEnvSecrets(secrets)
+      this.keyringFallbackReason = null
       return
     }
 
     const keytar = await this.loadKeytar()
     if (!keytar) {
-      this.writeFallbackSecrets(secrets)
+      this.writePlaintextEnvSecrets(secrets)
+      this.keyringFallbackReason = `${this.keytarUnavailableReason} Falling back to plaintext .env storage.`
       return
     }
 
@@ -114,21 +124,42 @@ export class SecretStore {
           await keytar.setPassword(KEYCHAIN_SERVICE_NAME, accountForKey(key), value)
         }),
       )
+      this.clearPlaintextEnvSecrets()
+      this.writeFallbackSecrets({})
+      this.keyringFallbackReason = null
     } catch {
-      this.writeFallbackSecrets(secrets)
+      this.writePlaintextEnvSecrets(secrets)
+      this.keyringFallbackReason =
+        'Unable to write API keys into the system keyring. Falling back to plaintext .env storage.'
     }
   }
 
   async getStorageStatus(mode: SecretStorageMode): Promise<SecretStorageStatus> {
     const keyringSupported = Boolean(await this.loadKeytar())
+    const fallbackActive = mode === 'keyring' && (!keyringSupported || this.keyringFallbackReason !== null)
+
+    if (mode === 'env') {
+      return {
+        mode,
+        activeBackend: 'env',
+        fallbackActive: false,
+        keyringSupported,
+        envFilePath: this.plaintextSecretsEnvPath,
+        details: 'Plaintext .env mode is active.',
+      }
+    }
+
+    const activeBackend: SecretStorageMode = fallbackActive ? 'env' : 'keyring'
 
     return {
       mode,
+      activeBackend,
+      fallbackActive,
       keyringSupported,
       envFilePath: this.plaintextSecretsEnvPath,
-      details: keyringSupported
-        ? 'System keyring integration is available.'
-        : this.keytarUnavailableReason,
+      details: fallbackActive
+        ? this.keyringFallbackReason ?? `${this.keytarUnavailableReason} Falling back to plaintext .env storage.`
+        : 'System keyring integration is active.',
     }
   }
 
@@ -171,6 +202,7 @@ export class SecretStore {
 
     this.clearPlaintextEnvSecrets()
     this.writeFallbackSecrets({})
+    this.keyringFallbackReason = null
 
     return {
       success: true,
@@ -298,7 +330,11 @@ export class SecretStore {
         .map(([key, value]) => `${key}=${serializeEnvValue(value)}`)
 
       const payload = ['# Whispy plaintext secrets (generated)', ...lines].join('\n')
-      writeFileSync(this.plaintextSecretsEnvPath, `${payload}\n`, 'utf8')
+      writeFileSync(this.plaintextSecretsEnvPath, `${payload}\n`, {
+        encoding: 'utf8',
+        mode: 0o600,
+      })
+      chmodSync(this.plaintextSecretsEnvPath, 0o600)
     } catch {
       // Ignore plaintext env write errors.
     }
@@ -367,7 +403,10 @@ export class SecretStore {
     try {
       mkdirSync(dirname(this.fallbackEncryptedSecretsPath), { recursive: true })
       const encryptedPayload = safeStorage.encryptString(JSON.stringify(payload))
-      writeFileSync(this.fallbackEncryptedSecretsPath, encryptedPayload)
+      writeFileSync(this.fallbackEncryptedSecretsPath, encryptedPayload, {
+        mode: 0o600,
+      })
+      chmodSync(this.fallbackEncryptedSecretsPath, 0o600)
     } catch {
       // Ignore encrypted fallback write errors.
     }

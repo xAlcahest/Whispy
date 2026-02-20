@@ -2,12 +2,17 @@ import {
   Bot,
   BrainCircuit,
   BookOpen,
+  ChevronDown,
   Cloud,
   Copy,
+  Download,
+  FileText,
+  FolderOpen,
   KeyRound,
   Link,
   Lock,
   Languages,
+  Mic,
   Minus,
   Moon,
   Plus,
@@ -48,11 +53,14 @@ import { useI18n } from '../i18n'
 import { parseAppNotification } from '../lib/app-notifications'
 import { cn } from '../lib/cn'
 import { electronAPI } from '../lib/electron-api'
+import { fakeTranscriptionService } from '../services/fakeTranscriptionService'
 import {
   AUTO_DETECT_LANGUAGE,
   AUTO_DETECT_SUPPORTED_TRANSCRIPTION_MODELS,
   CLOUD_POST_PROCESSING_CATALOG,
   CLOUD_TRANSCRIPTION_CATALOG,
+  isPostProcessingLlmModelId,
+  isTranscriptionCapableModelId,
   LANGUAGES,
   LANGUAGE_FLAG_BY_NAME,
   PROVIDERS,
@@ -61,15 +69,22 @@ import {
   UI_LANGUAGES,
 } from '../lib/constants'
 import {
+  applyHistoryRetentionLimit,
   clearHistory,
   isOnboardingCompleted,
   loadHistory,
   loadModelState,
+  loadNoteFolders,
+  loadNotes,
   loadPostModelState,
   loadSettings,
+  type NoteEntry,
+  type NoteFolder,
   refreshSettingsFromBackend,
   saveHistory,
   saveModelState,
+  saveNoteFolders,
+  saveNotes,
   savePostModelState,
   saveSettings,
   setOnboardingCompleted,
@@ -90,7 +105,18 @@ import {
   extractModelIdsFromPayload,
 } from '../../../shared/model-discovery'
 
-type PanelSection = 'conversations' | 'settings'
+type PanelSection = 'conversations' | 'notes' | 'settings'
+
+const HISTORY_RETENTION_OPTIONS = [
+  { value: 50, label: '50 entries' },
+  { value: 100, label: '100 entries' },
+  { value: 250, label: '250 entries (lazy load)' },
+  { value: 500, label: '500 entries (lazy load)' },
+  { value: -1, label: 'Unlimited (lazy load)' },
+]
+
+const HISTORY_LAZY_LOAD_LIMITS = new Set([250, 500, -1])
+const HISTORY_LAZY_BATCH_SIZE = 100
 
 const formatTimestamp = (value: number) =>
   new Intl.DateTimeFormat('en-US', {
@@ -99,7 +125,8 @@ const formatTimestamp = (value: number) =>
   }).format(value)
 
 const isMacOS = navigator.userAgent.includes('Mac')
-const useCustomWindowChrome = isMacOS
+const isLinux = navigator.userAgent.includes('Linux')
+const useCustomWindowChrome = isMacOS || isLinux
 
 const normalizeKey = (key: string) => {
   if (key === ' ') {
@@ -248,22 +275,28 @@ const HotkeyInput = ({ value, onChange }: HotkeyInputProps) => {
 
 interface HistorySectionProps {
   entries: HistoryEntry[]
+  totalEntries: number
   loading: boolean
   clearConfirmOpen: boolean
   onClearConfirmOpenChange: (open: boolean) => void
   onCopy: (text: string) => void
   onDelete: (id: string) => void
   onClear: () => void
+  onShowMore: () => void
+  canShowMore: boolean
 }
 
 const HistorySection = ({
   entries,
+  totalEntries,
   loading,
   clearConfirmOpen,
   onClearConfirmOpenChange,
   onCopy,
   onDelete,
   onClear,
+  onShowMore,
+  canShowMore,
 }: HistorySectionProps) => {
   const [expandedEntries, setExpandedEntries] = useState<Record<string, boolean>>({})
 
@@ -357,6 +390,24 @@ const HistorySection = ({
         })
       )}
 
+      {canShowMore ? (
+        <div className="flex items-center justify-between rounded-[var(--radius-premium)] border border-border-subtle bg-surface-1 px-3 py-2">
+          <p className="text-xs text-muted-foreground">
+            Showing {entries.length} of {totalEntries} transcriptions.
+          </p>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8"
+            onClick={() => {
+              onShowMore()
+            }}
+          >
+            Show more
+          </Button>
+        </div>
+      ) : null}
+
       <Dialog
         open={clearConfirmOpen}
         onOpenChange={(open) => {
@@ -391,6 +442,450 @@ const HistorySection = ({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+  )
+}
+
+interface NotesSectionProps {
+  folders: NoteFolder[]
+  notes: NoteEntry[]
+  activeFolderId: string | null
+  activeNoteId: string | null
+  dictationStatus: 'IDLE' | 'RECORDING' | 'PROCESSING'
+  transcribingNoteId: string | null
+  postProcessingNoteId: string | null
+  onSelectFolder: (folderId: string | null) => void
+  onCreateFolder: (name: string) => void
+  onDeleteFolder: (folderId: string) => void
+  onCreateNote: (folderId: string | null) => void
+  onSelectNote: (noteId: string) => void
+  onUpdateNote: (noteId: string, patch: Partial<Pick<NoteEntry, 'title' | 'rawText' | 'processedText' | 'folderId'>>) => void
+  onDeleteNote: (noteId: string) => void
+  onTranscribeNote: (noteId: string) => void
+  onPostProcessNote: (noteId: string) => void
+}
+
+const stripNotePreview = (value: string) =>
+  value
+    .replace(/#{1,6}\s+/g, '')
+    .replace(/[*_~`]+/g, '')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1')
+    .replace(/>\s+/g, '')
+    .replace(/\n+/g, ' ')
+    .trim()
+
+const formatRelativeNoteTime = (timestamp: number) => {
+  const diff = Date.now() - timestamp
+  const minutes = Math.floor(diff / 60000)
+  const hours = Math.floor(diff / 3600000)
+  const days = Math.floor(diff / 86400000)
+
+  if (minutes < 1) {
+    return 'now'
+  }
+
+  if (minutes < 60) {
+    return `${minutes}m`
+  }
+
+  if (hours < 24) {
+    return `${hours}h`
+  }
+
+  if (days < 7) {
+    return `${days}d`
+  }
+
+  return new Date(timestamp).toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+  })
+}
+
+const NotesSection = ({
+  folders,
+  notes,
+  activeFolderId,
+  activeNoteId,
+  dictationStatus,
+  transcribingNoteId,
+  postProcessingNoteId,
+  onSelectFolder,
+  onCreateFolder,
+  onDeleteFolder,
+  onCreateNote,
+  onSelectNote,
+  onUpdateNote,
+  onDeleteNote,
+  onTranscribeNote,
+  onPostProcessNote,
+}: NotesSectionProps) => {
+  const [isCreatingFolder, setIsCreatingFolder] = useState(false)
+  const [newFolderName, setNewFolderName] = useState('')
+  const [viewMode, setViewMode] = useState<'raw' | 'processed'>('raw')
+
+  const visibleNotes = useMemo(() => {
+    if (!activeFolderId) {
+      return notes
+    }
+
+    return notes.filter((entry) => entry.folderId === activeFolderId)
+  }, [activeFolderId, notes])
+
+  const activeNote = notes.find((entry) => entry.id === activeNoteId) ?? null
+  const noteWordCount = (activeNote?.rawText.trim() ?? '').split(/\s+/).filter(Boolean).length
+  const isRecordingActiveNote = dictationStatus === 'RECORDING' && transcribingNoteId === activeNote?.id
+  const isTranscribingActiveNote = dictationStatus === 'PROCESSING' && transcribingNoteId === activeNote?.id
+
+  useEffect(() => {
+    if (!activeNote) {
+      return
+    }
+
+    if (viewMode === 'processed' && !activeNote.processedText.trim()) {
+      setViewMode('raw')
+    }
+  }, [activeNote, viewMode])
+
+  const commitFolderCreation = () => {
+    const nextName = newFolderName.trim()
+    if (!nextName) {
+      setIsCreatingFolder(false)
+      setNewFolderName('')
+      return
+    }
+
+    onCreateFolder(nextName)
+    setIsCreatingFolder(false)
+    setNewFolderName('')
+  }
+
+  const activeEditorValue = viewMode === 'processed' ? activeNote?.processedText ?? '' : activeNote?.rawText ?? ''
+
+  return (
+    <div className="flex h-full min-h-[36rem] overflow-hidden rounded-[14px] border border-border-subtle bg-surface-0">
+      <aside className="flex w-52 shrink-0 flex-col border-r border-border-subtle bg-surface-1/90">
+        <div className="flex items-center justify-between px-3 py-2">
+          <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-foreground/30">Folders</span>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-5 w-5 rounded-md text-foreground/50 hover:bg-surface-2 hover:text-foreground"
+            onClick={() => {
+              setIsCreatingFolder(true)
+            }}
+          >
+            <Plus className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+
+        <div className="space-y-px px-1.5">
+          <button
+            type="button"
+            className={cn(
+              'group relative flex h-7 w-full items-center gap-2 rounded-md px-2 text-left transition-colors',
+              activeFolderId === null
+                ? 'bg-primary/15 text-foreground'
+                : 'text-foreground/70 hover:bg-surface-2/70 hover:text-foreground/90',
+            )}
+            onClick={() => {
+              onSelectFolder(null)
+            }}
+          >
+            {activeFolderId === null ? <span className="absolute left-0 h-4 w-0.5 rounded-r-full bg-primary" /> : null}
+            <FolderOpen className={cn('h-3.5 w-3.5', activeFolderId === null ? 'text-primary' : 'text-foreground/35')} />
+            <span className={cn('truncate text-xs', activeFolderId === null ? 'font-medium' : undefined)}>
+              All notes
+            </span>
+            <span className="ml-auto text-[11px] tabular-nums text-foreground/35">{notes.length > 0 ? notes.length : ''}</span>
+          </button>
+
+          {folders.map((folder) => {
+            const count = notes.filter((entry) => entry.folderId === folder.id).length
+            const isActive = activeFolderId === folder.id
+            const isMeetingsFolder = folder.name.trim().toLowerCase() === 'meetings'
+
+            return (
+              <div key={folder.id} className="group relative flex items-center gap-1">
+                <button
+                  type="button"
+                  className={cn(
+                    'relative flex h-7 w-full items-center gap-2 rounded-md px-2 text-left transition-colors',
+                    isActive
+                      ? 'bg-primary/15 text-foreground'
+                      : 'text-foreground/70 hover:bg-surface-2/70 hover:text-foreground/90',
+                  )}
+                  onClick={() => {
+                    onSelectFolder(folder.id)
+                  }}
+                >
+                  {isActive ? <span className="absolute left-0 h-4 w-0.5 rounded-r-full bg-primary" /> : null}
+                  <FolderOpen className={cn('h-3.5 w-3.5', isActive ? 'text-primary' : 'text-foreground/35')} />
+                  <span className={cn('truncate pr-2 text-xs', isActive ? 'font-medium' : undefined)}>
+                    {folder.name}
+                  </span>
+                  {isMeetingsFolder ? (
+                    <span className="ml-auto rounded bg-surface-2 px-1 py-px text-[8px] font-semibold uppercase tracking-wider text-foreground/45">
+                      Soon
+                    </span>
+                  ) : (
+                    <span className="ml-auto text-[11px] tabular-nums text-foreground/35">{count > 0 ? count : ''}</span>
+                  )}
+                </button>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="absolute right-1 h-5 w-5 opacity-0 transition-opacity group-hover:opacity-100"
+                  onClick={() => {
+                    onDeleteFolder(folder.id)
+                  }}
+                >
+                  <Trash2 className="h-3 w-3" />
+                </Button>
+              </div>
+            )
+          })}
+
+          {isCreatingFolder ? (
+            <Input
+              className="h-7 border-border-subtle bg-surface-0 text-xs"
+              autoFocus
+              value={newFolderName}
+              onChange={(event) => {
+                setNewFolderName(event.target.value)
+              }}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  commitFolderCreation()
+                }
+
+                if (event.key === 'Escape') {
+                  setIsCreatingFolder(false)
+                  setNewFolderName('')
+                }
+              }}
+              onBlur={commitFolderCreation}
+              placeholder="Folder name"
+            />
+          ) : null}
+        </div>
+
+        <div className="mx-3 my-2 h-px bg-border-subtle" />
+
+        <div className="flex items-center justify-between px-3 py-1">
+          <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-foreground/30">Notes</span>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-5 w-5 rounded-md text-foreground/50 hover:bg-surface-2 hover:text-foreground"
+            onClick={() => {
+              onCreateNote(activeFolderId)
+            }}
+          >
+            <Plus className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto pb-2">
+          {visibleNotes.length === 0 ? (
+            <div className="px-3 py-8 text-center">
+              <BookOpen className="mx-auto h-4 w-4 text-foreground/30" />
+              <p className="mt-2 text-xs text-foreground/35">No notes in this folder.</p>
+            </div>
+          ) : (
+            visibleNotes.map((entry) => {
+              const preview = stripNotePreview(entry.rawText)
+              const isActive = activeNoteId === entry.id
+
+              return (
+                <button
+                  key={entry.id}
+                  type="button"
+                  className={cn(
+                    'group relative w-full px-3 py-1.5 text-left transition-colors',
+                    isActive ? 'bg-primary/15' : 'hover:bg-surface-2/70',
+                  )}
+                  onClick={() => {
+                    onSelectNote(entry.id)
+                  }}
+                >
+                  {isActive ? <span className="absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-r-full bg-primary" /> : null}
+                  <div className="flex items-center gap-2">
+                    <p className={cn('truncate text-xs', isActive ? 'font-medium text-foreground' : 'text-foreground/80')}>
+                      {entry.title || 'Untitled'}
+                    </p>
+                    <span className="ml-auto text-[11px] tabular-nums text-foreground/35">
+                      {formatRelativeNoteTime(entry.updatedAt)}
+                    </span>
+                  </div>
+                  {preview ? <p className="mt-0.5 line-clamp-1 text-[11px] text-foreground/45">{preview}</p> : null}
+                </button>
+              )
+            })
+          )}
+        </div>
+      </aside>
+
+      <section className="relative flex min-w-0 flex-1 flex-col">
+        {!activeNote ? (
+          <div className="flex h-full flex-col items-center justify-center px-6 text-center">
+            <BookOpen className="h-7 w-7 text-foreground/30" />
+            <p className="mt-3 text-sm font-medium text-foreground/70">Pick a note to start editing</p>
+            <p className="mt-1 text-xs text-foreground/40">Create one from the left panel if this folder is empty.</p>
+          </div>
+        ) : (
+          <>
+            <div className="px-6 pb-2 pt-6">
+              <div className="flex items-start justify-between gap-3">
+                <Input
+                  value={activeNote.title}
+                  onChange={(event) => {
+                    onUpdateNote(activeNote.id, {
+                      title: event.target.value,
+                    })
+                  }}
+                  placeholder="Untitled Note"
+                  className="h-auto border-none bg-transparent px-0 text-[30px] font-semibold leading-tight tracking-[-0.02em] text-foreground shadow-none focus-visible:ring-0"
+                />
+                <div className="flex items-center gap-1">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 text-foreground/45 hover:bg-surface-2 hover:text-foreground"
+                    onClick={() => {
+                      onDeleteNote(activeNote.id)
+                    }}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 text-foreground/45 hover:bg-surface-2 hover:text-foreground"
+                    onClick={() => {
+                      void navigator.clipboard.writeText(activeEditorValue)
+                    }}
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              </div>
+              <div className="mt-1 flex items-center gap-2 text-xs text-foreground/40">
+                <span>{formatTimestamp(activeNote.createdAt)}</span>
+                <span>&middot;</span>
+                <span>{noteWordCount} words</span>
+              </div>
+
+              <div className="mt-2 flex items-center gap-2">
+                <select
+                  className="app-no-drag h-7 rounded-md border border-border-subtle bg-surface-1 px-2 text-[11px] text-foreground/80"
+                  value={activeNote.folderId ?? ''}
+                  onChange={(event) => {
+                    const nextFolderId = event.target.value.trim()
+                    onUpdateNote(activeNote.id, {
+                      folderId: nextFolderId.length > 0 ? nextFolderId : null,
+                    })
+                  }}
+                >
+                  <option value="">All notes</option>
+                  {folders.map((folder) => (
+                    <option key={folder.id} value={folder.id}>
+                      {folder.name}
+                    </option>
+                  ))}
+                </select>
+
+                {activeNote.processedText.trim() ? (
+                  <div className="inline-flex rounded-md border border-border-subtle bg-surface-1 p-0.5">
+                    <button
+                      type="button"
+                      className={cn(
+                        'rounded px-2 py-1 text-[11px] transition-colors',
+                        viewMode === 'raw' ? 'bg-surface-2 text-foreground' : 'text-foreground/60 hover:text-foreground',
+                      )}
+                      onClick={() => {
+                        setViewMode('raw')
+                      }}
+                    >
+                      Raw
+                    </button>
+                    <button
+                      type="button"
+                      className={cn(
+                        'rounded px-2 py-1 text-[11px] transition-colors',
+                        viewMode === 'processed'
+                          ? 'bg-surface-2 text-foreground'
+                          : 'text-foreground/60 hover:text-foreground',
+                      )}
+                      onClick={() => {
+                        setViewMode('processed')
+                      }}
+                    >
+                      Enhanced
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="relative flex-1 overflow-hidden px-5 pb-24 pt-2">
+              <Textarea
+                className="h-full min-h-[26rem] resize-none border-none bg-transparent px-1 py-0 text-[15px] leading-6 text-foreground/85 shadow-none focus-visible:ring-0"
+                value={activeEditorValue}
+                onChange={(event) => {
+                  if (viewMode === 'processed') {
+                    onUpdateNote(activeNote.id, {
+                      processedText: event.target.value,
+                    })
+                    return
+                  }
+
+                  onUpdateNote(activeNote.id, {
+                    rawText: event.target.value,
+                  })
+                }}
+                placeholder="Start writing..."
+              />
+
+              <div
+                className="pointer-events-none absolute bottom-20 left-0 right-0 h-24"
+                style={{ background: 'linear-gradient(to bottom, transparent, var(--surface-0))' }}
+              />
+
+              <div className="absolute bottom-5 left-1/2 z-10 flex -translate-x-1/2 items-center gap-2">
+                <Button
+                  variant="outline"
+                  className="h-11 rounded-xl border-primary/30 bg-primary/10 px-5 text-primary hover:bg-primary/15"
+                  onClick={() => {
+                    onTranscribeNote(activeNote.id)
+                  }}
+                  disabled={
+                    (transcribingNoteId !== null && transcribingNoteId !== activeNote.id) ||
+                    isTranscribingActiveNote
+                  }
+                >
+                  <Mic className="mr-1.5 h-3.5 w-3.5" />
+                  {isRecordingActiveNote ? 'Stop' : isTranscribingActiveNote ? 'Transcribing...' : 'Transcribe'}
+                </Button>
+
+                <Button
+                  variant="outline"
+                  className="h-11 rounded-xl border-border-subtle bg-surface-1 px-5 text-foreground/80 hover:bg-surface-2"
+                  onClick={() => {
+                    onPostProcessNote(activeNote.id)
+                  }}
+                  disabled={postProcessingNoteId === activeNote.id || !activeNote.rawText.trim()}
+                >
+                  <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+                  {postProcessingNoteId === activeNote.id ? 'Processing...' : 'Clean Up Notes'}
+                  <ChevronDown className="ml-2 h-3.5 w-3.5 opacity-70" />
+                </Button>
+              </div>
+            </div>
+          </>
+        )}
+      </section>
     </div>
   )
 }
@@ -857,6 +1352,16 @@ const PreferencesSettingsPanel = ({
           />
         </div>
 
+        <div className="flex items-center justify-between rounded-md border border-border-subtle bg-surface-0 px-3 py-2.5">
+          <p className="text-sm">Start Whispy on KDE/desktop login</p>
+          <Switch
+            checked={settings.launchAtLogin}
+            onCheckedChange={(checked) => {
+              onChange({ launchAtLogin: checked })
+            }}
+          />
+        </div>
+
         <div className="space-y-2 rounded-md border border-border-subtle bg-surface-0 px-3 py-2.5">
           <div className="flex items-center justify-between gap-3">
             <div>
@@ -1032,6 +1537,12 @@ interface ModelsSectionProps {
   onPostModelsChange: Dispatch<SetStateAction<ModelState[]>>
 }
 
+interface CloudModelOption {
+  id: string
+  label: string
+  recommended?: boolean
+}
+
 const renderProviderIcon = (providerId: string) => {
   const logoByProvider: Record<string, { svg: string; className?: string }> = {
     openai: {
@@ -1079,6 +1590,7 @@ const ModelsSection = ({
   onPostModelsChange,
 }: ModelsSectionProps) => {
   const { pushToast } = useToast()
+  const { t } = useI18n()
   const [customTranscriptionModelScanLoading, setCustomTranscriptionModelScanLoading] = useState(false)
   const [customPostModelScanLoading, setCustomPostModelScanLoading] = useState(false)
   const [customTranscriptionModelScanError, setCustomTranscriptionModelScanError] = useState<string | null>(null)
@@ -1086,6 +1598,8 @@ const ModelsSection = ({
   const [customTranscriptionScannedModels, setCustomTranscriptionScannedModels] = useState<string[]>([])
   const [customPostScannedModels, setCustomPostScannedModels] = useState<string[]>([])
   const [transcriptionCloudModelLayout, setTranscriptionCloudModelLayout] = useState<'single' | 'double'>('double')
+  const [showAllTranscriptionCloudModels, setShowAllTranscriptionCloudModels] = useState(false)
+  const [showAllPostCloudModels, setShowAllPostCloudModels] = useState(false)
   const [transcriptionScannedModelsByProvider, setTranscriptionScannedModelsByProvider] = useState<Record<string, string[]>>({})
   const [postScannedModelsByProvider, setPostScannedModelsByProvider] = useState<Record<string, string[]>>({})
   const [transcriptionProviderAutoScanLoading, setTranscriptionProviderAutoScanLoading] = useState(false)
@@ -1094,9 +1608,7 @@ const ModelsSection = ({
   const [postProviderAutoScanError, setPostProviderAutoScanError] = useState<string | null>(null)
   const [whisperRuntimeStatus, setWhisperRuntimeStatus] = useState<WhisperRuntimeStatusPayload | null>(null)
   const [whisperRuntimeDiagnostics, setWhisperRuntimeDiagnostics] = useState<WhisperRuntimeDiagnosticsPayload | null>(null)
-  const [whisperRuntimeStatusLoading, setWhisperRuntimeStatusLoading] = useState(false)
   const [whisperRuntimeDiagnosticsLoading, setWhisperRuntimeDiagnosticsLoading] = useState(false)
-  const [whisperRuntimeActionLoading, setWhisperRuntimeActionLoading] = useState<'cpu' | 'cuda' | null>(null)
   const transcriptionAutoScanRequestKeyRef = useRef('')
   const postAutoScanRequestKeyRef = useRef('')
 
@@ -1241,29 +1753,87 @@ const ModelsSection = ({
     CLOUD_POST_PROCESSING_CATALOG.find((provider) => provider.providerId === settings.postProcessingCloudProvider) ??
     CLOUD_POST_PROCESSING_CATALOG[0]
 
+  const recommendedTranscriptionModelIdSet = new Set(
+    selectedTranscriptionProvider.models
+      .filter((model) => ('recommended' in model ? Boolean(model.recommended) : false))
+      .map((model) => model.id.toLowerCase()),
+  )
+
+  const recommendedPostModelIdSet = new Set(
+    selectedPostProcessingProvider.models
+      .filter((model) => ('recommended' in model ? Boolean(model.recommended) : false))
+      .map((model) => model.id.toLowerCase()),
+  )
+
   const transcriptionModelsEndpoint = deriveModelsEndpointFromBaseUrl(settings.transcriptionCustomBaseUrl)
   const postProcessingModelsEndpoint = deriveModelsEndpointFromBaseUrl(settings.postProcessingCustomBaseUrl)
 
-  const displayedTranscriptionCloudModels =
+  const baseTranscriptionCloudModels: CloudModelOption[] =
     selectedTranscriptionProvider.providerId === 'custom'
       ? []
       : (transcriptionScannedModelsByProvider[selectedTranscriptionProvider.providerId]?.map((modelId) => ({
           id: modelId,
           label: modelId,
-        })) ?? selectedTranscriptionProvider.models)
+          recommended: recommendedTranscriptionModelIdSet.has(modelId.toLowerCase()),
+        })) ??
+          selectedTranscriptionProvider.models)
 
-  const displayedPostCloudModels =
+  const basePostCloudModels: CloudModelOption[] =
     selectedPostProcessingProvider.providerId === 'custom'
       ? []
       : (postScannedModelsByProvider[selectedPostProcessingProvider.providerId]?.map((modelId) => ({
           id: modelId,
           label: modelId,
-        })) ?? selectedPostProcessingProvider.models)
+          recommended: recommendedPostModelIdSet.has(modelId.toLowerCase()),
+        })) ??
+          selectedPostProcessingProvider.models)
+
+  const transcriptionCapableCloudModels = baseTranscriptionCloudModels.filter((model) =>
+    isTranscriptionCapableModelId(model.id),
+  )
+  const recommendedTranscriptionCloudModels = transcriptionCapableCloudModels.filter((model) => model.recommended)
+  const hiddenRecommendedTranscriptionModelIdSet = new Set(
+    recommendedTranscriptionCloudModels.map((model) => model.id.toLowerCase()),
+  )
+  hiddenRecommendedTranscriptionModelIdSet.add(settings.transcriptionCloudModelId.toLowerCase())
+
+  const displayedTranscriptionCloudModels =
+    showAllTranscriptionCloudModels || recommendedTranscriptionCloudModels.length === 0
+      ? transcriptionCapableCloudModels
+      : transcriptionCapableCloudModels.filter((model) => hiddenRecommendedTranscriptionModelIdSet.has(model.id.toLowerCase()))
+
+  const canShowAllTranscriptionCloudModels =
+    !showAllTranscriptionCloudModels &&
+    recommendedTranscriptionCloudModels.length > 0 &&
+    transcriptionCapableCloudModels.length > displayedTranscriptionCloudModels.length
+
+  const postLlmCloudModels = basePostCloudModels.filter((model) => isPostProcessingLlmModelId(model.id))
+  const recommendedPostCloudModels = postLlmCloudModels.filter((model) => model.recommended)
+  const hiddenRecommendedPostModelIdSet = new Set(recommendedPostCloudModels.map((model) => model.id.toLowerCase()))
+  hiddenRecommendedPostModelIdSet.add(settings.postProcessingCloudModelId.toLowerCase())
+
+  const displayedPostCloudModels =
+    showAllPostCloudModels || recommendedPostCloudModels.length === 0
+      ? postLlmCloudModels
+      : postLlmCloudModels.filter((model) => hiddenRecommendedPostModelIdSet.has(model.id.toLowerCase()))
+
+  const canShowAllPostCloudModels =
+    !showAllPostCloudModels &&
+    recommendedPostCloudModels.length > 0 &&
+    postLlmCloudModels.length > displayedPostCloudModels.length
 
   const transcriptionModelGridClass =
     transcriptionCloudModelLayout === 'single'
       ? 'grid gap-2 grid-cols-1'
       : 'grid gap-2 grid-cols-1 md:grid-cols-2'
+
+  useEffect(() => {
+    setShowAllTranscriptionCloudModels(false)
+  }, [selectedTranscriptionProvider.providerId])
+
+  useEffect(() => {
+    setShowAllPostCloudModels(false)
+  }, [selectedPostProcessingProvider.providerId])
 
   const fetchCustomModels = async (baseUrl: string, apiKey: string) => {
     if (typeof window.electronAPI !== 'undefined') {
@@ -1318,13 +1888,8 @@ const ModelsSection = ({
       return
     }
 
-    setWhisperRuntimeStatusLoading(true)
-    try {
-      const status = await electronAPI.getWhisperRuntimeStatus()
-      setWhisperRuntimeStatus(status)
-    } finally {
-      setWhisperRuntimeStatusLoading(false)
-    }
+    const status = await electronAPI.getWhisperRuntimeStatus()
+    setWhisperRuntimeStatus(status)
   }, [settings.whisperCppRuntimeVariant])
 
   const refreshWhisperRuntimeDiagnostics = useCallback(async () => {
@@ -1394,27 +1959,39 @@ const ModelsSection = ({
 
       try {
         const modelIds = await fetchCustomModels(baseUrl, apiKey)
+        const filteredModelIds =
+          scopeKey === 'transcription'
+            ? modelIds.filter((modelId) => isTranscriptionCapableModelId(modelId))
+            : modelIds.filter((modelId) => isPostProcessingLlmModelId(modelId))
+
+        if (filteredModelIds.length === 0) {
+          throw new Error(
+            scopeKey === 'transcription'
+              ? 'No speech/transcription-capable models were found for this provider.'
+              : 'No LLM-capable models were found for this provider.',
+          )
+        }
 
         if (scopeKey === 'transcription') {
           setTranscriptionScannedModelsByProvider((current) => ({
             ...current,
-            [providerId]: modelIds,
+            [providerId]: filteredModelIds,
           }))
 
-          if (!modelIds.includes(settings.transcriptionCloudModelId) && modelIds[0]) {
+          if (!filteredModelIds.includes(settings.transcriptionCloudModelId) && filteredModelIds[0]) {
             onSettingsChange({
-              transcriptionCloudModelId: modelIds[0],
+              transcriptionCloudModelId: filteredModelIds[0],
             })
           }
         } else {
           setPostScannedModelsByProvider((current) => ({
             ...current,
-            [providerId]: modelIds,
+            [providerId]: filteredModelIds,
           }))
 
-          if (!modelIds.includes(settings.postProcessingCloudModelId) && modelIds[0]) {
+          if (!filteredModelIds.includes(settings.postProcessingCloudModelId) && filteredModelIds[0]) {
             onSettingsChange({
-              postProcessingCloudModelId: modelIds[0],
+              postProcessingCloudModelId: filteredModelIds[0],
             })
           }
         }
@@ -1499,25 +2076,30 @@ const ModelsSection = ({
 
     try {
       const modelIds = await fetchCustomModels(settings.transcriptionCustomBaseUrl, settings.transcriptionCustomApiKey)
-      setCustomTranscriptionScannedModels(modelIds)
+      const filteredModelIds = modelIds.filter((modelId) => isTranscriptionCapableModelId(modelId))
 
-      if (!settings.transcriptionCustomModel.trim() && modelIds[0]) {
+      if (filteredModelIds.length === 0) {
+        throw new Error('No speech/transcription-capable models found from this endpoint.')
+      }
+
+      setCustomTranscriptionScannedModels(filteredModelIds)
+
+      if (!settings.transcriptionCustomModel.trim() && filteredModelIds[0]) {
         onSettingsChange({
-          transcriptionCustomModel: modelIds[0],
-          transcriptionCloudModelId: modelIds[0],
+          transcriptionCustomModel: filteredModelIds[0],
+          transcriptionCloudModelId: filteredModelIds[0],
         })
       }
 
       pushToast({
         title: 'Custom STT models fetched',
-        description: `${modelIds.length} model${modelIds.length > 1 ? 's' : ''} discovered.`,
+        description: `${filteredModelIds.length} model${filteredModelIds.length > 1 ? 's' : ''} discovered.`,
         variant: 'success',
       })
-    } catch {
+    } catch (error: unknown) {
       setCustomTranscriptionScannedModels([])
-      setCustomTranscriptionModelScanError(
-        `${CUSTOM_MODEL_FETCH_ERROR} Endpoint: ${transcriptionModelsEndpoint}`,
-      )
+      const message = error instanceof Error ? error.message : CUSTOM_MODEL_FETCH_ERROR
+      setCustomTranscriptionModelScanError(`${message} Endpoint: ${transcriptionModelsEndpoint}`)
     } finally {
       setCustomTranscriptionModelScanLoading(false)
     }
@@ -1535,25 +2117,30 @@ const ModelsSection = ({
 
     try {
       const modelIds = await fetchCustomModels(settings.postProcessingCustomBaseUrl, settings.postProcessingCustomApiKey)
-      setCustomPostScannedModels(modelIds)
+      const filteredModelIds = modelIds.filter((modelId) => isPostProcessingLlmModelId(modelId))
 
-      if (!settings.postProcessingCustomModel.trim() && modelIds[0]) {
+      if (filteredModelIds.length === 0) {
+        throw new Error('No LLM-capable models found from this endpoint.')
+      }
+
+      setCustomPostScannedModels(filteredModelIds)
+
+      if (!settings.postProcessingCustomModel.trim() && filteredModelIds[0]) {
         onSettingsChange({
-          postProcessingCustomModel: modelIds[0],
-          postProcessingCloudModelId: modelIds[0],
+          postProcessingCustomModel: filteredModelIds[0],
+          postProcessingCloudModelId: filteredModelIds[0],
         })
       }
 
       pushToast({
         title: 'Custom LLM models fetched',
-        description: `${modelIds.length} model${modelIds.length > 1 ? 's' : ''} discovered.`,
+        description: `${filteredModelIds.length} model${filteredModelIds.length > 1 ? 's' : ''} discovered.`,
         variant: 'success',
       })
-    } catch {
+    } catch (error: unknown) {
       setCustomPostScannedModels([])
-      setCustomPostModelScanError(
-        `${CUSTOM_MODEL_FETCH_ERROR} Endpoint: ${postProcessingModelsEndpoint}`,
-      )
+      const message = error instanceof Error ? error.message : CUSTOM_MODEL_FETCH_ERROR
+      setCustomPostModelScanError(`${message} Endpoint: ${postProcessingModelsEndpoint}`)
     } finally {
       setCustomPostModelScanLoading(false)
     }
@@ -1909,14 +2496,28 @@ const ModelsSection = ({
                       >
                         <span className="min-w-0 break-words">{model.label}</span>
                         {active ? (
-                          <Badge tone="primary" className="shrink-0">Active</Badge>
+                          <Badge tone="primary" className="shrink-0">{t('commonActive')}</Badge>
                         ) : (
-                          <span className="shrink-0 text-xs text-muted-foreground">Select</span>
+                          <span className="shrink-0 text-xs text-muted-foreground">{t('commonSelect')}</span>
                         )}
                       </button>
                     )
                   })}
                 </div>
+
+                {canShowAllTranscriptionCloudModels ? (
+                  <div className="flex justify-center">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setShowAllTranscriptionCloudModels(true)
+                      }}
+                    >
+                      {t('commonShowAll')}
+                    </Button>
+                  </div>
+                ) : null}
               </div>
             )}
           </div>
@@ -1951,29 +2552,12 @@ const ModelsSection = ({
             </div>
 
             <p className="text-xs text-muted-foreground">
-              Download official whisper.cpp runtime binaries or use a system whisper-server install. Active runtime:{' '}
-              {settings.whisperCppRuntimeVariant.toUpperCase()}
+              Whisper runtime is bundled during npm build/package. Active runtime: {settings.whisperCppRuntimeVariant.toUpperCase()}
             </p>
 
             {whisperRuntimeStatus ? (
               <div className="space-y-1 text-xs text-muted-foreground">
-                <p>Runtime directory: {whisperRuntimeStatus.runtimeDirectory}</p>
-                <p>
-                  CPU source:{' '}
-                  {whisperRuntimeStatus.downloadUrls.cpu ? (
-                    <span className="break-all text-foreground/80">{whisperRuntimeStatus.downloadUrls.cpu}</span>
-                  ) : (
-                    <span className="text-amber-500">No official prebuilt URL for this platform (download will build from source)</span>
-                  )}
-                </p>
-                <p>
-                  CUDA source:{' '}
-                  {whisperRuntimeStatus.downloadUrls.cuda ? (
-                    <span className="break-all text-foreground/80">{whisperRuntimeStatus.downloadUrls.cuda}</span>
-                  ) : (
-                    <span className="text-amber-500">No official prebuilt URL for this platform (download will build from source)</span>
-                  )}
-                </p>
+                <p>Bundled runtime path: {whisperRuntimeStatus.runtimeDirectory}</p>
               </div>
             ) : null}
 
@@ -2036,81 +2620,9 @@ const ModelsSection = ({
                       <Badge tone={installed ? 'success' : 'warning'}>{installed ? 'Installed' : 'Missing'}</Badge>
                     </div>
 
-                    <div className="flex items-center gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-8 w-full"
-                        disabled={whisperRuntimeActionLoading !== null || whisperRuntimeStatusLoading}
-                        onClick={() => {
-                          setWhisperRuntimeActionLoading(variant)
-
-                          void electronAPI
-                            .downloadWhisperRuntime(variant)
-                            .then(() => {
-                              pushToast({
-                                title: `Whisper ${variant.toUpperCase()} runtime downloaded`,
-                                variant: 'success',
-                              })
-                            })
-                            .catch((error: unknown) => {
-                              const message =
-                                error instanceof Error
-                                  ? error.message
-                                  : `Unable to download Whisper ${variant.toUpperCase()} runtime.`
-
-                              pushToast({
-                                title: `Whisper ${variant.toUpperCase()} runtime download failed`,
-                                description: message,
-                                variant: 'destructive',
-                              })
-                            })
-                            .finally(() => {
-                              setWhisperRuntimeActionLoading(null)
-                              void refreshWhisperRuntimeStatus()
-                              void refreshWhisperRuntimeDiagnostics()
-                            })
-                        }}
-                      >
-                        {whisperRuntimeActionLoading === variant ? 'Downloading...' : 'Download'}
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-8 px-3"
-                        disabled={whisperRuntimeActionLoading !== null || !installed}
-                        onClick={() => {
-                          setWhisperRuntimeActionLoading(variant)
-
-                          void electronAPI
-                            .removeWhisperRuntime(variant)
-                            .then(() => {
-                              pushToast({
-                                title: `Whisper ${variant.toUpperCase()} runtime removed`,
-                              })
-                            })
-                            .catch((error: unknown) => {
-                              const message =
-                                error instanceof Error
-                                  ? error.message
-                                  : `Unable to remove Whisper ${variant.toUpperCase()} runtime.`
-
-                              pushToast({
-                                title: `Unable to remove Whisper ${variant.toUpperCase()} runtime`,
-                                description: message,
-                                variant: 'destructive',
-                              })
-                            })
-                            .finally(() => {
-                              setWhisperRuntimeActionLoading(null)
-                              void refreshWhisperRuntimeStatus()
-                              void refreshWhisperRuntimeDiagnostics()
-                            })
-                        }}
-                      >
-                        Remove
-                      </Button>
-                    </div>
+                    <p className="text-[11px] text-muted-foreground">
+                      Managed by npm build/package pipeline. To update this runtime, rebuild the app artifacts.
+                    </p>
                   </div>
                 )
               })}
@@ -2441,14 +2953,28 @@ const ModelsSection = ({
                       >
                         <span className="min-w-0 break-words">{model.label}</span>
                         {active ? (
-                          <Badge tone="primary" className="shrink-0">Active</Badge>
+                          <Badge tone="primary" className="shrink-0">{t('commonActive')}</Badge>
                         ) : (
-                          <span className="shrink-0 text-xs text-muted-foreground">Select</span>
+                          <span className="shrink-0 text-xs text-muted-foreground">{t('commonSelect')}</span>
                         )}
                       </button>
                     )
                   })}
                 </div>
+
+                {canShowAllPostCloudModels ? (
+                  <div className="flex justify-center">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setShowAllPostCloudModels(true)
+                      }}
+                    >
+                      {t('commonShowAll')}
+                    </Button>
+                  </div>
+                ) : null}
               </div>
             )}
           </div>
@@ -3039,14 +3565,14 @@ const InfoSection = ({
             <div className="space-y-3 rounded-md border border-border-subtle bg-surface-0 p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="text-sm font-medium">Secret storage</p>
-                <Badge tone={settings.keytarEnabled ? 'primary' : 'neutral'}>
-                  {settings.keytarEnabled ? 'Keyring enabled' : 'Plaintext .env (default)'}
+                <Badge tone={secretStorageStatus?.activeBackend === 'env' ? 'warning' : 'primary'}>
+                  {secretStorageStatus?.activeBackend === 'env' ? 'Emergency fallback (.env)' : 'Keyring active'}
                 </Badge>
               </div>
 
               <p className="text-xs text-muted-foreground">
-                Default mode keeps API keys in plaintext `.env` storage. You can migrate to the system keyring at any
-                time.
+                System keyring is the default storage backend. Plaintext `.env` is used only as an emergency fallback
+                when keyring access fails.
               </p>
 
               <p className="text-xs text-muted-foreground">
@@ -3056,6 +3582,13 @@ const InfoSection = ({
               <p className="text-xs text-muted-foreground">
                 {secretStorageStatus?.details ?? 'Status unavailable until checked.'}
               </p>
+
+              {secretStorageStatus?.fallbackActive ? (
+                <p className="text-xs text-amber-500">
+                  Keyring fallback is active. API keys are currently served from plaintext `.env` until keyring access
+                  is restored.
+                </p>
+              ) : null}
 
               <div className="flex flex-wrap items-center gap-2">
                 <Button
@@ -3069,26 +3602,11 @@ const InfoSection = ({
                   {secretStorageStatusLoading ? 'Checking...' : 'Refresh status'}
                 </Button>
 
-                {!settings.keytarEnabled ? (
+                {secretStorageStatus?.activeBackend === 'env' && secretStorageStatus.keyringSupported ? (
                   <Button size="sm" disabled={secretMigrationLoading} onClick={() => void handleSecretMigration()}>
-                    {secretMigrationLoading ? 'Migrating...' : 'Enable keyring + migrate from .env'}
+                    {secretMigrationLoading ? 'Migrating...' : 'Retry keyring + migrate from .env'}
                   </Button>
-                ) : (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      onChange({ keytarEnabled: false })
-                      pushToast({
-                        title: 'Plaintext mode enabled',
-                        description: 'API keys will be written to plaintext .env storage.',
-                      })
-                      void refreshSecretStorageStatus(false)
-                    }}
-                  >
-                    Use plaintext .env mode
-                  </Button>
-                )}
+                ) : null}
               </div>
             </div>
           ) : null}
@@ -3127,14 +3645,16 @@ const InfoSection = ({
           </div>
         </CardContent>
         <CardFooter>
-          <Button
-            variant="outline"
-            onClick={() => {
-              void electronAPI.openAppDataDirectory()
-            }}
-          >
-            <Link className="h-3.5 w-3.5" /> Open app data folder
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="outline"
+              onClick={() => {
+                void electronAPI.openAppDataDirectory()
+              }}
+            >
+              <Link className="h-3.5 w-3.5" /> Open app data folder
+            </Button>
+          </div>
         </CardFooter>
       </Card>
     </div>
@@ -3695,24 +4215,64 @@ const ControlPanelScene = () => {
   const [models, setModels] = useState<ModelState[]>(loadModelState)
   const [postModels, setPostModels] = useState<ModelState[]>(loadPostModelState)
   const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([])
+  const [historyTotalEntries, setHistoryTotalEntries] = useState(0)
+  const [noteFolders, setNoteFolders] = useState<NoteFolder[]>(loadNoteFolders)
+  const [notes, setNotes] = useState<NoteEntry[]>(loadNotes)
+  const [activeFolderId, setActiveFolderId] = useState<string | null>(null)
+  const [activeNoteId, setActiveNoteId] = useState<string | null>(null)
+  const [dictationStatus, setDictationStatus] = useState<'IDLE' | 'RECORDING' | 'PROCESSING'>('IDLE')
+  const [transcribingNoteId, setTranscribingNoteId] = useState<string | null>(null)
+  const [postProcessingNoteId, setPostProcessingNoteId] = useState<string | null>(null)
   const [historyLoading, setHistoryLoading] = useState(true)
+  const [historyVisibleCount, setHistoryVisibleCount] = useState(HISTORY_LAZY_BATCH_SIZE)
   const [historyClearConfirmOpen, setHistoryClearConfirmOpen] = useState(false)
   const [onboardingDone, setOnboardingDone] = useState(isOnboardingCompleted)
   const [displayServer, setDisplayServer] = useState<DisplayServer>('unknown')
   const [autoPasteSupport, setAutoPasteSupport] = useState<AutoPasteBackendSupportPayload | null>(null)
   const [autoPasteSupportLoading, setAutoPasteSupportLoading] = useState(true)
   const [windowMaximized, setWindowMaximized] = useState(false)
+  const secretFallbackToastShownRef = useRef(false)
+
+  const historyLazyLoadingEnabled = HISTORY_LAZY_LOAD_LIMITS.has(settings.historyRetentionLimit)
+
+  const loadHistoryForSection = useCallback(
+    (requestedVisibleCount?: number) => {
+      const fullHistory = loadHistory()
+      const normalizedVisibleCount = historyLazyLoadingEnabled
+        ? Math.min(requestedVisibleCount ?? HISTORY_LAZY_BATCH_SIZE, fullHistory.length)
+        : fullHistory.length
+
+      setHistoryTotalEntries(fullHistory.length)
+      setHistoryVisibleCount(normalizedVisibleCount)
+      setHistoryEntries(historyLazyLoadingEnabled ? fullHistory.slice(0, normalizedVisibleCount) : fullHistory)
+    },
+    [historyLazyLoadingEnabled],
+  )
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      setHistoryEntries(loadHistory())
+      loadHistoryForSection()
       setHistoryLoading(false)
     }, 600)
 
     return () => {
       window.clearTimeout(timer)
     }
-  }, [])
+  }, [loadHistoryForSection])
+
+  useEffect(() => {
+    const retentionLimit = settings.historyRetentionLimit
+    if (retentionLimit >= 0) {
+      const fullHistory = loadHistory()
+      if (fullHistory.length > retentionLimit) {
+        saveHistory(applyHistoryRetentionLimit(fullHistory, retentionLimit))
+      }
+    }
+
+    loadHistoryForSection()
+  }, [loadHistoryForSection, settings.historyRetentionLimit])
+
+  const canShowMoreHistory = historyLazyLoadingEnabled && historyEntries.length < historyTotalEntries
 
   useEffect(() => {
     let alive = true
@@ -3856,6 +4416,36 @@ const ControlPanelScene = () => {
     let alive = true
 
     void electronAPI
+      .getSecretStorageStatus()
+      .then((status) => {
+        if (!alive || secretFallbackToastShownRef.current) {
+          return
+        }
+
+        if (!status.fallbackActive) {
+          return
+        }
+
+        secretFallbackToastShownRef.current = true
+        pushToast({
+          title: 'Keyring unavailable',
+          description: status.details,
+          variant: 'destructive',
+        })
+      })
+      .catch(() => {
+        // Ignore toast bootstrap failures.
+      })
+
+    return () => {
+      alive = false
+    }
+  }, [pushToast])
+
+  useEffect(() => {
+    let alive = true
+
+    void electronAPI
       .getWindowMaximized()
       .then((maximized) => {
         if (alive) {
@@ -3879,6 +4469,38 @@ const ControlPanelScene = () => {
   }, [])
 
   useEffect(() => {
+    if (typeof window.electronAPI === 'undefined') {
+      return fakeTranscriptionService.subscribeStatus((status) => {
+        setDictationStatus(status)
+      })
+    }
+
+    let alive = true
+
+    void electronAPI
+      .getDictationStatus()
+      .then((status) => {
+        if (alive) {
+          setDictationStatus(status)
+        }
+      })
+      .catch(() => {
+        if (alive) {
+          setDictationStatus('IDLE')
+        }
+      })
+
+    const offDictationStatusChanged = electronAPI.onDictationStatusChanged((status) => {
+      setDictationStatus(status)
+    })
+
+    return () => {
+      alive = false
+      offDictationStatusChanged()
+    }
+  }, [])
+
+  useEffect(() => {
     saveSettings(settings)
     document.documentElement.classList.toggle('dark', settings.theme === 'dark')
   }, [settings])
@@ -3892,11 +4514,43 @@ const ControlPanelScene = () => {
   }, [postModels])
 
   useEffect(() => {
+    saveNoteFolders(noteFolders)
+  }, [noteFolders])
+
+  useEffect(() => {
+    saveNotes(notes)
+  }, [notes])
+
+  useEffect(() => {
+    if (activeFolderId && !noteFolders.some((folder) => folder.id === activeFolderId)) {
+      setActiveFolderId(null)
+    }
+  }, [activeFolderId, noteFolders])
+
+  useEffect(() => {
+    const visibleNotes = activeFolderId ? notes.filter((entry) => entry.folderId === activeFolderId) : notes
+    if (visibleNotes.length === 0) {
+      setActiveNoteId(null)
+      return
+    }
+
+    if (!activeNoteId || !visibleNotes.some((entry) => entry.id === activeNoteId)) {
+      setActiveNoteId(visibleNotes[0]?.id ?? null)
+    }
+  }, [activeFolderId, activeNoteId, notes])
+
+  useEffect(() => {
     const offAutoHide = electronAPI.onFloatingIconAutoHideChanged((enabled) => {
-      setSettings((current) => ({
-        ...current,
-        autoHideFloatingIcon: enabled,
-      }))
+      setSettings((current) => {
+        if (current.autoHideFloatingIcon === enabled) {
+          return current
+        }
+
+        return {
+          ...current,
+          autoHideFloatingIcon: enabled,
+        }
+      })
     })
 
     const offFailure = electronAPI.onHotkeyRegistrationFailed((payload) => {
@@ -3929,7 +4583,7 @@ const ControlPanelScene = () => {
   useEffect(() => {
     const onStorage = (event: StorageEvent) => {
       if (event.key === STORAGE_KEYS.history) {
-        setHistoryEntries(loadHistory())
+        loadHistoryForSection(historyVisibleCount)
       }
 
       if (event.key === STORAGE_KEYS.settings) {
@@ -3940,6 +4594,14 @@ const ControlPanelScene = () => {
 
       if (event.key === STORAGE_KEYS.postModels) {
         setPostModels(loadPostModelState())
+      }
+
+      if (event.key === STORAGE_KEYS.noteFolders) {
+        setNoteFolders(loadNoteFolders())
+      }
+
+      if (event.key === STORAGE_KEYS.notes) {
+        setNotes(loadNotes())
       }
 
       if (event.key === STORAGE_KEYS.appNotification) {
@@ -3954,7 +4616,7 @@ const ControlPanelScene = () => {
     return () => {
       window.removeEventListener('storage', onStorage)
     }
-  }, [pushToast])
+  }, [historyVisibleCount, loadHistoryForSection, pushToast])
 
   const handleSettingsChange = (next: Partial<AppSettings>) => {
     setSettings((current) => ({
@@ -3963,14 +4625,440 @@ const ControlPanelScene = () => {
     }))
   }
 
+  const emitNotesLog = useCallback((message: string, details?: Record<string, unknown>) => {
+    void electronAPI.logNotesEvent({ message, details }).catch(() => {})
+  }, [])
+
+  const handleCreateFolder = (name: string) => {
+    const timestamp = Date.now()
+    const nextFolder: NoteFolder = {
+      id: crypto.randomUUID(),
+      name,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }
+
+    setNoteFolders((current) => [nextFolder, ...current])
+    setActiveFolderId(nextFolder.id)
+    pushToast({
+      title: 'Folder created',
+      description: `${name} is ready.`,
+      variant: 'success',
+    })
+
+    emitNotesLog('Folder created', {
+      folderId: nextFolder.id,
+      folderName: nextFolder.name,
+      totalFolders: noteFolders.length + 1,
+    })
+  }
+
+  const handleDeleteFolder = (folderId: string) => {
+    const folder = noteFolders.find((entry) => entry.id === folderId)
+    if (!folder) {
+      return
+    }
+
+    setNoteFolders((current) => current.filter((entry) => entry.id !== folderId))
+    setNotes((current) =>
+      current.map((entry) =>
+        entry.folderId === folderId
+          ? {
+              ...entry,
+              folderId: null,
+              updatedAt: Date.now(),
+            }
+          : entry,
+      ),
+    )
+
+    if (activeFolderId === folderId) {
+      setActiveFolderId(null)
+    }
+
+    pushToast({
+      title: 'Folder removed',
+      description: `${folder.name} was deleted. Notes were moved to All notes.`,
+    })
+
+    emitNotesLog('Folder deleted', {
+      folderId,
+      folderName: folder.name,
+      movedNotesToRoot: true,
+    })
+  }
+
+  const handleCreateNote = (folderId: string | null) => {
+    const timestamp = Date.now()
+    const noteCount = notes.length + 1
+    const nextNote: NoteEntry = {
+      id: crypto.randomUUID(),
+      folderId,
+      title: `Note ${noteCount}`,
+      rawText: '',
+      processedText: '',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }
+
+    setNotes((current) => [nextNote, ...current])
+    setActiveNoteId(nextNote.id)
+    pushToast({
+      title: 'Note created',
+      variant: 'success',
+    })
+
+    emitNotesLog('Note created', {
+      noteId: nextNote.id,
+      folderId,
+      title: nextNote.title,
+      totalNotes: notes.length + 1,
+    })
+  }
+
+  const handleUpdateNote = (
+    noteId: string,
+    patch: Partial<Pick<NoteEntry, 'title' | 'rawText' | 'processedText' | 'folderId'>>,
+  ) => {
+    setNotes((current) =>
+      current.map((entry) => {
+        if (entry.id !== noteId) {
+          return entry
+        }
+
+        return {
+          ...entry,
+          ...patch,
+          updatedAt: Date.now(),
+        }
+      }),
+    )
+  }
+
+  const handleDeleteNote = (noteId: string) => {
+    const removedNote = notes.find((entry) => entry.id === noteId)
+
+    setNotes((current) => current.filter((entry) => entry.id !== noteId))
+    if (activeNoteId === noteId) {
+      setActiveNoteId(null)
+    }
+    if (transcribingNoteId === noteId) {
+      setTranscribingNoteId(null)
+    }
+    if (postProcessingNoteId === noteId) {
+      setPostProcessingNoteId(null)
+    }
+
+    emitNotesLog('Note deleted', {
+      noteId,
+      title: removedNote?.title ?? null,
+    })
+  }
+
+  const handleRequestNoteTranscription = async (noteId: string) => {
+    const usingElectronBridge = typeof window.electronAPI !== 'undefined'
+
+    emitNotesLog('Transcribe requested', {
+      noteId,
+      runtime: usingElectronBridge ? 'electron' : 'browser',
+      dictationStatus,
+      transcribingNoteId,
+    })
+
+    const toggleDictation = usingElectronBridge
+      ? () => electronAPI.toggleDictationTranscriptionOnly()
+      : async () => fakeTranscriptionService.toggleListening()
+    const cancelDictation = usingElectronBridge
+      ? () => electronAPI.cancelDictation()
+      : async () => {
+          if (dictationStatus === 'RECORDING') {
+            return fakeTranscriptionService.cancelRecording()
+          }
+
+          if (dictationStatus === 'PROCESSING') {
+            return fakeTranscriptionService.cancelProcessing()
+          }
+
+          return false
+        }
+
+    const wasRecordingThisNote = dictationStatus === 'RECORDING' && transcribingNoteId === noteId
+
+    if (dictationStatus === 'PROCESSING') {
+      if (transcribingNoteId === noteId) {
+        emitNotesLog('Transcribe skipped: already processing same note', {
+          noteId,
+        })
+
+        pushToast({
+          title: 'Transcription in progress',
+          description: 'Current note transcription is still being processed.',
+        })
+        return
+      }
+
+      if (transcribingNoteId !== null && transcribingNoteId !== noteId) {
+        emitNotesLog('Transcribe rejected: another note processing', {
+          noteId,
+          activeTranscribingNoteId: transcribingNoteId,
+        })
+
+        pushToast({
+          title: 'Another note is processing',
+          description: 'Wait for it to finish, then retry.',
+          variant: 'destructive',
+        })
+        return
+      }
+
+      const canceledStaleProcessing = await cancelDictation().catch(() => false)
+      if (!canceledStaleProcessing) {
+        emitNotesLog('Transcribe rejected: stale processing could not be canceled', {
+          noteId,
+        })
+
+        pushToast({
+          title: 'Transcription busy',
+          description: 'An existing transcription process is still active. Retry in a moment.',
+          variant: 'destructive',
+        })
+        return
+      }
+    }
+
+    if (dictationStatus === 'RECORDING' && transcribingNoteId === null) {
+      const canceledUnknownRecording = await cancelDictation().catch(() => false)
+      if (!canceledUnknownRecording) {
+        emitNotesLog('Transcribe rejected: unknown active recording', {
+          noteId,
+        })
+
+        pushToast({
+          title: 'Dictation busy',
+          description: 'Another recording session is active. Stop it, then retry.',
+          variant: 'destructive',
+        })
+        return
+      }
+    }
+
+    setTranscribingNoteId(noteId)
+
+    try {
+      const response = await toggleDictation()
+      if (!response.accepted) {
+        if (!(response.reason === 'processing' && wasRecordingThisNote)) {
+          setTranscribingNoteId(null)
+        }
+
+        emitNotesLog('Transcribe rejected by runtime', {
+          noteId,
+          reason: response.reason ?? 'unknown',
+          runtime: usingElectronBridge ? 'electron' : 'browser',
+        })
+
+        const reasonDescription =
+          response.reason === 'processing'
+            ? 'Another transcription operation is currently running.'
+            : response.reason === 'unavailable'
+              ? usingElectronBridge
+                ? 'Microphone recorder is unavailable in this runtime.'
+                : 'Browser speech recognition is unavailable in this browser/runtime.'
+              : 'Dictation is currently unavailable.'
+        pushToast({
+          title: 'Unable to start transcription',
+          description: reasonDescription,
+          variant: 'destructive',
+        })
+        return
+      }
+
+      pushToast({
+        title: wasRecordingThisNote ? 'Recording stopped' : 'Dictation started',
+        description: wasRecordingThisNote
+          ? 'Processing transcription and appending text to this note...'
+          : usingElectronBridge
+            ? 'Press Transcribe again to stop and append text to this note.'
+            : 'Press Transcribe again to stop and append browser speech text to this note.',
+      })
+
+      emitNotesLog(wasRecordingThisNote ? 'Transcribe stop requested' : 'Transcribe started', {
+        noteId,
+        runtime: usingElectronBridge ? 'electron' : 'browser',
+      })
+    } catch {
+      setTranscribingNoteId(null)
+
+      emitNotesLog('Transcribe failed with runtime exception', {
+        noteId,
+        runtime: usingElectronBridge ? 'electron' : 'browser',
+      })
+
+      pushToast({
+        title: 'Unable to start transcription',
+        description: usingElectronBridge
+          ? 'Dictation control is unavailable in this runtime.'
+          : 'Browser speech recognition is unavailable in this browser/runtime.',
+        variant: 'destructive',
+      })
+    }
+  }
+
+  const handlePostProcessNote = async (noteId: string) => {
+    const targetNote = notes.find((entry) => entry.id === noteId)
+    if (!targetNote || !targetNote.rawText.trim()) {
+      emitNotesLog('Post-process skipped: note has no raw text', {
+        noteId,
+      })
+
+      pushToast({
+        title: 'No transcription text',
+        description: 'Add transcription text before running post-processing.',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    setPostProcessingNoteId(noteId)
+
+    emitNotesLog('Post-process started', {
+      noteId,
+      inputLength: targetNote.rawText.trim().length,
+    })
+
+    try {
+      const output = await electronAPI.runNoteEnhancement(targetNote.rawText)
+      handleUpdateNote(noteId, {
+        processedText: output,
+      })
+
+      emitNotesLog('Post-process completed', {
+        noteId,
+        outputLength: output.trim().length,
+        unchanged: output.trim() === targetNote.rawText.trim(),
+      })
+
+      pushToast({
+        title: output.trim() === targetNote.rawText.trim() ? 'Cleanup completed (no major changes)' : 'Post-processing completed',
+        variant: 'success',
+      })
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown post-processing error.'
+      const fallbackOutput = targetNote.rawText
+        .replace(/[ \t]+\n/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .replace(/[ \t]{2,}/g, ' ')
+        .trim()
+
+      handleUpdateNote(noteId, {
+        processedText: fallbackOutput,
+      })
+
+      emitNotesLog('Post-process failed: fallback cleanup applied', {
+        noteId,
+        error: message,
+        fallbackLength: fallbackOutput.length,
+      })
+
+      pushToast({
+        title:
+          typeof window.electronAPI === 'undefined'
+            ? 'Basic cleanup preview applied'
+            : 'Reasoning unavailable, basic cleanup applied',
+        description: message,
+      })
+    } finally {
+      setPostProcessingNoteId(null)
+    }
+  }
+
+  useEffect(() => {
+    const handleResult = (payload: { text: string }) => {
+      setTranscribingNoteId((currentNoteId) => {
+        if (!currentNoteId) {
+          return currentNoteId
+        }
+
+        setNotes((current) =>
+          current.map((entry) => {
+            if (entry.id !== currentNoteId) {
+              return entry
+            }
+
+            const nextRawText = entry.rawText.trim().length > 0 ? `${entry.rawText.trim()}\n${payload.text}` : payload.text
+
+            return {
+              ...entry,
+              rawText: nextRawText,
+              updatedAt: Date.now(),
+            }
+          }),
+        )
+
+        pushToast({
+          title: 'Transcript added to note',
+          variant: 'success',
+        })
+
+        emitNotesLog('Transcript appended to note', {
+          noteId: currentNoteId,
+          textLength: payload.text.length,
+        })
+
+        return null
+      })
+    }
+
+    if (typeof window.electronAPI === 'undefined') {
+      return fakeTranscriptionService.subscribeResult((payload) => {
+        handleResult(payload)
+      })
+    }
+
+    const offResult = electronAPI.onDictationResult((payload) => {
+      handleResult(payload)
+    })
+
+    const offError = electronAPI.onDictationError((message) => {
+      setTranscribingNoteId((currentNoteId) => {
+        if (!currentNoteId) {
+          return currentNoteId
+        }
+
+        pushToast({
+          title: 'Transcription failed',
+          description: message,
+          variant: 'destructive',
+        })
+
+        emitNotesLog('Transcription failed', {
+          noteId: currentNoteId,
+          message,
+        })
+
+        return null
+      })
+    })
+
+    return () => {
+      offResult()
+      offError()
+    }
+  }, [emitNotesLog, pushToast])
+
   const renderSection = () => {
     if (section === 'conversations') {
       return (
         <HistorySection
           entries={historyEntries}
+          totalEntries={historyTotalEntries}
           loading={historyLoading}
           clearConfirmOpen={historyClearConfirmOpen}
           onClearConfirmOpenChange={setHistoryClearConfirmOpen}
+          onShowMore={() => {
+            loadHistoryForSection(historyVisibleCount + HISTORY_LAZY_BATCH_SIZE)
+          }}
+          canShowMore={canShowMoreHistory}
           onCopy={async (text) => {
             try {
               await navigator.clipboard.writeText(text)
@@ -3986,13 +5074,15 @@ const ControlPanelScene = () => {
             }
           }}
           onDelete={(id) => {
-            const nextHistory = historyEntries.filter((entry) => entry.id !== id)
-            setHistoryEntries(nextHistory)
+            const nextHistory = loadHistory().filter((entry) => entry.id !== id)
             saveHistory(nextHistory)
+            loadHistoryForSection(historyVisibleCount)
           }}
           onClear={() => {
             clearHistory()
             setHistoryEntries([])
+            setHistoryTotalEntries(0)
+            setHistoryVisibleCount(0)
             setHistoryClearConfirmOpen(false)
             pushToast({
               title: 'Conversations removed',
@@ -4017,6 +5107,33 @@ const ControlPanelScene = () => {
           onSettingsChange={handleSettingsChange}
           onModelsChange={setModels}
           onPostModelsChange={setPostModels}
+        />
+      )
+    }
+
+    if (section === 'notes') {
+      return (
+        <NotesSection
+          folders={noteFolders}
+          notes={notes}
+          activeFolderId={activeFolderId}
+          activeNoteId={activeNoteId}
+          dictationStatus={dictationStatus}
+          transcribingNoteId={transcribingNoteId}
+          postProcessingNoteId={postProcessingNoteId}
+          onSelectFolder={setActiveFolderId}
+          onCreateFolder={handleCreateFolder}
+          onDeleteFolder={handleDeleteFolder}
+          onCreateNote={handleCreateNote}
+          onSelectNote={setActiveNoteId}
+          onUpdateNote={handleUpdateNote}
+          onDeleteNote={handleDeleteNote}
+          onTranscribeNote={(noteId) => {
+            void handleRequestNoteTranscription(noteId)
+          }}
+          onPostProcessNote={(noteId) => {
+            void handlePostProcessNote(noteId)
+          }}
         />
       )
     }
@@ -4090,9 +5207,13 @@ const ControlPanelScene = () => {
 
   const conversationsCountLabel = historyLoading
     ? '...'
-    : historyEntries.length > 999
+    : historyTotalEntries > 999
       ? '999+'
-      : String(historyEntries.length)
+      : String(historyTotalEntries)
+
+  const notesCountLabel = notes.length > 999 ? '999+' : String(notes.length)
+  const sectionTitle =
+    section === 'conversations' ? t('menuConversations') : section === 'notes' ? t('menuNotes') : t('menuSettings')
 
   return (
     <div
@@ -4153,6 +5274,36 @@ const ControlPanelScene = () => {
         </div>
 
         <div className="app-no-drag z-10 ml-auto flex items-center gap-2">
+          <button
+            type="button"
+            className={cn(
+              'app-no-drag inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors',
+              section === 'conversations'
+                ? 'bg-primary/15 text-primary ring-1 ring-primary/25'
+                : 'text-muted-foreground hover:bg-surface-2 hover:text-foreground',
+            )}
+            onClick={() => {
+              setSection('conversations')
+            }}
+          >
+            <BookOpen className="h-4 w-4" />
+          </button>
+
+          <button
+            type="button"
+            className={cn(
+              'app-no-drag inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors',
+              section === 'notes'
+                ? 'bg-primary/15 text-primary ring-1 ring-primary/25'
+                : 'text-muted-foreground hover:bg-surface-2 hover:text-foreground',
+            )}
+            onClick={() => {
+              setSection('notes')
+            }}
+          >
+            <FileText className="h-4 w-4" />
+          </button>
+
           <Button
             variant="ghost"
             size="icon"
@@ -4174,7 +5325,7 @@ const ControlPanelScene = () => {
                 : 'text-muted-foreground hover:bg-surface-2 hover:text-foreground',
             )}
             onClick={() => {
-              setSection((current) => (current === 'settings' ? 'conversations' : 'settings'))
+              setSection('settings')
             }}
           >
             <Settings className="h-4 w-4" />
@@ -4213,11 +5364,36 @@ const ControlPanelScene = () => {
           >
             <div className="flex items-center gap-2">
               <div className="flex items-center gap-2">
-                <h1 className="text-lg font-semibold">{section === 'conversations' ? t('menuConversations') : t('menuSettings')}</h1>
+                <h1 className="text-lg font-semibold">{sectionTitle}</h1>
                 {section === 'conversations' ? (
                   <span className="inline-flex min-w-6 items-center justify-center rounded-full border border-primary/30 bg-primary/15 px-1.5 text-[11px] font-semibold text-primary">
                     {conversationsCountLabel}
                   </span>
+                ) : null}
+                {section === 'notes' ? (
+                  <span className="inline-flex min-w-6 items-center justify-center rounded-full border border-primary/30 bg-primary/15 px-1.5 text-[11px] font-semibold text-primary">
+                    {notesCountLabel}
+                  </span>
+                ) : null}
+                {section === 'conversations' ? (
+                  <label className="inline-flex items-center gap-2 rounded-md border border-border-subtle bg-surface-1 px-2 py-1 text-xs text-muted-foreground">
+                    <span>Retention</span>
+                    <select
+                      className="app-no-drag h-7 rounded border border-border-subtle bg-surface-0 px-2 text-xs text-foreground"
+                      value={String(settings.historyRetentionLimit)}
+                      onChange={(event) => {
+                        handleSettingsChange({
+                          historyRetentionLimit: Number(event.target.value),
+                        })
+                      }}
+                    >
+                      {HISTORY_RETENTION_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                 ) : null}
                 {section === 'conversations' ? (
                   <Button
@@ -4226,7 +5402,7 @@ const ControlPanelScene = () => {
                     onClick={() => {
                       setHistoryClearConfirmOpen(true)
                     }}
-                    disabled={historyEntries.length === 0}
+                    disabled={historyTotalEntries === 0}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                     Clear history

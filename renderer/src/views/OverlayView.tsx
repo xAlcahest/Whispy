@@ -1,4 +1,4 @@
-import { Mic, AudioLines, X, Loader2 } from 'lucide-react'
+import { Mic, AudioLines, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Dropdown } from '../components/ui/dropdown'
 import { emitAppNotification } from '../lib/app-notifications'
@@ -346,12 +346,8 @@ const OverlayScene = () => {
       return 'WITH_MENU'
     }
 
-    if (status === 'RECORDING' || status === 'PROCESSING') {
-      return 'EXPANDED'
-    }
-
     return 'BASE'
-  }, [contextMenuOpen, status])
+  }, [contextMenuOpen])
 
   useEffect(() => {
     electronAPI.resizeMainWindow(overlaySize)
@@ -550,7 +546,7 @@ const OverlayScene = () => {
                 <span className="h-3 w-1 animate-[wave_0.8s_ease-in-out_0.32s_infinite] rounded-sm bg-white/90" />
               </div>
             ) : status === 'RECORDING' ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
+              <Mic className="h-4 w-4" />
             ) : hovered ? (
               <AudioLines className="h-4 w-4" />
             ) : (

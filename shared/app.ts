@@ -63,6 +63,7 @@ export interface AppSettings {
   translationPrompt: string
   postProcessingDictionaryEnabled: boolean
   postProcessingDictionaryRules: DictionaryRule[]
+  historyRetentionLimit: number
   keytarEnabled: boolean
   debugModeEnabled: boolean
 }

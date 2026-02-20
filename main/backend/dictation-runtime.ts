@@ -1,5 +1,6 @@
 import { createWriteStream, mkdirSync } from 'node:fs'
 import { rm } from 'node:fs/promises'
+import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
 import type { DictationResult, DictationStatus } from '../../shared/app'
@@ -20,11 +21,44 @@ interface DictationRuntimeHandlers {
   onStatusChanged: (status: DictationStatus) => void
   onResult: (result: DictationResult) => void
   onError: (message: string) => void
-  processAudioFile: (audioFilePath: string) => Promise<DictationResult>
+  processAudioFile: (audioFilePath: string, mode: DictationProcessingMode) => Promise<DictationResult>
 }
+
+export type DictationProcessingMode = 'full' | 'transcription-only'
 
 const loadRecorderModule = (): NodeRecordModule => {
   return require('node-record-lpcm16') as NodeRecordModule
+}
+
+const commandExists = (command: string) => {
+  const lookupCommand = process.platform === 'win32' ? 'where' : 'which'
+  const probe = spawnSync(lookupCommand, [command], {
+    encoding: 'utf8',
+    timeout: 1200,
+    windowsHide: true,
+  })
+
+  return probe.status === 0
+}
+
+const resolveRecorderCommand = () => {
+  if (process.platform === 'linux') {
+    if (commandExists('arecord')) {
+      return 'arecord'
+    }
+
+    if (commandExists('rec')) {
+      return 'rec'
+    }
+
+    if (commandExists('sox')) {
+      return 'sox'
+    }
+
+    return null
+  }
+
+  return 'sox'
 }
 
 export class DictationRuntime {
@@ -32,6 +66,8 @@ export class DictationRuntime {
   private recordingSession: NodeRecordSession | null = null
   private recordingWriteStream: NodeJS.WritableStream | null = null
   private recordingFilePath: string | null = null
+  private recordingMode: DictationProcessingMode = 'full'
+  private stoppingRecording = false
   private processingRunId = 0
 
   constructor(
@@ -45,10 +81,10 @@ export class DictationRuntime {
     return this.status
   }
 
-  toggleDictation(): DictationToggleResponse {
+  toggleDictation(mode: DictationProcessingMode = 'full'): DictationToggleResponse {
     if (this.status === 'IDLE') {
       try {
-        this.startRecording()
+        this.startRecording(mode)
       } catch {
         return {
           accepted: false,
@@ -77,6 +113,7 @@ export class DictationRuntime {
   cancelDictation() {
     if (this.status === 'RECORDING') {
       this.stopActiveRecording()
+      this.recordingMode = 'full'
       this.updateStatus('IDLE')
       return true
     }
@@ -86,40 +123,64 @@ export class DictationRuntime {
     }
 
     this.processingRunId += 1
+    this.recordingMode = 'full'
     this.updateStatus('IDLE')
     return true
   }
 
-  private startRecording() {
+  private startRecording(mode: DictationProcessingMode) {
     const recorder = loadRecorderModule()
+    const recorderCommand = resolveRecorderCommand()
+    const requestedAudioInputDevice = process.env.WHISPY_AUDIO_INPUT_DEVICE?.trim()
+    if (!recorderCommand) {
+      throw new Error('No supported microphone recorder found (arecord, rec, sox).')
+    }
+
     const recordingFilePath = join(this.recordingsDirectory, `dictation-${Date.now()}-${crypto.randomUUID()}.wav`)
     const recordingWriteStream = createWriteStream(recordingFilePath)
 
-    const recordingSession = recorder.record({
+    const recordOptions: Record<string, unknown> = {
       sampleRate: 16_000,
       channels: 1,
       threshold: 0,
-      recorder: process.platform === 'linux' ? 'arecord' : 'sox',
+      recorder: recorderCommand,
       audioType: 'wav',
-    })
+    }
+
+    if (requestedAudioInputDevice) {
+      recordOptions.device = requestedAudioInputDevice
+    }
+
+    const recordingSession = recorder.record(recordOptions)
 
     recordingSession
       .stream()
-      .on('error', () => {
-        this.handlers.onError('Microphone recorder failed. Check system recorder dependencies.')
-        this.stopActiveRecording()
-        this.updateStatus('IDLE')
+      .on('error', (error: unknown) => {
+        if (this.stoppingRecording || this.status !== 'RECORDING') {
+          return
+        }
+
+        const failureDetail = error instanceof Error ? error.message : String(error ?? '')
+        this.handlers.onError(
+          `Microphone recorder failed (${recorderCommand})${failureDetail ? `: ${failureDetail}` : ''}. Check system recorder dependencies or set WHISPY_AUDIO_INPUT_DEVICE.`,
+        )
+        void this.stopActiveRecording().then(() => {
+          this.updateStatus('IDLE')
+        })
       })
       .pipe(recordingWriteStream)
 
     this.recordingSession = recordingSession
     this.recordingWriteStream = recordingWriteStream
     this.recordingFilePath = recordingFilePath
+    this.recordingMode = mode
     this.updateStatus('RECORDING')
   }
 
   private stopRecordingAndProcess() {
     const activeRecordingPath = this.recordingFilePath
+    const activeMode = this.recordingMode
+    this.recordingMode = 'full'
     if (!activeRecordingPath) {
       this.updateStatus('IDLE')
       return
@@ -131,7 +192,7 @@ export class DictationRuntime {
     const runId = ++this.processingRunId
 
     void recordingStopped
-      .then(() => this.handlers.processAudioFile(activeRecordingPath))
+      .then(() => this.handlers.processAudioFile(activeRecordingPath, activeMode))
       .then(async (result) => {
         if (runId !== this.processingRunId) {
           await rm(activeRecordingPath, { force: true })
@@ -156,9 +217,12 @@ export class DictationRuntime {
 
   private stopActiveRecording() {
     const activeWriteStream = this.recordingWriteStream
+    this.stoppingRecording = true
 
     if (this.recordingSession) {
-      this.recordingSession.stop()
+      try {
+        this.recordingSession.stop()
+      } catch {}
       this.recordingSession = null
     }
 
@@ -167,16 +231,28 @@ export class DictationRuntime {
     this.recordingFilePath = null
 
     if (!activeWriteStream) {
+      this.stoppingRecording = false
       return Promise.resolve()
     }
 
     return new Promise<void>((resolve) => {
-      activeWriteStream.once('close', () => {
+      let settled = false
+      const finalize = () => {
+        if (settled) {
+          return
+        }
+
+        settled = true
+        this.stoppingRecording = false
         resolve()
+      }
+
+      activeWriteStream.once('close', () => {
+        finalize()
       })
 
       activeWriteStream.once('finish', () => {
-        resolve()
+        finalize()
       })
     })
   }

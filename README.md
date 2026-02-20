@@ -35,7 +35,7 @@ It combines a floating always-on overlay for instant speech capture with a full 
 - Dark/light theme support with consistent design tokens and custom scrollbar styling
 - Backend persistence and runtime services:
   - SQLite state store (`better-sqlite3`)
-  - OS keychain secret storage (`keytar`, encrypted fallback when available)
+  - OS keychain secret storage (`keytar`) with emergency plaintext `.env` fallback only when keyring access fails
   - Main-process dictation runtime and prompt pipeline
   - Real auto-paste execution by selected backend
 
@@ -117,8 +117,8 @@ Set these environment variables only if you want local runtime execution:
 - `WHISPY_LOCAL_STT_COMMAND`: command used for local speech-to-text (receives audio file path as first argument)
 - `WHISPY_LOCAL_LLM_COMMAND`: command used for local post-processing (receives JSON `{ prompt, input }` on stdin)
 - `WHISPY_WHISPER_SERVER_COMMAND`: explicit `whisper-server` binary path override
-- `WHISPY_WHISPER_RUNTIME_CPU_URL`: override CPU runtime download URL used by in-app runtime installer
-- `WHISPY_WHISPER_RUNTIME_CUDA_URL`: override CUDA runtime download URL used by in-app runtime installer
+- `WHISPY_WHISPER_RUNTIME_CPU_URL`: override CPU runtime download URL used by build-time runtime preparation
+- `WHISPY_WHISPER_RUNTIME_CUDA_URL`: override CUDA runtime download URL used by build-time runtime preparation
 
 You can start from `.env.example` and export the values in your shell before running `npm run dev`.
 
@@ -132,13 +132,17 @@ then falls back to `whisper-cli` if needed.
 
 ### Preparing Whisper runtime artifacts for builds
 
-Build helper scripts prepare official `ggml-org/whisper.cpp` artifacts into `resources/bin/whispercpp/`.
+Build helper scripts always prepare both Whisper CPU and CUDA runtimes into `resources/bin/whispercpp/`.
+
+`npm run dev` and `npm run build` automatically run runtime preparation first.
 
 ```bash
 npm run prepare:whisper-runtime
+npm run dev
+npm run build
 ```
 
-Platform-targeted wrappers:
+Platform-targeted wrappers (always CPU + CUDA):
 
 ```bash
 npm run build:linux
@@ -146,11 +150,33 @@ npm run build:win
 npm run build:mac
 ```
 
+### Preparing local Whisper runtime prerequisites
+
+Use this when you want the app package to already include everything needed for local Whisper transcription:
+
+```bash
+npm run prepare:whisper
+```
+
+Default behavior:
+
+- prepares Whisper runtime/server binaries for current platform (`cpu,cuda`)
+- does not download transcription model files automatically
+
+Optional overrides:
+
+```bash
+npm run prepare:whisper -- --variants=cpu
+npm run prepare:whisper -- --variants=cpu,cuda --force
+```
+
 Notes:
 
-- Windows uses official prebuilt assets (`whisper-bin` / `whisper-cublas`).
-- If no official prebuilt is available for the target platform, the script builds `whisper-server` from official source.
-- CUDA runtime preparation is best-effort by default; set `WHISPY_REQUIRE_CUDA_RUNTIME=1` to hard-fail when unavailable.
+- Runtime binaries are sourced from `OpenWhispr/whisper.cpp` release `0.0.6` when an official prebuilt exists for the target platform.
+- Runtime binaries are managed by npm build/package pipeline (in-app runtime download/remove is disabled).
+- If no official prebuilt exists for a platform/variant, prepare fails unless you set `WHISPY_WHISPER_RUNTIME_CPU_URL` or `WHISPY_WHISPER_RUNTIME_CUDA_URL`.
+- Set `WHISPY_REQUIRE_CUDA_RUNTIME=1` to hard-fail when CUDA artifacts are unavailable.
+- Temporary download/extract files are stored under system temp directories (not in project `.cache`).
 
 ### FFmpeg in this setup
 
@@ -161,7 +187,20 @@ Build production bundles:
 
 ```bash
 npm run build
+npm run dist:linux
 ```
+
+## Credits
+
+- Whisper runtime binaries and source attribution: `https://github.com/OpenWhispr/whisper.cpp/releases/tag/0.0.6`
+- CPU binary assets used by default:
+  - `https://github.com/OpenWhispr/whisper.cpp/releases/download/0.0.6/whisper-server-linux-x64-cpu.zip`
+  - `https://github.com/OpenWhispr/whisper.cpp/releases/download/0.0.6/whisper-server-win32-x64-cpu.zip`
+  - `https://github.com/OpenWhispr/whisper.cpp/releases/download/0.0.6/whisper-server-darwin-arm64.zip`
+  - `https://github.com/OpenWhispr/whisper.cpp/releases/download/0.0.6/whisper-server-darwin-x64.zip`
+- CUDA binary assets used by default:
+  - `https://github.com/OpenWhispr/whisper.cpp/releases/download/0.0.6/whisper-server-linux-x64-cuda.zip`
+  - `https://github.com/OpenWhispr/whisper.cpp/releases/download/0.0.6/whisper-server-win32-x64-cuda.zip`
 
 ## License
 

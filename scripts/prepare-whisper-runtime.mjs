@@ -1,26 +1,45 @@
 #!/usr/bin/env node
 
 import { spawnSync } from 'node:child_process'
-import { createWriteStream, existsSync, mkdirSync, readdirSync, rmSync, statSync, copyFileSync, chmodSync } from 'node:fs'
+import {
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  copyFileSync,
+  chmodSync,
+  writeFileSync,
+} from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { fileURLToPath } from 'node:url'
 
 const OFFICIAL_RUNTIME_ASSETS = {
-  'win32-x64': {
-    cpu: 'https://github.com/ggml-org/whisper.cpp/releases/latest/download/whisper-bin-x64.zip',
-    cuda: 'https://github.com/ggml-org/whisper.cpp/releases/latest/download/whisper-cublas-12.4.0-bin-x64.zip',
+  'linux-x64': {
+    cpu: 'https://github.com/OpenWhispr/whisper.cpp/releases/download/0.0.6/whisper-server-linux-x64-cpu.zip',
+    cuda: 'https://github.com/OpenWhispr/whisper.cpp/releases/download/0.0.6/whisper-server-linux-x64-cuda.zip',
   },
-  'win32-ia32': {
-    cpu: 'https://github.com/ggml-org/whisper.cpp/releases/latest/download/whisper-bin-Win32.zip',
+  'win32-x64': {
+    cpu: 'https://github.com/OpenWhispr/whisper.cpp/releases/download/0.0.6/whisper-server-win32-x64-cpu.zip',
+    cuda: 'https://github.com/OpenWhispr/whisper.cpp/releases/download/0.0.6/whisper-server-win32-x64-cuda.zip',
+  },
+  'darwin-arm64': {
+    cpu: 'https://github.com/OpenWhispr/whisper.cpp/releases/download/0.0.6/whisper-server-darwin-arm64.zip',
+  },
+  'darwin-x64': {
+    cpu: 'https://github.com/OpenWhispr/whisper.cpp/releases/download/0.0.6/whisper-server-darwin-x64.zip',
   },
 }
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const CACHE_ROOT = join(REPO_ROOT, '.cache', 'whispercpp')
+const CACHE_ROOT = join(tmpdir(), 'whispy-whispercpp-cache')
 const BUNDLED_RUNTIME_ROOT = join(REPO_ROOT, 'resources', 'bin', 'whispercpp')
-const WHISPER_CPP_REPOSITORY_URL = 'https://github.com/ggml-org/whisper.cpp.git'
+const PREPARE_LOG_ROOT = join(CACHE_ROOT, 'logs')
+const PREPARE_OUTPUT_MAX_LINES = 24
 
 const parseArgs = () => {
   const options = {
@@ -74,6 +93,45 @@ const parseArgs = () => {
   return options
 }
 
+const summarizeOutput = (raw) => {
+  const lines = String(raw ?? '')
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter((line) => line.length > 0)
+
+  if (lines.length <= PREPARE_OUTPUT_MAX_LINES) {
+    return lines.join('\n')
+  }
+
+  const keepHead = 14
+  const keepTail = 8
+  const omittedCount = Math.max(0, lines.length - keepHead - keepTail)
+  return `${lines.slice(0, keepHead).join('\n')}\n... (${omittedCount} lines omitted)\n${lines.slice(-keepTail).join('\n')}`
+}
+
+const writeFailureLog = ({ command, args, options, stdout, stderr, message }) => {
+  ensureDirectory(PREPARE_LOG_ROOT)
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+  const logPath = join(PREPARE_LOG_ROOT, `prepare-${timestamp}.log`)
+
+  const lines = [
+    `message: ${message}`,
+    `command: ${command}`,
+    `args: ${JSON.stringify(args)}`,
+    `cwd: ${options.cwd || process.cwd()}`,
+    '',
+    '--- stdout ---',
+    stdout || '(empty)',
+    '',
+    '--- stderr ---',
+    stderr || '(empty)',
+    '',
+  ]
+
+  writeFileSync(logPath, lines.join('\n'), 'utf8')
+  return logPath
+}
+
 const run = (command, args, options = {}) => {
   const result = spawnSync(command, args, {
     encoding: 'utf8',
@@ -83,8 +141,27 @@ const run = (command, args, options = {}) => {
   })
 
   if (result.status !== 0) {
-    const details = result.stderr.trim() || result.stdout.trim() || `Command failed: ${command}`
-    throw new Error(details)
+    const stdout = result.stdout?.trim() || ''
+    const stderr = result.stderr?.trim() || ''
+    const merged = stderr || stdout || `Command failed: ${command}`
+    const summary = summarizeOutput(merged) || `Command failed: ${command}`
+
+    const error = new Error(summary)
+    error.command = command
+    error.args = args
+    error.options = options
+    error.stdout = stdout
+    error.stderr = stderr
+    error.logPath = writeFailureLog({
+      command,
+      args,
+      options,
+      stdout,
+      stderr,
+      message: summary,
+    })
+
+    throw error
   }
 
   return result.stdout.trim()
@@ -170,7 +247,15 @@ const copyRuntimeArtifacts = ({
   targetBinaryName,
   executableSuffix,
 }) => {
-  const sourceBinary = findFileRecursive(sourceRoot, (fileName) => fileName.toLowerCase() === `whisper-server${executableSuffix}`)
+  const sourceBinary = findFileRecursive(sourceRoot, (fileName) => {
+    const normalized = fileName.toLowerCase()
+
+    if (executableSuffix === '.exe') {
+      return normalized === 'whisper-server.exe' || (normalized.startsWith('whisper-server-') && normalized.endsWith('.exe'))
+    }
+
+    return normalized === 'whisper-server' || normalized.startsWith('whisper-server-')
+  })
   if (!sourceBinary) {
     throw new Error('whisper-server binary was not found in prepared runtime artifacts.')
   }
@@ -228,66 +313,6 @@ const prepareFromOfficialAsset = async ({
   })
 }
 
-const prepareFromSource = ({
-  platform,
-  arch,
-  variant,
-  targetDirectory,
-}) => {
-  if (platform !== process.platform || arch !== process.arch) {
-    throw new Error(
-      `Source build for ${platform}-${arch} must run on a matching host platform. Current host: ${process.platform}-${process.arch}.`,
-    )
-  }
-
-  if (!commandExists('git') || !commandExists('cmake')) {
-    throw new Error('git and cmake are required to build whisper.cpp from source.')
-  }
-
-  if (variant === 'cuda' && platform === 'darwin') {
-    throw new Error('CUDA build is not available on macOS hosts.')
-  }
-
-  const sourceDirectory = join(CACHE_ROOT, 'source', 'whisper.cpp')
-  if (!existsSync(sourceDirectory)) {
-    ensureDirectory(dirname(sourceDirectory))
-    run('git', ['clone', '--depth', '1', WHISPER_CPP_REPOSITORY_URL, sourceDirectory])
-  }
-
-  const versionOverride = process.env.WHISPY_WHISPER_CPP_VERSION?.trim()
-  if (versionOverride) {
-    run('git', ['fetch', '--tags', '--force'], { cwd: sourceDirectory })
-    run('git', ['checkout', versionOverride], { cwd: sourceDirectory })
-  }
-
-  const buildDirectory = join(CACHE_ROOT, 'build', `${platform}-${arch}-${variant}`)
-  ensureDirectory(buildDirectory)
-
-  const configureArgs = [
-    '-S',
-    sourceDirectory,
-    '-B',
-    buildDirectory,
-    '-DWHISPER_BUILD_SERVER=ON',
-    '-DWHISPER_BUILD_EXAMPLES=ON',
-    '-DWHISPER_BUILD_TESTS=OFF',
-  ]
-
-  if (variant === 'cuda') {
-    configureArgs.push('-DGGML_CUDA=ON')
-  }
-
-  run('cmake', configureArgs)
-  run('cmake', ['--build', buildDirectory, '--config', 'Release', '--parallel'])
-
-  return copyRuntimeArtifacts({
-    sourceRoot: buildDirectory,
-    targetDirectory,
-    targetBinaryName: `whisper-server-${platform}-${arch}-${variant}${platform === 'win32' ? '.exe' : ''}`,
-    executableSuffix: platform === 'win32' ? '.exe' : '',
-  })
-}
-
 const prepareVariant = async ({ platform, arch, variant, force }) => {
   const platformArch = `${platform}-${arch}`
   const outputDirectory = join(BUNDLED_RUNTIME_ROOT, platformArch, variant)
@@ -316,15 +341,9 @@ const prepareVariant = async ({ platform, arch, variant, force }) => {
     return outputPath
   }
 
-  console.log(`[whisper-runtime] ${platformArch}/${variant}: no official prebuilt asset, compiling from source`)
-  const outputPath = prepareFromSource({
-    platform,
-    arch,
-    variant,
-    targetDirectory: outputDirectory,
-  })
-  console.log(`[whisper-runtime] ${platformArch}/${variant}: built (${outputPath})`)
-  return outputPath
+  throw new Error(
+    `No prebuilt Whisper ${variant.toUpperCase()} runtime for ${platformArch}. Provide WHISPY_WHISPER_RUNTIME_${variant.toUpperCase()}_URL to continue.`,
+  )
 }
 
 const main = async () => {
@@ -345,6 +364,10 @@ const main = async () => {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       console.error(`[whisper-runtime] ${platformArch}/${variant}: failed - ${message}`)
+
+      if (error && typeof error === 'object' && 'logPath' in error && error.logPath) {
+        console.error(`[whisper-runtime] ${platformArch}/${variant}: full command output -> ${error.logPath}`)
+      }
 
       if (variant === 'cuda' && !requireCudaRuntime) {
         console.warn(

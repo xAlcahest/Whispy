@@ -17,6 +17,7 @@ import type {
   WhisperRuntimeStatusPayload,
   SecretStorageMigrationPayload,
   SecretStorageStatusPayload,
+  NotesLogEventPayload,
 } from './ipc'
 import type { AppSettings, AutoPasteBackend, HistoryEntry, ModelState } from './app'
 
@@ -30,6 +31,7 @@ export interface ElectronAPI {
   setBackendOnboardingCompleted: (value: boolean) => Promise<void>
   scanCustomModels: (baseUrl: string, apiKey: string) => Promise<string[]>
   runPromptTest: (input: string) => Promise<PromptTestResultPayload>
+  runNoteEnhancement: (input: string) => Promise<string>
   downloadLocalModel: (scope: LocalModelScope, modelId: string) => Promise<void>
   cancelLocalModelDownload: (scope: LocalModelScope, modelId: string) => Promise<boolean>
   removeLocalModel: (scope: LocalModelScope, modelId: string) => Promise<void>
@@ -43,6 +45,7 @@ export interface ElectronAPI {
   requestAccessibilityPermission: () => Promise<boolean>
   getDictationStatus: () => Promise<DictationStatusPayload>
   toggleDictation: () => Promise<DictationToggleResponse>
+  toggleDictationTranscriptionOnly: () => Promise<DictationToggleResponse>
   cancelDictation: () => Promise<boolean>
   performAutoPaste: (text: string, backend: AutoPasteBackend) => Promise<AutoPasteExecutionResult>
   showDictationPanel: () => Promise<void>
@@ -61,6 +64,7 @@ export interface ElectronAPI {
   openControlPanel: () => Promise<void>
   openExternal: (url: string) => Promise<void>
   openAppDataDirectory: () => Promise<void>
+  logNotesEvent: (payload: NotesLogEventPayload) => Promise<void>
   getDisplayServer: () => Promise<DisplayServer>
   onWindowMaximizeChanged: (callback: (maximized: boolean) => void) => () => void
   onDictationStatusChanged: (callback: (status: DictationStatusPayload) => void) => () => void

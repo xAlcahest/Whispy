@@ -9,6 +9,23 @@ import { electronAPI } from './electron-api'
 import type { AppSettings, HistoryEntry, ModelState } from '../types/app'
 import { SECRET_SETTING_KEYS, stripSecretsFromSettings } from '../../../shared/secrets'
 
+export interface NoteFolder {
+  id: string
+  name: string
+  createdAt: number
+  updatedAt: number
+}
+
+export interface NoteEntry {
+  id: string
+  folderId: string | null
+  title: string
+  rawText: string
+  processedText: string
+  createdAt: number
+  updatedAt: number
+}
+
 const parseStorage = <T>(rawValue: string | null, fallback: T) => {
   if (!rawValue) {
     return fallback
@@ -27,11 +44,17 @@ let runtimeSettingsCache: AppSettings | null = null
 
 const persistSettingsLocally = (settings: AppSettings) => {
   if (isElectronRuntime()) {
-    localStorage.setItem(STORAGE_KEYS.settings, JSON.stringify(stripSecretsFromSettings(settings)))
+    const serialized = JSON.stringify(stripSecretsFromSettings(settings))
+    if (localStorage.getItem(STORAGE_KEYS.settings) !== serialized) {
+      localStorage.setItem(STORAGE_KEYS.settings, serialized)
+    }
     return
   }
 
-  localStorage.setItem(STORAGE_KEYS.settings, JSON.stringify(settings))
+  const serialized = JSON.stringify(settings)
+  if (localStorage.getItem(STORAGE_KEYS.settings) !== serialized) {
+    localStorage.setItem(STORAGE_KEYS.settings, serialized)
+  }
 }
 
 const syncToBackend = (effect: () => Promise<void>) => {
@@ -46,6 +69,23 @@ const syncToBackend = (effect: () => Promise<void>) => {
 
 const sortHistory = (entries: HistoryEntry[]) => {
   return [...entries].sort((left, right) => right.timestamp - left.timestamp)
+}
+
+export const applyHistoryRetentionLimit = (entries: HistoryEntry[], limit: number) => {
+  const sortedEntries = sortHistory(entries)
+  if (limit < 0) {
+    return sortedEntries
+  }
+
+  return sortedEntries.slice(0, limit)
+}
+
+const sortNoteFolders = (folders: NoteFolder[]) => {
+  return [...folders].sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: 'base' }))
+}
+
+const sortNotes = (entries: NoteEntry[]) => {
+  return [...entries].sort((left, right) => right.updatedAt - left.updatedAt)
 }
 
 export const hydrateStorageFromBackend = async () => {
@@ -132,9 +172,15 @@ export const loadSettings = (): AppSettings => {
 
 export const saveSettings = (settings: AppSettings) => {
   const normalizedSettings = normalizeSettings(settings)
+  const previousComparable = runtimeSettingsCache ? JSON.stringify(stripSecretsFromSettings(runtimeSettingsCache)) : null
+  const nextComparable = JSON.stringify(stripSecretsFromSettings(normalizedSettings))
 
   runtimeSettingsCache = normalizedSettings
   persistSettingsLocally(normalizedSettings)
+  if (previousComparable === nextComparable) {
+    return
+  }
+
   syncToBackend(() => electronAPI.setBackendSettings(normalizedSettings))
 }
 
@@ -144,9 +190,10 @@ export const loadHistory = (): HistoryEntry[] => {
 }
 
 export const saveHistory = (entries: HistoryEntry[]) => {
-  const sortedEntries = sortHistory(entries)
-  localStorage.setItem(STORAGE_KEYS.history, JSON.stringify(sortedEntries))
-  syncToBackend(() => electronAPI.setBackendHistory(sortedEntries))
+  const retentionLimit = loadSettings().historyRetentionLimit
+  const nextHistory = applyHistoryRetentionLimit(entries, retentionLimit)
+  localStorage.setItem(STORAGE_KEYS.history, JSON.stringify(nextHistory))
+  syncToBackend(() => electronAPI.setBackendHistory(nextHistory))
 }
 
 export const appendHistoryEntry = (entry: HistoryEntry) => {
@@ -158,6 +205,24 @@ export const appendHistoryEntry = (entry: HistoryEntry) => {
 export const clearHistory = () => {
   localStorage.removeItem(STORAGE_KEYS.history)
   syncToBackend(() => electronAPI.clearBackendHistory())
+}
+
+export const loadNoteFolders = (): NoteFolder[] => {
+  const folders = parseStorage<NoteFolder[]>(localStorage.getItem(STORAGE_KEYS.noteFolders), [])
+  return sortNoteFolders(folders)
+}
+
+export const saveNoteFolders = (folders: NoteFolder[]) => {
+  localStorage.setItem(STORAGE_KEYS.noteFolders, JSON.stringify(sortNoteFolders(folders)))
+}
+
+export const loadNotes = (): NoteEntry[] => {
+  const notes = parseStorage<NoteEntry[]>(localStorage.getItem(STORAGE_KEYS.notes), [])
+  return sortNotes(notes)
+}
+
+export const saveNotes = (notes: NoteEntry[]) => {
+  localStorage.setItem(STORAGE_KEYS.notes, JSON.stringify(sortNotes(notes)))
 }
 
 export const isOnboardingCompleted = () =>

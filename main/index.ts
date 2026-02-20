@@ -1,7 +1,7 @@
 import { app, BrowserWindow, globalShortcut, ipcMain, screen, shell, systemPreferences } from 'electron'
 import { spawnSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { accessSync, constants as fsConstants, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import type { AppSettings, HistoryEntry, ModelState } from '../shared/app'
 import {
   applySecretsToSettings,
@@ -23,6 +23,7 @@ import {
   type PromptTestResultPayload,
   type SecretStorageMigrationPayload,
   type SecretStorageStatusPayload,
+  type NotesLogEventPayload,
   type WhisperRuntimeDiagnosticsPayload,
 } from '../shared/ipc'
 import { detectActiveApp } from './backend/active-app'
@@ -35,9 +36,52 @@ import { SecretStore } from './backend/secret-store'
 import { BackendStateStore } from './backend/state-store'
 import { WhisperServerManager } from './backend/whisper-server'
 
+const linuxSessionType = process.env.XDG_SESSION_TYPE?.toLowerCase() ?? ''
+const linuxDesktopIdentity =
+  `${process.env.XDG_CURRENT_DESKTOP ?? process.env.XDG_SESSION_DESKTOP ?? process.env.DESKTOP_SESSION ?? ''}`.toLowerCase()
+const linuxWaylandSession = linuxSessionType === 'wayland' || Boolean(process.env.WAYLAND_DISPLAY)
+const linuxForceX11 =
+  process.platform === 'linux' && linuxWaylandSession && (linuxDesktopIdentity.includes('kde') || linuxDesktopIdentity.includes('plasma'))
+const linuxRunningInDev = Boolean(process.env.ELECTRON_RENDERER_URL)
+const linuxDisableSandbox = process.platform === 'linux' && linuxRunningInDev
+const linuxForceTmpSharedMemory = process.env.WHISPY_FORCE_TMP_SHM?.trim() === '1'
+const linuxDisableTmpSharedMemory = process.env.WHISPY_DISABLE_TMP_SHM?.trim() === '1'
+
+const hasPathAccess = (targetPath: string) => {
+  try {
+    accessSync(targetPath, fsConstants.R_OK | fsConstants.W_OK | fsConstants.X_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
+const linuxDevShmAvailable = process.platform === 'linux' ? hasPathAccess('/dev/shm') : false
+const linuxTmpAvailable = process.platform === 'linux' ? hasPathAccess('/tmp') : false
+const linuxUseTmpForSharedMemory =
+  process.platform === 'linux' &&
+  !linuxDisableTmpSharedMemory &&
+  (linuxForceTmpSharedMemory || linuxRunningInDev || (!linuxDevShmAvailable && linuxTmpAvailable))
+
 if (process.platform === 'linux') {
   app.disableHardwareAcceleration()
   app.commandLine.appendSwitch('disable-gpu')
+  app.commandLine.appendSwitch('disable-gpu-compositing')
+  app.commandLine.appendSwitch('in-process-gpu')
+
+  if (linuxUseTmpForSharedMemory) {
+    app.commandLine.appendSwitch('disable-dev-shm-usage')
+  }
+
+  if (linuxDisableSandbox) {
+    app.commandLine.appendSwitch('no-sandbox')
+    app.commandLine.appendSwitch('disable-setuid-sandbox')
+  }
+
+  if (linuxForceX11) {
+    app.commandLine.appendSwitch('ozone-platform-hint', 'x11')
+    app.commandLine.appendSwitch('ozone-platform', 'x11')
+  }
 }
 
 interface OverlaySize {
@@ -90,9 +134,19 @@ const getOverlayBounds = (size: OverlaySize) => {
 }
 
 const loadRoute = async (window: BrowserWindow, route: 'overlay' | 'control') => {
-  if (process.env.ELECTRON_RENDERER_URL) {
-    await window.loadURL(`${process.env.ELECTRON_RENDERER_URL}#/${route}`)
-    return
+  const rendererURL = process.env.ELECTRON_RENDERER_URL
+
+  if (rendererURL) {
+    try {
+      await window.loadURL(`${rendererURL}#/${route}`)
+      return
+    } catch (error) {
+      logDebug('error-details', 'Renderer dev URL failed, falling back to static renderer file', {
+        route,
+        rendererURL,
+        message: error instanceof Error ? error.message : String(error),
+      }, 'Window')
+    }
   }
 
   await window.loadFile(join(__dirname, '../renderer/index.html'), {
@@ -360,6 +414,7 @@ const detectAutoPasteBackendSupport = (): AutoPasteBackendSupportPayload => {
 }
 
 const createOverlayWindow = async () => {
+  const disableWindowSandbox = process.platform === 'linux' && linuxDisableSandbox
   const baseBounds = getOverlayBounds(OVERLAY_SIZES.BASE)
   overlayWindow = new BrowserWindow({
     ...baseBounds,
@@ -371,10 +426,12 @@ const createOverlayWindow = async () => {
     alwaysOnTop: true,
     hasShadow: false,
     backgroundColor: '#00000000',
+    show: false,
     webPreferences: {
       preload: preloadPath,
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: !disableWindowSandbox,
     },
   })
 
@@ -382,15 +439,35 @@ const createOverlayWindow = async () => {
 
   overlayWindow.setAlwaysOnTop(true, 'screen-saver')
   overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  overlayWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+    logDebug('error-details', 'Overlay failed to load', {
+      errorCode,
+      errorDescription,
+      validatedURL,
+    }, 'Window')
+  })
+  overlayWindow.webContents.on('render-process-gone', (_event, details) => {
+    logDebug('error-details', 'Overlay renderer process exited', details, 'Window')
+  })
+  overlayWindow.webContents.on('did-finish-load', () => {
+    logDebug('system-diagnostics', 'Overlay window loaded', undefined, 'Window')
+  })
   overlayWindow.on('closed', () => {
     overlayWindow = null
   })
 
-  await loadRoute(overlayWindow, 'overlay')
+  try {
+    await loadRoute(overlayWindow, 'overlay')
+  } catch (error) {
+    overlayWindow?.destroy()
+    overlayWindow = null
+    throw error
+  }
 }
 
 const createControlPanelWindow = async () => {
-  const useNativeWindowChrome = process.platform === 'win32' || process.platform === 'linux'
+  const disableWindowSandbox = process.platform === 'linux' && linuxDisableSandbox
+  const useNativeWindowChrome = process.platform === 'win32'
 
   controlPanelWindow = new BrowserWindow({
     width: 1200,
@@ -408,13 +485,40 @@ const createControlPanelWindow = async () => {
       preload: preloadPath,
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: !disableWindowSandbox,
     },
   })
 
   forceExternalLinksToBrowser(controlPanelWindow)
 
+  controlPanelWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+    logDebug('error-details', 'Control panel failed to load', {
+      errorCode,
+      errorDescription,
+      validatedURL,
+    }, 'Window')
+  })
+  controlPanelWindow.webContents.on('render-process-gone', (_event, details) => {
+    logDebug('error-details', 'Control panel renderer process exited', details, 'Window')
+  })
+
   controlPanelWindow.on('closed', () => {
     controlPanelWindow = null
+
+    if (!whisperServerManager) {
+      return
+    }
+
+    void whisperServerManager
+      .stop()
+      .then(() => {
+        logDebug('system-diagnostics', 'Whisper server stopped after control panel close', undefined, 'Runtime')
+      })
+      .catch((error: unknown) => {
+        logDebug('error-details', 'Failed to stop whisper server after control panel close', {
+          message: error instanceof Error ? error.message : String(error),
+        }, 'Runtime')
+      })
   })
 
   controlPanelWindow.on('maximize', emitControlWindowMaximizeChanged)
@@ -423,7 +527,13 @@ const createControlPanelWindow = async () => {
     emitControlWindowMaximizeChanged()
   })
 
-  await loadRoute(controlPanelWindow, 'control')
+  try {
+    await loadRoute(controlPanelWindow, 'control')
+  } catch (error) {
+    controlPanelWindow?.destroy()
+    controlPanelWindow = null
+    throw error
+  }
 }
 
 const ensureControlPanelWindow = async () => {
@@ -477,8 +587,71 @@ const ensureSecretStore = () => {
   return secretStore
 }
 
-const resolveSecretStorageMode = (settings: AppSettings): SecretStorageMode =>
-  settings.keytarEnabled ? 'keyring' : 'env'
+const resolveSecretStorageMode = (_settings: AppSettings): SecretStorageMode => 'keyring'
+
+const resolveLinuxAutostartDesktopPath = () => join(app.getPath('home'), '.config', 'autostart', 'whispy-ui.desktop')
+
+const escapeDesktopExec = (value: string) => {
+  return value.replace(/[\\\s"']/g, (char) => {
+    if (char === ' ') {
+      return '\\ '
+    }
+
+    return `\\${char}`
+  })
+}
+
+const configureLinuxAutostart = (enabled: boolean) => {
+  const desktopEntryPath = resolveLinuxAutostartDesktopPath()
+
+  if (!enabled) {
+    rmSync(desktopEntryPath, { force: true })
+    return
+  }
+
+  const execParts = app.isPackaged
+    ? [process.env.APPIMAGE?.trim() || process.execPath]
+    : [process.execPath, app.getAppPath()]
+  const execCommand = execParts
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0)
+    .map((part) => escapeDesktopExec(part))
+    .join(' ')
+
+  const payload = [
+    '[Desktop Entry]',
+    'Type=Application',
+    'Version=1.0',
+    'Name=Whispy',
+    'Comment=Whispy dictation overlay',
+    `Exec=${execCommand}`,
+    'Terminal=false',
+    'X-GNOME-Autostart-enabled=true',
+    'StartupNotify=false',
+    '',
+  ].join('\n')
+
+  mkdirSync(dirname(desktopEntryPath), { recursive: true })
+  writeFileSync(desktopEntryPath, payload, {
+    encoding: 'utf8',
+    mode: 0o755,
+  })
+}
+
+const configureLaunchAtLogin = (settings: AppSettings) => {
+  const enabled = Boolean(settings.launchAtLogin)
+
+  if (process.platform === 'darwin' || process.platform === 'win32') {
+    app.setLoginItemSettings({
+      openAtLogin: enabled,
+    })
+    return
+  }
+
+  if (process.platform === 'linux') {
+    configureLinuxAutostart(enabled)
+  }
+}
 
 const resolveBundledWhisperServerPath = (variant: WhisperRuntimeVariant) => {
   const executableSuffix = process.platform === 'win32' ? '.exe' : ''
@@ -511,6 +684,26 @@ const resolveBundledWhisperServerPath = (variant: WhisperRuntimeVariant) => {
   return null
 }
 
+const resolveBundledWhisperRuntimeRootPath = () => {
+  const platformArch = `${process.platform}-${process.arch}`
+  const candidates = [
+    join(process.resourcesPath, 'bin', 'whispercpp', platformArch),
+    join(app.getAppPath(), 'resources', 'bin', 'whispercpp', platformArch),
+    join(app.getAppPath(), 'bin', 'whispercpp', platformArch),
+    join(process.resourcesPath, 'bin', 'whispercpp'),
+    join(app.getAppPath(), 'resources', 'bin', 'whispercpp'),
+    join(app.getAppPath(), 'bin', 'whispercpp'),
+  ]
+
+  for (const candidatePath of candidates) {
+    if (existsSync(candidatePath)) {
+      return candidatePath
+    }
+  }
+
+  return candidates[0]
+}
+
 const getWhisperRuntimeStatus = (settings: AppSettings) => {
   const modelStore = ensureLocalModelStore()
   const cpuInstalled = Boolean(
@@ -524,10 +717,10 @@ const getWhisperRuntimeStatus = (settings: AppSettings) => {
     cpuInstalled,
     cudaInstalled,
     activeVariant: settings.whisperCppRuntimeVariant,
-    runtimeDirectory: join(app.getPath('userData'), 'models', 'runtime', 'whispercpp'),
+    runtimeDirectory: resolveBundledWhisperRuntimeRootPath(),
     downloadUrls: {
-      cpu: modelStore.getWhisperRuntimeDownloadUrl('cpu'),
-      cuda: modelStore.getWhisperRuntimeDownloadUrl('cuda'),
+      cpu: null,
+      cuda: null,
     },
   }
 }
@@ -571,6 +764,56 @@ const logDebug = (
   scope?: string,
 ) => {
   ensureDebugLogger().log(category, message, details, scope)
+}
+
+const shouldPrewarmWhisperServerAfterSettingsUpdate = (previousSettings: AppSettings, nextSettings: AppSettings) => {
+  if (nextSettings.transcriptionRuntime !== 'local') {
+    return false
+  }
+
+  if (previousSettings.transcriptionRuntime !== 'local') {
+    return true
+  }
+
+  return (
+    previousSettings.transcriptionLocalModelId !== nextSettings.transcriptionLocalModelId ||
+    previousSettings.whisperCppRuntimeVariant !== nextSettings.whisperCppRuntimeVariant
+  )
+}
+
+const prewarmWhisperServerForSettings = async (
+  settings: AppSettings,
+  trigger: 'startup' | 'settings-update' | 'model-download',
+) => {
+  if (settings.transcriptionRuntime !== 'local') {
+    return
+  }
+
+  const modelPath = ensureLocalModelStore().resolveDownloadedModelPath('transcription', settings.transcriptionLocalModelId)
+  if (!modelPath) {
+    logDebug('system-diagnostics', 'Whisper server prewarm skipped: local model unavailable', {
+      trigger,
+      modelId: settings.transcriptionLocalModelId,
+      runtimeVariant: settings.whisperCppRuntimeVariant,
+    }, 'Runtime')
+    return
+  }
+
+  try {
+    await ensureWhisperServerManager().ensureReady(modelPath, settings.whisperCppRuntimeVariant)
+    logDebug('system-diagnostics', 'Whisper server prewarmed', {
+      trigger,
+      modelId: settings.transcriptionLocalModelId,
+      runtimeVariant: settings.whisperCppRuntimeVariant,
+    }, 'Runtime')
+  } catch (error: unknown) {
+    logDebug('error-details', 'Whisper server prewarm failed', {
+      trigger,
+      modelId: settings.transcriptionLocalModelId,
+      runtimeVariant: settings.whisperCppRuntimeVariant,
+      message: error instanceof Error ? error.message : String(error),
+    }, 'Runtime')
+  }
 }
 
 const shouldLogModelDownloadProgress = (payload: ModelDownloadProgress) => {
@@ -728,8 +971,8 @@ const ensureDictationPipeline = () => {
       loadSettings: loadCurrentSettings,
       resolveLocalModelPath: (scope, modelId) => ensureLocalModelStore().resolveDownloadedModelPath(scope, modelId),
       resolveWhisperRuntimePath: (variant) => ensureLocalModelStore().resolveDownloadedWhisperRuntimePath(variant),
-      transcribeWithWhisperServer: (audioFilePath, modelPath, runtimeVariant) =>
-        ensureWhisperServerManager().transcribeAudioFile(audioFilePath, modelPath, runtimeVariant),
+      transcribeWithWhisperServer: (audioFilePath, modelPath, runtimeVariant, promptHint) =>
+        ensureWhisperServerManager().transcribeAudioFile(audioFilePath, modelPath, runtimeVariant, promptHint),
       detectActiveApp,
       log: (category, message, details) => {
         logDebug(category, message, details)
@@ -763,7 +1006,13 @@ const ensureDictationRuntime = () => {
         })
         broadcast(IPCChannels.dictationError, message)
       },
-      processAudioFile: (audioFilePath) => ensureDictationPipeline().processAudioFile(audioFilePath),
+      processAudioFile: (audioFilePath, mode) => {
+        if (mode === 'transcription-only') {
+          return ensureDictationPipeline().processAudioFileTranscriptionOnly(audioFilePath)
+        }
+
+        return ensureDictationPipeline().processAudioFile(audioFilePath)
+      },
     }, join(app.getPath('userData'), 'recordings'))
   }
 
@@ -825,9 +1074,31 @@ const unregisterGlobalHotkey = () => {
 }
 
 const handleGlobalDictationHotkey = () => {
-  overlayWindow?.show()
-  overlayWindow?.focus()
-  ensureDictationRuntime().toggleDictation()
+  void (async () => {
+    logDebug('system-diagnostics', 'Global dictation hotkey pressed', {
+      overlayReady: Boolean(overlayWindow),
+    }, 'Hotkey')
+
+    if (!overlayWindow) {
+      try {
+        await createOverlayWindow()
+      } catch (error) {
+        logDebug('error-details', 'Unable to create overlay window from hotkey', {
+          message: error instanceof Error ? error.message : String(error),
+        }, 'Hotkey')
+        return
+      }
+    }
+
+    overlayWindow?.show()
+    overlayWindow?.focus()
+    const response = ensureDictationRuntime().toggleDictation()
+    if (!response.accepted) {
+      logDebug('system-diagnostics', 'Dictation toggle rejected from hotkey', {
+        reason: response.reason ?? 'unknown',
+      }, 'Hotkey')
+    }
+  })()
 }
 
 const registerGlobalDictationHotkey = (requestedHotkey: string) => {
@@ -836,12 +1107,21 @@ const registerGlobalDictationHotkey = (requestedHotkey: string) => {
   const requestedAccelerator = toElectronAccelerator(requestedHotkey)
   if (requestedAccelerator && globalShortcut.register(requestedAccelerator, handleGlobalDictationHotkey)) {
     registeredHotkey = requestedAccelerator
+    logDebug('system-diagnostics', 'Global hotkey registered', {
+      requestedHotkey,
+      accelerator: requestedAccelerator,
+    }, 'Hotkey')
     return
   }
 
   const fallbackAccelerator = toElectronAccelerator(DEFAULT_FALLBACK_HOTKEY)
   if (globalShortcut.register(fallbackAccelerator, handleGlobalDictationHotkey)) {
     registeredHotkey = fallbackAccelerator
+    logDebug('system-diagnostics', 'Fallback global hotkey registered', {
+      requestedHotkey,
+      fallbackHotkey: DEFAULT_FALLBACK_HOTKEY,
+      accelerator: fallbackAccelerator,
+    }, 'Hotkey')
     const fallbackPayload: HotkeyFallbackUsedPayload = {
       fallbackHotkey: DEFAULT_FALLBACK_HOTKEY,
       details: `Unable to register ${requestedHotkey}. Using fallback hotkey instead.`,
@@ -854,6 +1134,7 @@ const registerGlobalDictationHotkey = (requestedHotkey: string) => {
     requestedHotkey,
     reason: 'System shortcut already in use',
   }
+  logDebug('error-details', 'Unable to register global hotkey', failedPayload, 'Hotkey')
   broadcast(IPCChannels.hotkeyRegistrationFailed, failedPayload)
 }
 
@@ -864,6 +1145,9 @@ const registerIPC = () => {
   })
 
   ipcMain.handle(IPCChannels.setBackendSettings, async (_event, settings: AppSettings) => {
+    const stateStore = ensureBackendStateStore()
+    const previousSettings = stateStore.getSnapshot().settings
+
     logDebug('system-diagnostics', 'Persisting backend settings', {
       keytarEnabled: settings.keytarEnabled,
       debugModeEnabled: settings.debugModeEnabled,
@@ -872,13 +1156,19 @@ const registerIPC = () => {
     })
 
     await ensureSecretStore().setSecrets(resolveSecretStorageMode(settings), extractSecretSettings(settings))
-    ensureBackendStateStore().setSettings(stripSecretsFromSettings(settings))
+    stateStore.setSettings(stripSecretsFromSettings(settings))
+    configureLaunchAtLogin(settings)
     ensureDebugLogger().setEnabled(settings.debugModeEnabled)
     registerGlobalDictationHotkey(settings.hotkey)
     broadcast(IPCChannels.floatingIconAutoHideChanged, settings.autoHideFloatingIcon)
 
     if (settings.transcriptionRuntime !== 'local') {
       await ensureWhisperServerManager().stop()
+      return
+    }
+
+    if (shouldPrewarmWhisperServerAfterSettingsUpdate(previousSettings, settings)) {
+      void prewarmWhisperServerForSettings(settings, 'settings-update')
     }
   })
 
@@ -990,6 +1280,13 @@ const registerIPC = () => {
     return ensureDictationPipeline().runPromptTest(input)
   })
 
+  ipcMain.handle(IPCChannels.runNoteEnhancement, async (_event, input: string): Promise<string> => {
+    logDebug('transcript-pipeline', 'Running note enhancement', {
+      inputLength: input.length,
+    })
+    return ensureDictationPipeline().runNoteEnhancement(input)
+  })
+
   ipcMain.handle(IPCChannels.downloadLocalModel, async (_event, scope: LocalModelScope, modelId: string) => {
     logDebug('system-diagnostics', 'Local model download started', {
       scope,
@@ -1018,6 +1315,13 @@ const registerIPC = () => {
       scope,
       modelId,
     }, 'Downloads')
+
+    if (scope === 'transcription') {
+      const settings = await loadCurrentSettings()
+      if (settings.transcriptionRuntime === 'local' && settings.transcriptionLocalModelId === modelId) {
+        void prewarmWhisperServerForSettings(settings, 'model-download')
+      }
+    }
   })
 
   ipcMain.handle(IPCChannels.cancelLocalModelDownload, (_event, scope: LocalModelScope, modelId: string) => {
@@ -1048,37 +1352,19 @@ const registerIPC = () => {
   })
 
   ipcMain.handle(IPCChannels.downloadWhisperRuntime, async (_event, variant: WhisperRuntimeVariant) => {
-    logDebug('system-diagnostics', 'Whisper runtime download started', {
+    logDebug('system-diagnostics', 'Whisper runtime download rejected (build-managed runtime)', {
       variant,
     }, 'Downloads')
 
-    await ensureLocalModelStore().downloadWhisperRuntime(variant, (payload) => {
-      broadcastModelDownloadProgress(payload)
-      if (shouldLogModelDownloadProgress(payload)) {
-        logDebug(
-          'system-diagnostics',
-          'Whisper runtime download progress',
-          {
-            variant,
-            state: payload.state,
-            progress: payload.progress,
-          },
-          'Downloads',
-        )
-      }
-    })
-
-    logDebug('system-diagnostics', 'Whisper runtime download completed', {
-      variant,
-    }, 'Downloads')
+    throw new Error('Whisper runtime downloads are disabled. Runtime binaries are managed by npm build/package.')
   })
 
   ipcMain.handle(IPCChannels.removeWhisperRuntime, async (_event, variant: WhisperRuntimeVariant) => {
-    logDebug('system-diagnostics', 'Removing Whisper runtime', {
+    logDebug('system-diagnostics', 'Whisper runtime removal rejected (build-managed runtime)', {
       variant,
     }, 'Downloads')
-    await ensureWhisperServerManager().stop()
-    await ensureLocalModelStore().removeWhisperRuntime(variant)
+
+    throw new Error('Whisper runtime removal is disabled. Runtime binaries are managed by npm build/package.')
   })
 
   ipcMain.handle(IPCChannels.getDictationStatus, () => {
@@ -1087,6 +1373,15 @@ const registerIPC = () => {
 
   ipcMain.handle(IPCChannels.toggleDictation, () => {
     return ensureDictationRuntime().toggleDictation()
+  })
+
+  ipcMain.handle(IPCChannels.toggleDictationTranscriptionOnly, () => {
+    if (overlayWindow && overlayWindow.isVisible()) {
+      overlayWindow.hide()
+      logDebug('system-diagnostics', 'Overlay hidden for notes transcription-only mode', undefined, 'Window')
+    }
+
+    return ensureDictationRuntime().toggleDictation('transcription-only')
   })
 
   ipcMain.handle(IPCChannels.cancelDictation, () => {
@@ -1108,11 +1403,20 @@ const registerIPC = () => {
 
   ipcMain.handle(IPCChannels.showDictationPanel, async () => {
     if (!overlayWindow) {
-      await createOverlayWindow()
+      logDebug('system-diagnostics', 'Overlay missing, creating before show request', undefined, 'Window')
+      try {
+        await createOverlayWindow()
+      } catch (error) {
+        logDebug('error-details', 'Unable to create overlay window from IPC request', {
+          message: error instanceof Error ? error.message : String(error),
+        }, 'Window')
+        return
+      }
     }
 
     overlayWindow?.show()
     overlayWindow?.focus()
+    logDebug('system-diagnostics', 'Overlay window shown from IPC request', undefined, 'Window')
   })
 
   ipcMain.handle(IPCChannels.hideWindow, (event) => {
@@ -1182,6 +1486,10 @@ const registerIPC = () => {
     await shell.openPath(app.getPath('userData'))
   })
 
+  ipcMain.handle(IPCChannels.logNotesEvent, (_event, payload: NotesLogEventPayload) => {
+    logDebug('system-diagnostics', payload.message, payload.details, 'Notes')
+  })
+
   ipcMain.handle(IPCChannels.getDebugLogStatus, (): DebugLogStatusPayload => {
     return ensureDebugLogger().getStatus()
   })
@@ -1201,6 +1509,11 @@ app.whenReady().then(async () => {
     platform: process.platform,
     displayServer: getDisplayServer(),
     compositor: getCompositorName(),
+    forcedX11OnLinux: linuxForceX11,
+    linuxSandboxDisabled: linuxDisableSandbox,
+    linuxUseTmpForSharedMemory,
+    linuxForceTmpSharedMemory,
+    linuxDisableTmpSharedMemory,
   }, 'Startup')
 
   ensureBackendStateStore()
@@ -1210,13 +1523,24 @@ app.whenReady().then(async () => {
   ensureDictationPipeline()
   ensureDictationRuntime()
   registerIPC()
-  await createOverlayWindow()
   await createControlPanelWindow()
   controlPanelWindow?.show()
   controlPanelWindow?.focus()
 
+  try {
+    await createOverlayWindow()
+  } catch (error) {
+    logDebug('error-details', 'Overlay startup creation failed', {
+      message: error instanceof Error ? error.message : String(error),
+    }, 'Window')
+  }
+
   const currentSettings = await loadCurrentSettings()
+  configureLaunchAtLogin(currentSettings)
   ensureDebugLogger().setEnabled(currentSettings.debugModeEnabled)
+
+  await prewarmWhisperServerForSettings(currentSettings, 'startup')
+
   logDebug('system-diagnostics', 'Loaded persisted settings at startup', {
     debugModeEnabled: currentSettings.debugModeEnabled,
     keytarEnabled: currentSettings.keytarEnabled,
@@ -1233,6 +1557,7 @@ app.whenReady().then(async () => {
   }, 'Startup')
 
   logDebug('system-diagnostics', 'Dependency check', startupDiagnostics.dependencies, 'Dependencies')
+  logDebug('system-diagnostics', 'Recorder binaries', startupDiagnostics.recorderBinaries, 'Dependencies')
   logDebug(
     'system-diagnostics',
     `whisper-server: ${startupDiagnostics.dependencies.whisperServer.path}`,

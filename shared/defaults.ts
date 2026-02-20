@@ -52,7 +52,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
     'Translate the transcription from {source_language} to {target_language} while preserving intent and tone.',
   postProcessingDictionaryEnabled: false,
   postProcessingDictionaryRules: [],
-  keytarEnabled: false,
+  historyRetentionLimit: 100,
+  keytarEnabled: true,
   debugModeEnabled: false,
 }
 
@@ -109,6 +110,7 @@ export const createDefaultPostModelState = (): ModelState[] => {
 
 const VALID_AUTO_PASTE_BACKENDS = new Set(['wtype', 'xdotools', 'ydotools'])
 const VALID_WHISPER_RUNTIME_VARIANTS = new Set(['cpu', 'cuda'])
+const VALID_HISTORY_RETENTION_LIMITS = new Set([50, 100, 250, 500, -1])
 
 export const normalizeSettings = (value: Partial<AppSettings>): AppSettings => {
   const mergedSettings: AppSettings = {
@@ -126,6 +128,10 @@ export const normalizeSettings = (value: Partial<AppSettings>): AppSettings => {
     mergedSettings.whisperCppRuntimeVariant = DEFAULT_SETTINGS.whisperCppRuntimeVariant
   }
 
+  if (!VALID_HISTORY_RETENTION_LIMITS.has(mergedSettings.historyRetentionLimit)) {
+    mergedSettings.historyRetentionLimit = DEFAULT_SETTINGS.historyRetentionLimit
+  }
+
   if (typeof mergedSettings.microphoneAccess !== 'boolean') {
     mergedSettings.microphoneAccess = DEFAULT_SETTINGS.microphoneAccess
   }
@@ -134,9 +140,7 @@ export const normalizeSettings = (value: Partial<AppSettings>): AppSettings => {
     mergedSettings.debugModeEnabled = DEFAULT_SETTINGS.debugModeEnabled
   }
 
-  if (typeof mergedSettings.keytarEnabled !== 'boolean') {
-    mergedSettings.keytarEnabled = DEFAULT_SETTINGS.keytarEnabled
-  }
+  mergedSettings.keytarEnabled = true
 
   if (typeof mergedSettings.overlayRuntimeBadgeEnabled !== 'boolean') {
     mergedSettings.overlayRuntimeBadgeEnabled = DEFAULT_SETTINGS.overlayRuntimeBadgeEnabled

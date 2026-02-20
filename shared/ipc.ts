@@ -47,6 +47,8 @@ export interface AutoPasteBackendSupportPayload {
 
 export interface SecretStorageStatusPayload {
   mode: 'env' | 'keyring'
+  activeBackend: 'env' | 'keyring'
+  fallbackActive: boolean
   keyringSupported: boolean
   envFilePath: string
   details: string
@@ -102,6 +104,11 @@ export interface HotkeyFallbackUsedPayload {
   details: string
 }
 
+export interface NotesLogEventPayload {
+  message: string
+  details?: unknown
+}
+
 export const IPCChannels = {
   getBackendState: 'backend:get-app-state',
   setBackendSettings: 'backend:set-settings',
@@ -112,6 +119,7 @@ export const IPCChannels = {
   setBackendOnboardingCompleted: 'backend:set-onboarding-completed',
   scanCustomModels: 'backend:scan-custom-models',
   runPromptTest: 'backend:run-prompt-test',
+  runNoteEnhancement: 'backend:run-note-enhancement',
   downloadLocalModel: 'backend:download-local-model',
   cancelLocalModelDownload: 'backend:cancel-local-model-download',
   removeLocalModel: 'backend:remove-local-model',
@@ -125,6 +133,7 @@ export const IPCChannels = {
   requestAccessibilityPermission: 'system:request-accessibility-permission',
   getDictationStatus: 'dictation:get-status',
   toggleDictation: 'dictation:toggle',
+  toggleDictationTranscriptionOnly: 'dictation:toggle-transcription-only',
   cancelDictation: 'dictation:cancel',
   performAutoPaste: 'ui:perform-autopaste',
   showDictationPanel: 'ui:show-dictation-panel',
@@ -143,6 +152,7 @@ export const IPCChannels = {
   openControlPanel: 'ui:open-control-panel',
   openExternal: 'ui:open-external',
   openAppDataDirectory: 'ui:open-app-data-directory',
+  logNotesEvent: 'ui:log-notes-event',
   getDisplayServer: 'ui:get-display-server',
   windowMaximizeChanged: 'ui:event-window-maximize-changed',
   dictationStatusChanged: 'dictation:event-status-changed',

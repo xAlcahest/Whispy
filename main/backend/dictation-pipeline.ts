@@ -33,6 +33,7 @@ interface DictationPipelineDependencies {
     audioFilePath: string,
     modelPath: string,
     runtimeVariant: WhisperRuntimeVariant,
+    promptHint?: string,
   ) => Promise<string>
   detectActiveApp: () => Promise<string>
   log?: (category: DebugLogCategory, message: string, details?: unknown) => void
@@ -53,6 +54,27 @@ const OPENAI_COMPATIBLE_BASE_URLS: Record<string, string> = {
   groq: 'https://api.groq.com/openai/v1',
   grok: 'https://api.x.ai/v1',
   meta: 'https://api.llama.com/compat/v1',
+}
+
+const DEFAULT_TRANSCRIPTION_MODEL_BY_PROVIDER: Record<string, string> = {
+  openai: 'gpt-4o-transcribe',
+  groq: 'whisper-large-v3',
+  grok: 'grok-voice-beta',
+  meta: 'seamless-m4t-v2',
+}
+
+const resolveTranscriptionCloudModel = (providerId: string, modelId: string) => {
+  const fallbackModel = DEFAULT_TRANSCRIPTION_MODEL_BY_PROVIDER[providerId] ?? 'whisper-1'
+  const requestedModel = modelId.trim()
+  if (!requestedModel) {
+    return fallbackModel
+  }
+
+  if (providerId === 'openai' && /tts/i.test(requestedModel) && !/transcribe/i.test(requestedModel)) {
+    return fallbackModel
+  }
+
+  return requestedModel
 }
 
 const normalizeOpenAIBaseURL = (baseUrl: string) => {
@@ -84,6 +106,85 @@ const applyDictionaryRules = (text: string, rules: AppSettings['postProcessingDi
     const escapedSource = source.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     return currentText.replace(new RegExp(escapedSource, 'gi'), rule.target)
   }, text)
+}
+
+const normalizeDictionaryRules = (rules: AppSettings['postProcessingDictionaryRules']) => {
+  return rules
+    .map((rule) => ({
+      source: rule.source.trim(),
+      target: rule.target.trim(),
+    }))
+    .filter((rule) => rule.source.length > 0 && rule.target.length > 0)
+}
+
+const buildTranscriptionDictionaryHint = (settings: AppSettings) => {
+  if (!settings.postProcessingDictionaryEnabled) {
+    return null
+  }
+
+  const normalizedRules = normalizeDictionaryRules(settings.postProcessingDictionaryRules)
+  if (normalizedRules.length === 0) {
+    return null
+  }
+
+  const uniqueTerms: string[] = []
+  const seenTerms = new Set<string>()
+
+  for (const rule of normalizedRules) {
+    for (const candidateTerm of [rule.source, rule.target]) {
+      const normalizedTerm = candidateTerm.replace(/\s+/g, ' ').trim()
+      const lookupKey = normalizedTerm.toLowerCase()
+
+      if (!lookupKey || seenTerms.has(lookupKey)) {
+        continue
+      }
+
+      seenTerms.add(lookupKey)
+      uniqueTerms.push(normalizedTerm)
+
+      if (uniqueTerms.length >= 80) {
+        break
+      }
+    }
+
+    if (uniqueTerms.length >= 80) {
+      break
+    }
+  }
+
+  if (uniqueTerms.length === 0) {
+    return null
+  }
+
+  let hint = ''
+  for (const term of uniqueTerms) {
+    const nextHint = hint ? `${hint}, ${term}` : term
+    if (nextHint.length > 1200) {
+      break
+    }
+
+    hint = nextHint
+  }
+
+  return hint.trim().length > 0 ? hint : null
+}
+
+const buildPromptWithDictionaryRules = (settings: AppSettings, prompt: string) => {
+  if (!settings.postProcessingDictionaryEnabled) {
+    return prompt
+  }
+
+  const normalizedRules = normalizeDictionaryRules(settings.postProcessingDictionaryRules)
+  if (normalizedRules.length === 0) {
+    return prompt
+  }
+
+  const formattedRules = normalizedRules
+    .slice(0, 60)
+    .map((rule) => `- "${rule.source}" -> "${rule.target}"`)
+    .join('\n')
+
+  return `${prompt}\n\nTerminology rules:\n${formattedRules}\nApply these rules consistently when relevant. Return plain text only.`
 }
 
 const getTranscriptionCloudConfig = (settings: AppSettings): OpenAICompatibleConfig => {
@@ -118,7 +219,7 @@ const getTranscriptionCloudConfig = (settings: AppSettings): OpenAICompatibleCon
   return {
     baseURL,
     apiKey,
-    model: settings.transcriptionCloudModelId,
+    model: resolveTranscriptionCloudModel(settings.transcriptionCloudProvider, settings.transcriptionCloudModelId),
     providerLabel: settings.transcriptionCloudProvider,
   }
 }
@@ -217,6 +318,22 @@ const toErrorMessage = (error: unknown) => {
   }
 
   return String(error)
+}
+
+const isUnsupportedTranscriptionPromptError = (error: unknown) => {
+  const statusCode = extractStatusCode(error)
+  if (statusCode !== 400 && statusCode !== 422) {
+    return false
+  }
+
+  const message = toErrorMessage(error).toLowerCase()
+  if (!message.includes('prompt')) {
+    return false
+  }
+
+  return ['unsupported', 'unknown', 'invalid', 'not allowed', 'additional properties'].some((token) =>
+    message.includes(token),
+  )
 }
 
 const calculateBackoffMs = (attempt: number) => {
@@ -460,6 +577,20 @@ export class DictationPipeline {
     }
   }
 
+  async processAudioFileTranscriptionOnly(audioFilePath: string): Promise<DictationResult> {
+    const settings = await this.deps.loadSettings()
+    const transcription = await this.transcribe(settings, audioFilePath)
+    const targetApp = await this.deps.detectActiveApp()
+
+    return {
+      text: transcription.text,
+      language: settings.preferredLanguage === 'Auto-detect' ? transcription.language : settings.preferredLanguage,
+      provider: transcription.provider,
+      model: transcription.model,
+      targetApp,
+    }
+  }
+
   async runPromptTest(input: string): Promise<PromptTestResult> {
     const settings = await this.deps.loadSettings()
     const route = resolvePromptRoute(settings, input)
@@ -469,6 +600,18 @@ export class DictationPipeline {
       route: route.route,
       output,
     }
+  }
+
+  async runNoteEnhancement(input: string): Promise<string> {
+    const settings = await this.deps.loadSettings()
+    const normalizedInput = input.trim()
+
+    if (!normalizedInput) {
+      return ''
+    }
+
+    const noteCleanupPrompt = `${settings.normalPrompt}\n\nWhen cleaning notes, fix punctuation/capitalization, remove filler artifacts, keep the same language, and return plain text only.`
+    return this.runPostProcessing(settings, normalizedInput, noteCleanupPrompt)
   }
 
   async scanModels(baseUrl: string, apiKey: string) {
@@ -530,6 +673,14 @@ export class DictationPipeline {
   }
 
   private async transcribe(settings: AppSettings, audioFilePath: string) {
+    const transcriptionDictionaryHint = buildTranscriptionDictionaryHint(settings)
+
+    if (transcriptionDictionaryHint) {
+      this.deps.log?.('transcript-pipeline', 'Using dictionary hint for transcription', {
+        hintLength: transcriptionDictionaryHint.length,
+      })
+    }
+
     if (settings.transcriptionRuntime === 'local') {
       this.deps.log?.('audio-processing', 'Running local transcription', {
         modelId: settings.transcriptionLocalModelId,
@@ -559,6 +710,7 @@ export class DictationPipeline {
             audioFilePath,
             modelPath,
             settings.whisperCppRuntimeVariant,
+            transcriptionDictionaryHint ?? undefined,
           )
         } catch (error: unknown) {
           this.deps.log?.('error-details', 'Whisper server unavailable, attempting CLI fallback', {
@@ -609,20 +761,58 @@ export class DictationPipeline {
     const transcriptionConfig = getTranscriptionCloudConfig(settings)
     const transcriptionClient = createOpenAIClient(transcriptionConfig)
 
+    if (settings.transcriptionCloudModelId.trim() !== transcriptionConfig.model) {
+      this.deps.log?.('api-request', 'Adjusted cloud transcription model to compatible value', {
+        provider: settings.transcriptionCloudProvider,
+        requestedModel: settings.transcriptionCloudModelId,
+        usedModel: transcriptionConfig.model,
+      })
+    }
+
     this.deps.log?.('api-request', 'Running cloud transcription request', {
       provider: transcriptionConfig.providerLabel,
       model: transcriptionConfig.model,
+      dictionaryHintEnabled: Boolean(transcriptionDictionaryHint),
     })
 
-    const transcription = await executeWithCloudRetry(
-      'cloud transcription request',
-      () =>
-        transcriptionClient.audio.transcriptions.create({
-          file: createReadStream(audioFilePath),
+    const runCloudTranscriptionRequest = (includePromptHint: boolean) => {
+      return executeWithCloudRetry(
+        'cloud transcription request',
+        () =>
+          transcriptionClient.audio.transcriptions.create({
+            file: createReadStream(audioFilePath),
+            model: transcriptionConfig.model,
+            ...(includePromptHint && transcriptionDictionaryHint ? { prompt: transcriptionDictionaryHint } : {}),
+          }),
+        this.deps.log,
+      )
+    }
+
+    let transcription
+    const requestedPromptHint = Boolean(transcriptionDictionaryHint)
+    try {
+      transcription = await runCloudTranscriptionRequest(requestedPromptHint)
+    } catch (error: unknown) {
+      if (requestedPromptHint && isUnsupportedTranscriptionPromptError(error)) {
+        this.deps.log?.('error-details', 'Cloud transcription rejected dictionary prompt hint, retrying without hint', {
+          provider: transcriptionConfig.providerLabel,
           model: transcriptionConfig.model,
-        }),
-      this.deps.log,
-    )
+          error: toErrorMessage(error),
+        })
+        transcription = await runCloudTranscriptionRequest(false)
+      } else {
+        const statusCode = extractStatusCode(error)
+        const message = toErrorMessage(error)
+
+        if (statusCode === 404 && /\/audio\/transcriptions/i.test(message)) {
+          throw new Error(
+            `Transcription endpoint rejected by provider (${transcriptionConfig.providerLabel}). Verify API key/provider pairing and select a speech-to-text model.`,
+          )
+        }
+
+        throw error
+      }
+    }
 
     const text = (transcription.text ?? '').trim()
     if (!text) {
@@ -639,6 +829,13 @@ export class DictationPipeline {
 
   private async runPostProcessing(settings: AppSettings, input: string, prompt: string) {
     let outputText = input
+    const compiledPrompt = buildPromptWithDictionaryRules(settings, prompt)
+
+    if (compiledPrompt !== prompt) {
+      this.deps.log?.('transcript-pipeline', 'Appended dictionary rules to post-processing prompt', {
+        rules: normalizeDictionaryRules(settings.postProcessingDictionaryRules).length,
+      })
+    }
 
     if (settings.postProcessingRuntime === 'cloud') {
       const postConfig = getPostProcessingCloudConfig(settings)
@@ -657,7 +854,7 @@ export class DictationPipeline {
             messages: [
               {
                 role: 'system',
-                content: prompt,
+                content: compiledPrompt,
               },
               {
                 role: 'user',
@@ -685,13 +882,13 @@ export class DictationPipeline {
             renderCommandTemplate(configuredCommand, {
               model_path: modelPath,
               model_id: settings.postProcessingLocalModelId,
-              prompt,
+              prompt: compiledPrompt,
               input,
             }),
-            JSON.stringify({ prompt, input }),
+            JSON.stringify({ prompt: compiledPrompt, input }),
           )
         : commandExists('llama-cli')
-          ? runLlamaCli(modelPath, prompt, input)
+          ? runLlamaCli(modelPath, compiledPrompt, input)
           : (() => {
               throw new Error(
                 'Local post-processing runtime unavailable. Install llama-cli or set WHISPY_LOCAL_LLM_COMMAND.',

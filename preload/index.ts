@@ -21,6 +21,7 @@ import {
   type WhisperRuntimeStatusPayload,
   type SecretStorageMigrationPayload,
   type SecretStorageStatusPayload,
+  type NotesLogEventPayload,
 } from '../shared/ipc'
 import type { AppSettings, HistoryEntry, ModelState } from '../shared/app'
 
@@ -48,6 +49,8 @@ const electronAPI: ElectronAPI = {
     ipcRenderer.invoke(IPCChannels.scanCustomModels, baseUrl, apiKey) as Promise<string[]>,
   runPromptTest: (input: string) =>
     ipcRenderer.invoke(IPCChannels.runPromptTest, input) as Promise<PromptTestResultPayload>,
+  runNoteEnhancement: (input: string) =>
+    ipcRenderer.invoke(IPCChannels.runNoteEnhancement, input) as Promise<string>,
   downloadLocalModel: (scope: LocalModelScope, modelId: string) =>
     ipcRenderer.invoke(IPCChannels.downloadLocalModel, scope, modelId),
   cancelLocalModelDownload: (scope: LocalModelScope, modelId: string) =>
@@ -72,6 +75,8 @@ const electronAPI: ElectronAPI = {
     ipcRenderer.invoke(IPCChannels.requestAccessibilityPermission) as Promise<boolean>,
   getDictationStatus: () => ipcRenderer.invoke(IPCChannels.getDictationStatus) as Promise<DictationStatusPayload>,
   toggleDictation: () => ipcRenderer.invoke(IPCChannels.toggleDictation) as Promise<DictationToggleResponse>,
+  toggleDictationTranscriptionOnly: () =>
+    ipcRenderer.invoke(IPCChannels.toggleDictationTranscriptionOnly) as Promise<DictationToggleResponse>,
   cancelDictation: () => ipcRenderer.invoke(IPCChannels.cancelDictation) as Promise<boolean>,
   performAutoPaste: (text: string, backend: AutoPasteBackendPayload) =>
     ipcRenderer.invoke(IPCChannels.performAutoPaste, text, backend) as Promise<AutoPasteExecutionResult>,
@@ -95,6 +100,7 @@ const electronAPI: ElectronAPI = {
   openControlPanel: () => ipcRenderer.invoke(IPCChannels.openControlPanel),
   openExternal: (url: string) => ipcRenderer.invoke(IPCChannels.openExternal, url),
   openAppDataDirectory: () => ipcRenderer.invoke(IPCChannels.openAppDataDirectory),
+  logNotesEvent: (payload: NotesLogEventPayload) => ipcRenderer.invoke(IPCChannels.logNotesEvent, payload),
   getDisplayServer: () => ipcRenderer.invoke(IPCChannels.getDisplayServer) as Promise<DisplayServer>,
   onWindowMaximizeChanged: (callback) =>
     listen<boolean>(IPCChannels.windowMaximizeChanged, callback),

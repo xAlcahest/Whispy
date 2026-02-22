@@ -463,6 +463,11 @@ const HistorySection = ({
           const expanded = Boolean(expandedEntries[entry.id])
           const wordCount = estimateWordsFromText(entry.text)
           const tokenEstimate = estimateTokensFromText(entry.text)
+          const recordedDurationSeconds =
+            typeof entry.durationSeconds === 'number' && Number.isFinite(entry.durationSeconds) && entry.durationSeconds > 0
+              ? entry.durationSeconds
+              : null
+          const recordedTimeLabel = recordedDurationSeconds !== null ? `${formatDurationCompact(recordedDurationSeconds)} time` : 'N/A time'
           const tokenRateUSD = resolveTranscriptionTokenRateUSD(entry.model, usageStats)
           const entryCostEstimateUSD =
             tokenRateUSD !== null ? Number((Math.max(1, tokenEstimate) * tokenRateUSD).toFixed(6)) : null
@@ -475,7 +480,7 @@ const HistorySection = ({
                     <CardTitle className="text-xs">{formatTimestamp(entry.timestamp)}</CardTitle>
                     <div className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
                       <CardDescription className="text-xs">
-                        {entry.language} | {entry.provider}/{entry.model} | {formatCount(wordCount)} words · ~
+                        {entry.language} | {entry.provider}/{entry.model} | {recordedTimeLabel} · {formatCount(wordCount)} words · ~
                         {formatCount(tokenEstimate)} tokens · ~{formatCurrency(entryCostEstimateUSD)}
                       </CardDescription>
                       <button
@@ -2993,34 +2998,84 @@ const SpendingLimitsSection = ({ settings, onChange }: SpendingLimitsSectionProp
 const FaqSection = () => {
   const entries = [
     {
-      question: 'How are costs calculated?',
+      question: 'How are costs calculated in this app?',
       answer:
-        'Whispy calculates token-based estimates using the LiteLLM pricing catalog. For notes, only enhanced (processed) notes are counted as spent usage.',
+        'Whispy uses token counts from your content and model prices from the LiteLLM pricing catalog. Dictation and notes values are estimates, but notes spend counts only processed Enhanced output.',
     },
     {
       question: 'Why can estimates differ from provider billing?',
       answer:
-        'Providers can tokenize differently and may bill transcription by audio minute. Whispy shows practical estimates and keeps source status visible (Live, Cached, or Unavailable).',
+        'Providers can tokenize text differently and some transcription models bill by audio minute. Whispy keeps practical estimates for visibility and marks pricing source status clearly.',
+    },
+    {
+      question: 'What does "N/A time" mean in Dictations?',
+      answer:
+        'Older history entries may not include recording duration metadata. In that case, entry-level time is shown as N/A, while aggregate time can still use a words-per-minute fallback estimate.',
     },
     {
       question: 'What does Recorded time mean in Dictations stats?',
       answer:
-        'It is the total captured recording duration from dictation sessions. If duration metadata is missing, Whispy falls back to a words-per-minute estimate.',
+        'It is total captured dictation duration. If a session has no explicit duration, Whispy estimates from transcript length to keep totals readable.',
+    },
+    {
+      question: 'How should I read words and tokens in Dictations?',
+      answer:
+        'Words are human-readable transcript length. Tokens are model-oriented units used for pricing estimates. The line format is: language | provider/model | time | words | tokens | estimated cost.',
+    },
+    {
+      question: 'How should I read raw/enhanced stats in Notes?',
+      answer:
+        'Raw means your original note text. Enhanced means processed output after running note actions. Compare fields (words/tokens/read time) help you see how processing changed the content.',
+    },
+    {
+      question: 'Why does Notes estimate ignore draft-only notes?',
+      answer:
+        'To avoid misleading totals, draft notes are not counted as spent usage. Only notes with Enhanced output are included in notes spend and overall spend.',
+    },
+    {
+      question: 'What does Overall $ used include?',
+      answer:
+        'Overall combines dictation estimate plus notes enhanced spend currently tracked in your app state. It is intended for practical monitoring, not invoice-level reconciliation.',
+    },
+    {
+      question: 'What do pricing source colors mean?',
+      answer:
+        'Green means live pricing data, yellow means cached pricing data, red means pricing source unavailable. If unavailable, values may be partial or fallback-based.',
+    },
+    {
+      question: 'How often is pricing data refreshed?',
+      answer:
+        'Pricing data is cached and reused for performance, then refreshed on demand (Refresh button) or when cache expires. This prevents noisy network calls and improves responsiveness.',
     },
     {
       question: 'What is the difference between Auto-paste Instant and Streaming?',
       answer:
-        'Instant sends paste shortcut (Ctrl+V or Ctrl+Shift+V) after placing text in clipboard. Streaming types characters sequentially with very low delay.',
+        'Instant updates clipboard and sends a paste shortcut. Streaming injects text progressively with very low delay, preserving spaces/newlines while improving reliability for long inputs.',
+    },
+    {
+      question: 'Which paste shortcut should I use?',
+      answer:
+        'Use Ctrl+V for standard editors. Use Ctrl+Shift+V for terminals and apps that expect plain-text paste. You can switch this in Preferences at any time.',
     },
     {
       question: 'When are local models loaded?',
       answer:
-        'Local models are loaded only when local runtime is active. If cloud runtime is selected, local models stay on disk and are not loaded into RAM/VRAM.',
+        'Local models are loaded only when local runtime is active. Switching back to cloud stops local server processes so RAM/VRAM is released after process shutdown.',
+    },
+    {
+      question: 'Why can model scan fail for some providers?',
+      answer:
+        'Some providers do not expose a standard models listing endpoint for your key or plan. Whispy handles these gracefully and avoids repeated noisy scan errors where possible.',
     },
     {
       question: 'How do spending limits work?',
       answer:
-        'Spending Limits are soft limits per provider to help monitoring. They do not block API calls automatically yet; they are intended for awareness and planned guardrails.',
+        'Spending Limits are soft limits per provider for awareness and budget planning. They currently do not hard-block API traffic automatically.',
+    },
+    {
+      question: 'Where is my data stored?',
+      answer:
+        'Settings and history are stored in app data; notes are stored as markdown files with metadata indexes. Secret values are handled via keyring/.env fallback based on platform support.',
     },
   ]
 
@@ -3028,7 +3083,9 @@ const FaqSection = () => {
     <Card id="settings-node-faq" className="scroll-mt-6">
       <CardHeader>
         <CardTitle>FAQ</CardTitle>
-        <CardDescription>Quick answers for usage, pricing, dictation, notes, and runtime behavior.</CardDescription>
+        <CardDescription>
+          Practical answers for pricing, dictation metrics, notes behavior, runtime modes, and paste workflows.
+        </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
         {entries.map((entry) => (

@@ -33,6 +33,27 @@ const normalizeAutoPasteOptions = (options?: AutoPasteOptions) => {
   } as const
 }
 
+type LinuxPasteTool = 'xdotool' | 'wtype' | 'ydotool'
+
+interface LinuxPasteAttempt {
+  backend: LinuxPasteTool
+  run: () => ReturnType<typeof runCommand>
+}
+
+const STREAM_CLIPBOARD_STEP_DELAY_MS = 0
+const STREAM_CLIPBOARD_YIELD_INTERVAL = 96
+const STREAM_CLIPBOARD_YIELD_DELAY_MS = 1
+const STREAM_CLIPBOARD_CHUNK_RETRIES = 2
+
+const sleepBlocking = (milliseconds: number) => {
+  if (milliseconds <= 0) {
+    return
+  }
+
+  const sleepSignal = new Int32Array(new SharedArrayBuffer(4))
+  Atomics.wait(sleepSignal, 0, 0, milliseconds)
+}
+
 const runLinuxStreamingAutoPaste = (text: string, backend: AutoPasteBackend): AutoPasteExecutionResult => {
   if (backend === 'wtype') {
     const result = runCommand('wtype', [text])
@@ -82,6 +103,144 @@ const runWtypePasteShortcut = (shortcut: AutoPasteShortcut) => {
   return runCommand('wtype', args)
 }
 
+const runYdotoolPasteShortcut = (shortcut: AutoPasteShortcut) => {
+  const args =
+    shortcut === 'ctrl-shift-v'
+      ? ['key', '29:1', '42:1', '47:1', '47:0', '42:0', '29:0']
+      : ['key', '29:1', '47:1', '47:0', '29:0']
+
+  return runCommand('ydotool', args)
+}
+
+const buildLinuxPasteShortcutAttempts = (
+  backend: AutoPasteBackend,
+  shortcut: AutoPasteShortcut,
+): LinuxPasteAttempt[] => {
+  const attempts: LinuxPasteAttempt[] = []
+  const seen = new Set<LinuxPasteTool>()
+
+  const appendAttempt = (tool: LinuxPasteTool) => {
+    if (seen.has(tool) || !commandExists(tool)) {
+      return
+    }
+
+    seen.add(tool)
+    if (tool === 'xdotool') {
+      attempts.push({ backend: tool, run: () => runXdotoolPasteShortcut(shortcut) })
+      return
+    }
+
+    if (tool === 'wtype') {
+      attempts.push({ backend: tool, run: () => runWtypePasteShortcut(shortcut) })
+      return
+    }
+
+    attempts.push({ backend: tool, run: () => runYdotoolPasteShortcut(shortcut) })
+  }
+
+  if (backend === 'xdotools') {
+    appendAttempt('xdotool')
+  } else if (backend === 'wtype') {
+    appendAttempt('wtype')
+  } else {
+    appendAttempt('ydotool')
+  }
+
+  appendAttempt('xdotool')
+  appendAttempt('wtype')
+  appendAttempt('ydotool')
+
+  return attempts
+}
+
+const executeLinuxPasteAttempt = (
+  attempts: LinuxPasteAttempt[],
+  preferredAttempt: LinuxPasteAttempt | null,
+): LinuxPasteAttempt | null => {
+  const triedBackends = new Set<LinuxPasteTool>()
+
+  if (preferredAttempt) {
+    const preferredResult = preferredAttempt.run()
+    triedBackends.add(preferredAttempt.backend)
+    if (preferredResult.status === 0) {
+      return preferredAttempt
+    }
+  }
+
+  for (const attempt of attempts) {
+    if (triedBackends.has(attempt.backend)) {
+      continue
+    }
+
+    const result = attempt.run()
+    triedBackends.add(attempt.backend)
+    if (result.status === 0) {
+      return attempt
+    }
+  }
+
+  return null
+}
+
+const runLinuxStreamingPasteViaClipboard = (
+  text: string,
+  backend: AutoPasteBackend,
+  shortcut: AutoPasteShortcut,
+): AutoPasteExecutionResult => {
+  const attempts = buildLinuxPasteShortcutAttempts(backend, shortcut)
+  if (attempts.length === 0) {
+    return {
+      success: false,
+      details: 'Streaming paste unavailable: install xdotool, wtype, or ydotool.',
+    }
+  }
+
+  const previousClipboardText = clipboard.readText()
+  let selectedAttempt: LinuxPasteAttempt | null = null
+
+  try {
+    const chunks = Array.from(text)
+    for (let index = 0; index < chunks.length; index += 1) {
+      clipboard.writeText(chunks[index] ?? '')
+
+      let successfulAttempt: LinuxPasteAttempt | null = null
+      for (let retryIndex = 0; retryIndex <= STREAM_CLIPBOARD_CHUNK_RETRIES; retryIndex += 1) {
+        successfulAttempt = executeLinuxPasteAttempt(attempts, selectedAttempt)
+        if (successfulAttempt) {
+          break
+        }
+
+        sleepBlocking(2)
+      }
+
+      if (!successfulAttempt) {
+        return {
+          success: false,
+          details:
+            'Streaming paste failed while sending chunks. Try Instant mode or ensure xdotool/wtype/ydotool is available.',
+        }
+      }
+
+      selectedAttempt = successfulAttempt
+
+      if (index < chunks.length - 1) {
+        if (STREAM_CLIPBOARD_STEP_DELAY_MS > 0) {
+          sleepBlocking(STREAM_CLIPBOARD_STEP_DELAY_MS)
+        } else if ((index + 1) % STREAM_CLIPBOARD_YIELD_INTERVAL === 0) {
+          sleepBlocking(STREAM_CLIPBOARD_YIELD_DELAY_MS)
+        }
+      }
+    }
+
+    return {
+      success: true,
+      details: `Text streamed via clipboard chunks and ${selectedAttempt?.backend ?? 'paste shortcut'} (${shortcut === 'ctrl-shift-v' ? 'Ctrl+Shift+V' : 'Ctrl+V'}).`,
+    }
+  } finally {
+    clipboard.writeText(previousClipboardText)
+  }
+}
+
 const runLinuxInstantAutoPaste = (
   text: string,
   backend: AutoPasteBackend,
@@ -89,36 +248,19 @@ const runLinuxInstantAutoPaste = (
 ): AutoPasteExecutionResult => {
   clipboard.writeText(text)
 
-  const attempts: Array<{ backend: string; run: () => ReturnType<typeof runCommand> }> = []
-
-  if (backend === 'xdotools') {
-    attempts.push({ backend: 'xdotool', run: () => runXdotoolPasteShortcut(shortcut) })
-  } else if (backend === 'wtype') {
-    attempts.push({ backend: 'wtype', run: () => runWtypePasteShortcut(shortcut) })
-  }
-
-  if (commandExists('xdotool')) {
-    attempts.push({ backend: 'xdotool', run: () => runXdotoolPasteShortcut(shortcut) })
-  }
-
-  if (commandExists('wtype')) {
-    attempts.push({ backend: 'wtype', run: () => runWtypePasteShortcut(shortcut) })
-  }
-
-  for (const attempt of attempts) {
-    const result = attempt.run()
-    if (result.status === 0) {
-      return {
-        success: true,
-        details: `Clipboard pasted via ${attempt.backend} (${shortcut === 'ctrl-shift-v' ? 'Ctrl+Shift+V' : 'Ctrl+V'}).`,
-      }
+  const attempts = buildLinuxPasteShortcutAttempts(backend, shortcut)
+  const successfulAttempt = executeLinuxPasteAttempt(attempts, null)
+  if (successfulAttempt) {
+    return {
+      success: true,
+      details: `Clipboard pasted via ${successfulAttempt.backend} (${shortcut === 'ctrl-shift-v' ? 'Ctrl+Shift+V' : 'Ctrl+V'}).`,
     }
   }
 
   return {
     success: false,
     details:
-      'Clipboard updated, but paste shortcut could not be sent. Install xdotool or wtype, or switch to Streaming typing mode.',
+      'Clipboard updated, but paste shortcut could not be sent. Install xdotool, wtype, or ydotool, or switch to Streaming mode.',
   }
 }
 
@@ -220,7 +362,7 @@ export const performAutoPaste = (
       return runLinuxInstantAutoPaste(text, backend, normalizedOptions.shortcut)
     }
 
-    return runLinuxStreamingAutoPaste(text, backend)
+    return runLinuxStreamingPasteViaClipboard(text, backend, normalizedOptions.shortcut)
   }
 
   if (process.platform === 'darwin') {

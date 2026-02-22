@@ -1,6 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { safeStorage } from 'electron'
+import type { AppSettings } from '../../shared/app'
 import type { SecretSettingKey, SecretSettingsMap, SecretStorageMode } from '../../shared/secrets'
 import { SECRET_ENV_KEY_BY_SETTING, SECRET_SETTING_KEYS } from '../../shared/secrets'
 
@@ -46,6 +47,53 @@ const serializeEnvValue = (value: string) => {
   }
 
   return JSON.stringify(value)
+}
+
+const NON_SECRET_ENV_KEY_BY_SETTING = {
+  hotkey: 'WHISPY_HOTKEY',
+  activationMode: 'WHISPY_ACTIVATION_MODE',
+  autoHideFloatingIcon: 'WHISPY_AUTO_HIDE_FLOATING_ICON',
+  overlayRuntimeBadgeEnabled: 'WHISPY_OVERLAY_RUNTIME_BADGE_ENABLED',
+  overlayRuntimeBadgeOnlyOnUse: 'WHISPY_OVERLAY_RUNTIME_BADGE_ONLY_ON_USE',
+  launchAtLogin: 'WHISPY_LAUNCH_AT_LOGIN',
+  theme: 'WHISPY_THEME',
+  autoPasteBackend: 'WHISPY_AUTO_PASTE_BACKEND',
+  autoPasteMode: 'WHISPY_AUTO_PASTE_MODE',
+  autoPasteShortcut: 'WHISPY_AUTO_PASTE_SHORTCUT',
+  whisperCppRuntimeVariant: 'WHISPY_WHISPER_RUNTIME_VARIANT',
+  transcriptionRuntime: 'WHISPY_TRANSCRIPTION_RUNTIME',
+  postProcessingRuntime: 'WHISPY_POST_RUNTIME',
+  translationModeEnabled: 'WHISPY_TRANSLATION_MODE_ENABLED',
+  translationHotkeyMode: 'WHISPY_TRANSLATION_HOTKEY_MODE',
+  translationCustomHotkey: 'WHISPY_TRANSLATION_CUSTOM_HOTKEY',
+  historyRetentionLimit: 'WHISPY_HISTORY_RETENTION_LIMIT',
+  debugModeEnabled: 'WHISPY_DEBUG_MODE',
+} as const satisfies Partial<Record<keyof AppSettings, string>>
+
+type NonSecretSettingKey = keyof typeof NON_SECRET_ENV_KEY_BY_SETTING
+
+const BOOLEAN_NON_SECRET_SETTING_KEYS = new Set<NonSecretSettingKey>([
+  'autoHideFloatingIcon',
+  'overlayRuntimeBadgeEnabled',
+  'overlayRuntimeBadgeOnlyOnUse',
+  'launchAtLogin',
+  'translationModeEnabled',
+  'debugModeEnabled',
+])
+
+const NUMBER_NON_SECRET_SETTING_KEYS = new Set<NonSecretSettingKey>(['historyRetentionLimit'])
+
+const parseBooleanEnvValue = (rawValue: string): boolean | null => {
+  const normalized = rawValue.trim().toLowerCase()
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) {
+    return true
+  }
+
+  if (['0', 'false', 'no', 'off'].includes(normalized)) {
+    return false
+  }
+
+  return null
 }
 
 export class SecretStore {
@@ -161,6 +209,71 @@ export class SecretStore {
         ? this.keyringFallbackReason ?? `${this.keytarUnavailableReason} Falling back to plaintext .env storage.`
         : 'System keyring integration is active.',
     }
+  }
+
+  getNonSecretSettings(): Partial<AppSettings> {
+    const envEntries = this.readPlaintextEnvMap()
+    const settings: Partial<Record<NonSecretSettingKey, AppSettings[NonSecretSettingKey]>> = {}
+
+    for (const [settingKey, envKey] of Object.entries(NON_SECRET_ENV_KEY_BY_SETTING) as [NonSecretSettingKey, string][]) {
+      const rawValue = envEntries[envKey] ?? process.env[envKey]
+      if (typeof rawValue !== 'string' || rawValue.trim().length === 0) {
+        continue
+      }
+
+      if (BOOLEAN_NON_SECRET_SETTING_KEYS.has(settingKey)) {
+        const parsedBoolean = parseBooleanEnvValue(rawValue)
+        if (parsedBoolean !== null) {
+          settings[settingKey] = parsedBoolean
+        }
+        continue
+      }
+
+      if (NUMBER_NON_SECRET_SETTING_KEYS.has(settingKey)) {
+        const parsedNumber = Number.parseInt(rawValue, 10)
+        if (Number.isFinite(parsedNumber)) {
+          settings[settingKey] = parsedNumber
+        }
+        continue
+      }
+
+      settings[settingKey] = rawValue
+    }
+
+    return settings as Partial<AppSettings>
+  }
+
+  setNonSecretSettings(settings: AppSettings) {
+    const envEntries = this.readPlaintextEnvMap()
+
+    for (const [settingKey, envKey] of Object.entries(NON_SECRET_ENV_KEY_BY_SETTING) as [NonSecretSettingKey, string][]) {
+      const value = settings[settingKey]
+
+      if (typeof value === 'boolean') {
+        envEntries[envKey] = value ? '1' : '0'
+        continue
+      }
+
+      if (typeof value === 'number') {
+        envEntries[envKey] = String(value)
+        continue
+      }
+
+      if (typeof value === 'string' && value.trim().length > 0) {
+        envEntries[envKey] = value
+        continue
+      }
+
+      delete envEntries[envKey]
+    }
+
+    this.persistPlaintextEnvMap(envEntries)
+  }
+
+  ensurePlaintextEnvFile() {
+    const envEntries = this.readPlaintextEnvMap()
+    this.persistPlaintextEnvMap(envEntries)
+    return this.plaintextSecretsEnvPath
   }
 
   async migratePlaintextEnvToKeyring(): Promise<SecretMigrationResult> {

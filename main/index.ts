@@ -1,12 +1,15 @@
-import { app, BrowserWindow, globalShortcut, ipcMain, screen, shell, systemPreferences } from 'electron'
+import { app, BrowserWindow, Menu, Tray, globalShortcut, ipcMain, nativeImage, screen, shell, systemPreferences } from 'electron'
 import { spawnSync } from 'node:child_process'
 import { accessSync, constants as fsConstants, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import type { AppSettings, HistoryEntry, ModelState } from '../shared/app'
+import type { AppSettings, DictationResult, HistoryEntry, ModelState } from '../shared/app'
+import { normalizeSettings } from '../shared/defaults'
+import { CUSTOM_MODEL_FETCH_ERROR } from '../shared/model-discovery'
 import {
   applySecretsToSettings,
   extractSecretSettings,
   stripSecretsFromSettings,
+  type SecretSettingsMap,
   type SecretStorageMode,
 } from '../shared/secrets'
 import {
@@ -24,6 +27,8 @@ import {
   type SecretStorageMigrationPayload,
   type SecretStorageStatusPayload,
   type NotesLogEventPayload,
+  type NotesSnapshotPayload,
+  type AppUsageStatsPayload,
   type WhisperRuntimeDiagnosticsPayload,
 } from '../shared/ipc'
 import { detectActiveApp } from './backend/active-app'
@@ -34,6 +39,8 @@ import { DictationRuntime } from './backend/dictation-runtime'
 import { LocalModelStore, type ModelDownloadProgress, type WhisperRuntimeVariant } from './backend/model-files'
 import { SecretStore } from './backend/secret-store'
 import { BackendStateStore } from './backend/state-store'
+import { NotesStore } from './backend/notes-store'
+import { UsageStatsService } from './backend/usage-stats'
 import { WhisperServerManager } from './backend/whisper-server'
 
 const linuxSessionType = process.env.XDG_SESSION_TYPE?.toLowerCase() ?? ''
@@ -101,14 +108,88 @@ let overlayWindow: BrowserWindow | null = null
 let controlPanelWindow: BrowserWindow | null = null
 let backendStateStore: BackendStateStore | null = null
 let secretStore: SecretStore | null = null
+let notesStore: NotesStore | null = null
+let usageStatsService: UsageStatsService | null = null
 let debugLogger: DebugLogger | null = null
 let dictationPipeline: DictationPipeline | null = null
 let dictationRuntime: DictationRuntime | null = null
 let localModelStore: LocalModelStore | null = null
 let whisperServerManager: WhisperServerManager | null = null
+let trayInstance: Tray | null = null
 let registeredHotkey: string | null = null
+let isAppQuitting = false
 const appStartupStartedAt = Date.now()
 const downloadProgressLogMarkers = new Map<string, string>()
+const SECRET_IO_TIMEOUT_MS = 4_500
+const MODEL_SCAN_CACHE_TTL_MS = 15 * 60 * 1000
+const MODEL_SCAN_CACHE_MAX_ENTRIES = 64
+let lastLiteLLMUsageErrorSignature: string | null = null
+
+interface ModelScanCacheEntry {
+  key: string
+  modelIds: string[]
+  cachedAt: number
+}
+
+const modelScanCache = new Map<string, ModelScanCacheEntry>()
+const modelScanInFlight = new Map<string, Promise<string[]>>()
+
+const createModelScanCacheKey = (baseUrl: string, apiKey: string) => {
+  const normalizedBaseUrl = baseUrl.trim().toLowerCase().replace(/\/+$/, '')
+  return `${normalizedBaseUrl}|${apiKey.trim()}`
+}
+
+const readCachedModelScan = (cacheKey: string) => {
+  const cachedEntry = modelScanCache.get(cacheKey)
+  if (!cachedEntry) {
+    return null
+  }
+
+  if (Date.now() - cachedEntry.cachedAt > MODEL_SCAN_CACHE_TTL_MS) {
+    modelScanCache.delete(cacheKey)
+    return null
+  }
+
+  return cachedEntry.modelIds
+}
+
+const writeCachedModelScan = (cacheKey: string, modelIds: string[]) => {
+  const now = Date.now()
+  modelScanCache.set(cacheKey, {
+    key: cacheKey,
+    modelIds,
+    cachedAt: now,
+  })
+
+  if (modelScanCache.size <= MODEL_SCAN_CACHE_MAX_ENTRIES) {
+    return
+  }
+
+  const oldestEntry = Array.from(modelScanCache.values()).sort((left, right) => left.cachedAt - right.cachedAt)[0]
+  if (!oldestEntry) {
+    return
+  }
+
+  modelScanCache.delete(oldestEntry.key)
+}
+
+const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> => {
+  let timeoutHandle: NodeJS.Timeout | null = null
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => {
+      reject(new Error(timeoutMessage))
+    }, timeoutMs)
+  })
+
+  try {
+    return await Promise.race([promise, timeoutPromise])
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle)
+    }
+  }
+}
 
 const emitControlWindowMaximizeChanged = () => {
   if (!controlPanelWindow || controlPanelWindow.isDestroyed()) {
@@ -167,6 +248,70 @@ const openExternalInBrowser = (targetURL: string) => {
   }
 }
 
+const resolveApplicationIconPath = () => {
+  const platformRelativePaths =
+    process.platform === 'win32'
+      ? [
+          ['assets4app', 'Web', 'android-chrome-512x512.png'],
+          ['assets4app', 'Web', 'favicon.ico'],
+          ['assets4app', 'Web', 'favicon-32x32.png'],
+          ['assets4app', 'Web', 'apple-touch-icon.png'],
+          ['assets4app', 'Chrome_Extension', 'icon-128.png'],
+        ]
+      : [
+          ['assets4app', 'Web', 'android-chrome-512x512.png'],
+          ['assets4app', 'Web', 'favicon-32x32.png'],
+          ['assets4app', 'Web', 'apple-touch-icon.png'],
+          ['assets4app', 'Chrome_Extension', 'icon-128.png'],
+          ['assets4app', 'macOS', 'AppIcon.iconset', 'icon_512x512.png'],
+        ]
+
+  const candidatePaths = [app.getAppPath(), process.resourcesPath]
+    .flatMap((rootPath) => platformRelativePaths.map((relativePath) => join(rootPath, ...relativePath)))
+    .concat(join(process.resourcesPath, 'icon.png'))
+
+  for (const iconPath of candidatePaths) {
+    if (existsSync(iconPath)) {
+      return iconPath
+    }
+  }
+
+  return null
+}
+
+const resolveApplicationIconImage = () => {
+  const trayRelativePaths = [
+    ['assets4app', 'Web', 'favicon-32x32.png'],
+    ['assets4app', 'Web', 'favicon.ico'],
+    ['assets4app', 'Web', 'android-chrome-192x192.png'],
+    ['assets4app', 'Chrome_Extension', 'icon-32.png'],
+    ['assets4app', 'Chrome_Extension', 'icon-48.png'],
+  ]
+
+  const trayCandidates = [app.getAppPath(), process.resourcesPath].flatMap((rootPath) =>
+    trayRelativePaths.map((relativePath) => join(rootPath, ...relativePath)),
+  )
+
+  for (const iconPath of trayCandidates) {
+    if (!existsSync(iconPath)) {
+      continue
+    }
+
+    const image = nativeImage.createFromPath(iconPath)
+    if (!image.isEmpty()) {
+      return image
+    }
+  }
+
+  const fallbackPath = resolveApplicationIconPath()
+  if (!fallbackPath) {
+    return nativeImage.createEmpty()
+  }
+
+  const fallbackImage = nativeImage.createFromPath(fallbackPath)
+  return fallbackImage.isEmpty() ? nativeImage.createEmpty() : fallbackImage
+}
+
 const resolveActionWindow = (sourceWebContents?: Electron.WebContents | null) => {
   if (controlPanelWindow && !controlPanelWindow.isDestroyed()) {
     return controlPanelWindow
@@ -197,7 +342,14 @@ const runInternalWindowAction = (targetURL: string, sourceWebContents?: Electron
   const actionKey = `${parsedURL.hostname}${parsedURL.pathname}`.replace(/\/+$/, '')
 
   if (actionKey === 'app/quit' || actionKey === 'window/close') {
-    app.exit(0)
+    if (actionKey === 'app/quit') {
+      isAppQuitting = true
+      app.quit()
+      return true
+    }
+
+    const actionWindow = resolveActionWindow(sourceWebContents)
+    actionWindow?.hide()
     return true
   }
 
@@ -416,8 +568,10 @@ const detectAutoPasteBackendSupport = (): AutoPasteBackendSupportPayload => {
 const createOverlayWindow = async () => {
   const disableWindowSandbox = process.platform === 'linux' && linuxDisableSandbox
   const baseBounds = getOverlayBounds(OVERLAY_SIZES.BASE)
+  const appIconPath = resolveApplicationIconPath() ?? undefined
   overlayWindow = new BrowserWindow({
     ...baseBounds,
+    icon: appIconPath,
     frame: false,
     transparent: true,
     resizable: false,
@@ -468,6 +622,7 @@ const createOverlayWindow = async () => {
 const createControlPanelWindow = async () => {
   const disableWindowSandbox = process.platform === 'linux' && linuxDisableSandbox
   const useNativeWindowChrome = process.platform === 'win32'
+  const appIconPath = resolveApplicationIconPath() ?? undefined
 
   controlPanelWindow = new BrowserWindow({
     width: 1200,
@@ -477,6 +632,7 @@ const createControlPanelWindow = async () => {
     minimizable: true,
     maximizable: true,
     closable: true,
+    icon: appIconPath,
     frame: useNativeWindowChrome,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : undefined,
     backgroundColor: '#0f1117',
@@ -519,6 +675,15 @@ const createControlPanelWindow = async () => {
           message: error instanceof Error ? error.message : String(error),
         }, 'Runtime')
       })
+  })
+
+  controlPanelWindow.on('close', (event) => {
+    if (isAppQuitting) {
+      return
+    }
+
+    event.preventDefault()
+    controlPanelWindow?.hide()
   })
 
   controlPanelWindow.on('maximize', emitControlWindowMaximizeChanged)
@@ -585,6 +750,79 @@ const ensureSecretStore = () => {
   }
 
   return secretStore
+}
+
+const ensureNotesStore = () => {
+  if (!notesStore) {
+    const userDataPath = app.getPath('userData')
+    const notesRootPath = join(userDataPath, 'notes')
+    notesStore = new NotesStore(notesRootPath)
+  }
+
+  return notesStore
+}
+
+const ensureUsageStatsService = () => {
+  if (!usageStatsService) {
+    const cacheFilePath = join(app.getPath('userData'), 'usage-stats', 'litellm-cache.json')
+    usageStatsService = new UsageStatsService(cacheFilePath)
+  }
+
+  return usageStatsService
+}
+
+const ensureTray = () => {
+  if (trayInstance) {
+    return trayInstance
+  }
+
+  const trayIcon = resolveApplicationIconImage()
+  if (trayIcon.isEmpty()) {
+    logDebug('error-details', 'Unable to create tray icon: icon image missing', undefined, 'Window')
+    return null
+  }
+
+  trayInstance = new Tray(trayIcon)
+  trayInstance.setToolTip('Whispy')
+
+  const contextMenu = Menu.buildFromTemplate([
+    {
+      label: 'Open Control Panel',
+      click: () => {
+        void ensureControlPanelWindow()
+      },
+    },
+    {
+      label: 'Show Floating Overlay',
+      click: () => {
+        void (async () => {
+          if (!overlayWindow) {
+            await createOverlayWindow()
+          }
+
+          overlayWindow?.show()
+          overlayWindow?.focus()
+        })()
+      },
+    },
+    {
+      type: 'separator',
+    },
+    {
+      label: 'Quit Whispy',
+      click: () => {
+        isAppQuitting = true
+        app.quit()
+      },
+    },
+  ])
+
+  trayInstance.setContextMenu(contextMenu)
+  trayInstance.on('click', () => {
+    void ensureControlPanelWindow()
+  })
+
+  return trayInstance
 }
 
 const resolveSecretStorageMode = (_settings: AppSettings): SecretStorageMode => 'keyring'
@@ -942,17 +1180,46 @@ const reconcileModelAvailabilityWithDisk = () => {
   stateStore.setPostModels(reconciledPostModels)
 }
 
+const applyNonSecretEnvSettings = (settings: AppSettings) => {
+  const envOverrides = ensureSecretStore().getNonSecretSettings()
+  if (Object.keys(envOverrides).length === 0) {
+    return settings
+  }
+
+  return normalizeSettings({
+    ...settings,
+    ...envOverrides,
+  })
+}
+
+const loadSecretsSafely = async (mode: SecretStorageMode): Promise<SecretSettingsMap> => {
+  try {
+    return await withTimeout(
+      ensureSecretStore().getSecrets(mode),
+      SECRET_IO_TIMEOUT_MS,
+      'Secret storage request timed out.',
+    )
+  } catch (error: unknown) {
+    logDebug('error-details', 'Unable to load secrets from storage', {
+      mode,
+      message: error instanceof Error ? error.message : String(error),
+    }, 'Secrets')
+
+    return {}
+  }
+}
+
 const getBackendSnapshotWithSecrets = async () => {
   const snapshot = ensureBackendStateStore().getSnapshotOrNull()
   if (!snapshot) {
     return null
   }
 
-  const secrets = await ensureSecretStore().getSecrets(resolveSecretStorageMode(snapshot.settings))
+  const secrets = await loadSecretsSafely(resolveSecretStorageMode(snapshot.settings))
 
   return {
     ...snapshot,
-    settings: applySecretsToSettings(snapshot.settings, secrets),
+    settings: applyNonSecretEnvSettings(applySecretsToSettings(snapshot.settings, secrets)),
   }
 }
 
@@ -962,7 +1229,35 @@ const loadCurrentSettings = async (): Promise<AppSettings> => {
     return snapshot.settings
   }
 
-  return ensureBackendStateStore().getSnapshot().settings
+  return applyNonSecretEnvSettings(ensureBackendStateStore().getSnapshot().settings)
+}
+
+const appendHistoryEntryFromDictationResult = async (payload: DictationResult) => {
+  const stateStore = ensureBackendStateStore()
+  const snapshot = stateStore.getSnapshot()
+  const settings = await loadCurrentSettings()
+  const resolvedLanguage = settings.preferredLanguage === 'Auto-detect' ? payload.language : settings.preferredLanguage
+
+  const nextHistory = [
+    {
+      id: crypto.randomUUID(),
+      timestamp: Date.now(),
+      language: resolvedLanguage,
+      provider: payload.provider,
+      model: payload.model,
+      targetApp: payload.targetApp,
+      text: payload.text,
+      durationSeconds:
+        typeof payload.durationSeconds === 'number' && Number.isFinite(payload.durationSeconds)
+          ? payload.durationSeconds
+          : undefined,
+    },
+    ...snapshot.history,
+  ]
+
+  const sortedHistory = [...nextHistory].sort((left, right) => right.timestamp - left.timestamp)
+  const retentionLimit = settings.historyRetentionLimit
+  stateStore.setHistory(retentionLimit < 0 ? sortedHistory : sortedHistory.slice(0, retentionLimit))
 }
 
 const ensureDictationPipeline = () => {
@@ -993,6 +1288,12 @@ const ensureDictationRuntime = () => {
         broadcast(IPCChannels.dictationStatusChanged, status)
       },
       onResult: (payload) => {
+        void appendHistoryEntryFromDictationResult(payload).catch((error: unknown) => {
+          logDebug('error-details', 'Unable to persist dictation history entry', {
+            message: error instanceof Error ? error.message : String(error),
+          }, 'History')
+        })
+
         logDebug('transcript-pipeline', 'Dictation pipeline produced result', {
           provider: payload.provider,
           model: payload.model,
@@ -1021,6 +1322,12 @@ const ensureDictationRuntime = () => {
 
 const DEFAULT_FALLBACK_HOTKEY = process.platform === 'darwin' ? 'Ctrl+Option+Space' : 'Ctrl+Alt+Space'
 
+interface HotkeyRegistrationResult {
+  requestedHotkey: string
+  effectiveHotkey: string
+  accelerator: string | null
+}
+
 const normalizeHotkeyToken = (token: string) => {
   const normalized = token.trim().toLowerCase()
 
@@ -1030,6 +1337,10 @@ const normalizeHotkeyToken = (token: string) => {
 
   if (normalized === 'cmd' || normalized === 'command') {
     return 'Command'
+  }
+
+  if (normalized === 'meta' || normalized === 'super' || normalized === 'win' || normalized === 'windows') {
+    return 'Super'
   }
 
   if (normalized === 'alt' || normalized === 'option') {
@@ -1049,6 +1360,10 @@ const normalizeHotkeyToken = (token: string) => {
   }
 
   if (normalized.length === 1) {
+    return normalized.toUpperCase()
+  }
+
+  if (/^f\d{1,2}$/i.test(normalized)) {
     return normalized.toUpperCase()
   }
 
@@ -1101,7 +1416,7 @@ const handleGlobalDictationHotkey = () => {
   })()
 }
 
-const registerGlobalDictationHotkey = (requestedHotkey: string) => {
+const registerGlobalDictationHotkey = (requestedHotkey: string): HotkeyRegistrationResult => {
   unregisterGlobalHotkey()
 
   const requestedAccelerator = toElectronAccelerator(requestedHotkey)
@@ -1111,23 +1426,38 @@ const registerGlobalDictationHotkey = (requestedHotkey: string) => {
       requestedHotkey,
       accelerator: requestedAccelerator,
     }, 'Hotkey')
-    return
+    return {
+      requestedHotkey,
+      effectiveHotkey: requestedHotkey,
+      accelerator: requestedAccelerator,
+    }
   }
 
   const fallbackAccelerator = toElectronAccelerator(DEFAULT_FALLBACK_HOTKEY)
   if (globalShortcut.register(fallbackAccelerator, handleGlobalDictationHotkey)) {
+    const fallbackReason = requestedAccelerator
+      ? `Unable to register ${requestedHotkey}. Shortcut is already in use or unsupported on this system.`
+      : `Unable to parse ${requestedHotkey}. Invalid hotkey format.`
+
     registeredHotkey = fallbackAccelerator
     logDebug('system-diagnostics', 'Fallback global hotkey registered', {
       requestedHotkey,
       fallbackHotkey: DEFAULT_FALLBACK_HOTKEY,
       accelerator: fallbackAccelerator,
+      reason: fallbackReason,
     }, 'Hotkey')
     const fallbackPayload: HotkeyFallbackUsedPayload = {
+      requestedHotkey,
       fallbackHotkey: DEFAULT_FALLBACK_HOTKEY,
-      details: `Unable to register ${requestedHotkey}. Using fallback hotkey instead.`,
+      reason: fallbackReason,
+      details: `Using fallback hotkey ${DEFAULT_FALLBACK_HOTKEY}.`,
     }
     broadcast(IPCChannels.hotkeyFallbackUsed, fallbackPayload)
-    return
+    return {
+      requestedHotkey,
+      effectiveHotkey: DEFAULT_FALLBACK_HOTKEY,
+      accelerator: fallbackAccelerator,
+    }
   }
 
   const failedPayload: HotkeyRegistrationFailedPayload = {
@@ -1136,6 +1466,12 @@ const registerGlobalDictationHotkey = (requestedHotkey: string) => {
   }
   logDebug('error-details', 'Unable to register global hotkey', failedPayload, 'Hotkey')
   broadcast(IPCChannels.hotkeyRegistrationFailed, failedPayload)
+
+  return {
+    requestedHotkey,
+    effectiveHotkey: requestedHotkey,
+    accelerator: null,
+  }
 }
 
 const registerIPC = () => {
@@ -1147,6 +1483,7 @@ const registerIPC = () => {
   ipcMain.handle(IPCChannels.setBackendSettings, async (_event, settings: AppSettings) => {
     const stateStore = ensureBackendStateStore()
     const previousSettings = stateStore.getSnapshot().settings
+    let nextSettings = settings
 
     logDebug('system-diagnostics', 'Persisting backend settings', {
       keytarEnabled: settings.keytarEnabled,
@@ -1155,31 +1492,90 @@ const registerIPC = () => {
       postProcessingRuntime: settings.postProcessingRuntime,
     })
 
-    await ensureSecretStore().setSecrets(resolveSecretStorageMode(settings), extractSecretSettings(settings))
     stateStore.setSettings(stripSecretsFromSettings(settings))
     configureLaunchAtLogin(settings)
     ensureDebugLogger().setEnabled(settings.debugModeEnabled)
-    registerGlobalDictationHotkey(settings.hotkey)
-    broadcast(IPCChannels.floatingIconAutoHideChanged, settings.autoHideFloatingIcon)
 
-    if (settings.transcriptionRuntime !== 'local') {
+    const hotkeyRegistration = registerGlobalDictationHotkey(settings.hotkey)
+    if (hotkeyRegistration.effectiveHotkey !== settings.hotkey) {
+      nextSettings = {
+        ...settings,
+        hotkey: hotkeyRegistration.effectiveHotkey,
+      }
+      stateStore.setSettings(stripSecretsFromSettings(nextSettings))
+    }
+
+    ensureSecretStore().setNonSecretSettings(nextSettings)
+
+    void withTimeout(
+      ensureSecretStore().setSecrets(resolveSecretStorageMode(nextSettings), extractSecretSettings(nextSettings)),
+      SECRET_IO_TIMEOUT_MS,
+      'Secret settings persistence timed out.',
+    ).catch((error: unknown) => {
+      logDebug('error-details', 'Unable to persist secrets after settings update', {
+        message: error instanceof Error ? error.message : String(error),
+      }, 'Secrets')
+    })
+
+    broadcast(IPCChannels.floatingIconAutoHideChanged, nextSettings.autoHideFloatingIcon)
+
+    if (nextSettings.transcriptionRuntime !== 'local') {
       await ensureWhisperServerManager().stop()
       return
     }
 
-    if (shouldPrewarmWhisperServerAfterSettingsUpdate(previousSettings, settings)) {
-      void prewarmWhisperServerForSettings(settings, 'settings-update')
+    if (shouldPrewarmWhisperServerAfterSettingsUpdate(previousSettings, nextSettings)) {
+      void prewarmWhisperServerForSettings(nextSettings, 'settings-update')
     }
   })
 
   ipcMain.handle(IPCChannels.getSecretStorageStatus, async (): Promise<SecretStorageStatusPayload> => {
     const settings = ensureBackendStateStore().getSnapshot().settings
     const mode = resolveSecretStorageMode(settings)
-    return ensureSecretStore().getStorageStatus(mode)
+
+    try {
+      return await withTimeout(
+        ensureSecretStore().getStorageStatus(mode),
+        SECRET_IO_TIMEOUT_MS,
+        'Secret storage status request timed out.',
+      )
+    } catch (error: unknown) {
+      logDebug('error-details', 'Unable to load secret storage status', {
+        mode,
+        message: error instanceof Error ? error.message : String(error),
+      }, 'Secrets')
+
+      return {
+        mode,
+        activeBackend: 'env',
+        fallbackActive: true,
+        keyringSupported: false,
+        envFilePath: ensureSecretStore().ensurePlaintextEnvFile(),
+        details: error instanceof Error ? error.message : 'Unable to read secret storage status.',
+      }
+    }
   })
 
   ipcMain.handle(IPCChannels.migrateSecretsToKeyring, async (): Promise<SecretStorageMigrationPayload> => {
-    const migration = await ensureSecretStore().migratePlaintextEnvToKeyring()
+    let migration: SecretStorageMigrationPayload
+
+    try {
+      migration = await withTimeout(
+        ensureSecretStore().migratePlaintextEnvToKeyring(),
+        SECRET_IO_TIMEOUT_MS,
+        'Keyring migration timed out.',
+      )
+    } catch (error: unknown) {
+      logDebug('error-details', 'Secret migration request failed', {
+        message: error instanceof Error ? error.message : String(error),
+      }, 'Secrets')
+
+      return {
+        success: false,
+        details: error instanceof Error ? error.message : 'Unexpected keyring migration failure.',
+      }
+    }
+
     if (!migration.success) {
       return migration
     }
@@ -1212,6 +1608,43 @@ const registerIPC = () => {
 
   ipcMain.handle(IPCChannels.setBackendOnboardingCompleted, (_event, value: boolean) => {
     ensureBackendStateStore().setOnboardingCompleted(value)
+  })
+
+  ipcMain.handle(IPCChannels.getNotesSnapshot, (): NotesSnapshotPayload => {
+    return ensureNotesStore().getSnapshot()
+  })
+
+  ipcMain.handle(IPCChannels.setNotesSnapshot, (_event, snapshot: NotesSnapshotPayload) => {
+    ensureNotesStore().setSnapshot(snapshot)
+  })
+
+  ipcMain.handle(IPCChannels.getAppUsageStats, async (_event, forceRefresh = false): Promise<AppUsageStatsPayload> => {
+    const appStateSnapshot = ensureBackendStateStore().getSnapshot()
+    const notesSnapshot = ensureNotesStore().getSnapshot()
+    const settings = await loadCurrentSettings()
+
+    const usageStats = await ensureUsageStatsService().getStats(
+      settings,
+      appStateSnapshot.history,
+      notesSnapshot.notes,
+      notesSnapshot.folders,
+      Boolean(forceRefresh),
+    )
+
+    if (usageStats.litellmError) {
+      const signature = `${usageStats.litellmSource}|${usageStats.litellmError}`
+      if (lastLiteLLMUsageErrorSignature !== signature) {
+        lastLiteLLMUsageErrorSignature = signature
+        logDebug('api-request', 'LiteLLM usage fetch issue', {
+          source: usageStats.litellmSource,
+          error: usageStats.litellmError,
+        })
+      }
+    } else {
+      lastLiteLLMUsageErrorSignature = null
+    }
+
+    return usageStats
   })
 
   ipcMain.handle(IPCChannels.getMicrophonePermissionStatus, () => {
@@ -1251,6 +1684,18 @@ const registerIPC = () => {
   })
 
   ipcMain.handle(IPCChannels.scanCustomModels, async (_event, baseUrl: string, apiKey: string) => {
+    const cacheKey = createModelScanCacheKey(baseUrl, apiKey)
+    const cachedModelIds = readCachedModelScan(cacheKey)
+    if (cachedModelIds) {
+      return cachedModelIds
+    }
+
+    const existingRequest = modelScanInFlight.get(cacheKey)
+    if (existingRequest) {
+      return existingRequest
+    }
+
+    const scanPromise = (async () => {
     logDebug('api-request', 'Scanning models endpoint', {
       baseUrl,
       hasApiKey: Boolean(apiKey.trim()),
@@ -1258,6 +1703,7 @@ const registerIPC = () => {
 
     try {
       const modelIds = await ensureDictationPipeline().scanModels(baseUrl, apiKey)
+      writeCachedModelScan(cacheKey, modelIds)
       logDebug('api-request', 'Model endpoint scan completed', {
         baseUrl,
         discoveredModels: modelIds.length,
@@ -1265,12 +1711,37 @@ const registerIPC = () => {
       return modelIds
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Unknown model scan error'
+      const status =
+        typeof error === 'object' && error !== null && 'status' in error && typeof (error as { status?: unknown }).status === 'number'
+          ? ((error as { status: number }).status)
+          : null
+      const expectedEndpointDenial =
+        message.includes(CUSTOM_MODEL_FETCH_ERROR) &&
+        (status === 401 || status === 403 || status === 404 || status === 405)
+
+      if (expectedEndpointDenial) {
+        writeCachedModelScan(cacheKey, [])
+        logDebug('api-request', 'Model endpoint scan unavailable for provider endpoint', {
+          baseUrl,
+          status,
+          message,
+        })
+        return []
+      }
+
       logDebug('error-details', 'Model endpoint scan failed', {
         baseUrl,
         message,
+        status,
       })
       throw error
+    } finally {
+      modelScanInFlight.delete(cacheKey)
     }
+    })()
+
+    modelScanInFlight.set(cacheKey, scanPromise)
+    return scanPromise
   })
 
   ipcMain.handle(IPCChannels.runPromptTest, async (_event, input: string): Promise<PromptTestResultPayload> => {
@@ -1280,12 +1751,16 @@ const registerIPC = () => {
     return ensureDictationPipeline().runPromptTest(input)
   })
 
-  ipcMain.handle(IPCChannels.runNoteEnhancement, async (_event, input: string): Promise<string> => {
+  ipcMain.handle(
+    IPCChannels.runNoteEnhancement,
+    async (_event, input: string, instructions?: string): Promise<string> => {
     logDebug('transcript-pipeline', 'Running note enhancement', {
       inputLength: input.length,
+      customInstructionsLength: instructions?.trim().length ?? 0,
     })
-    return ensureDictationPipeline().runNoteEnhancement(input)
-  })
+      return ensureDictationPipeline().runNoteEnhancement(input, instructions)
+    },
+  )
 
   ipcMain.handle(IPCChannels.downloadLocalModel, async (_event, scope: LocalModelScope, modelId: string) => {
     logDebug('system-diagnostics', 'Local model download started', {
@@ -1390,10 +1865,16 @@ const registerIPC = () => {
 
   ipcMain.handle(
     IPCChannels.performAutoPaste,
-    (_event, text: string, backend: AppSettings['autoPasteBackend']): AutoPasteExecutionResult => {
-      const result = performAutoPaste(text, backend)
+    async (_event, text: string, backend: AppSettings['autoPasteBackend']): Promise<AutoPasteExecutionResult> => {
+      const settings = await loadCurrentSettings()
+      const result = performAutoPaste(text, backend, {
+        mode: settings.autoPasteMode,
+        shortcut: settings.autoPasteShortcut,
+      })
       logDebug('system-diagnostics', 'Auto-paste execution result', {
         backend,
+        mode: settings.autoPasteMode,
+        shortcut: settings.autoPasteShortcut,
         success: result.success,
         details: result.details,
       })
@@ -1424,8 +1905,9 @@ const registerIPC = () => {
     actionWindow?.hide()
   })
 
-  ipcMain.handle(IPCChannels.closeWindow, () => {
-    app.exit(0)
+  ipcMain.handle(IPCChannels.closeWindow, (event) => {
+    const actionWindow = resolveActionWindow(event.sender)
+    actionWindow?.hide()
   })
 
   ipcMain.handle(IPCChannels.minimizeWindow, (event) => {
@@ -1483,7 +1965,18 @@ const registerIPC = () => {
   })
 
   ipcMain.handle(IPCChannels.openAppDataDirectory, async () => {
-    await shell.openPath(app.getPath('userData'))
+    const openResult = await shell.openPath(app.getPath('userData'))
+    if (openResult) {
+      throw new Error(openResult)
+    }
+  })
+
+  ipcMain.handle(IPCChannels.openSecretEnvFile, async () => {
+    const envFilePath = ensureSecretStore().ensurePlaintextEnvFile()
+    const openResult = await shell.openPath(envFilePath)
+    if (openResult) {
+      throw new Error(openResult)
+    }
   })
 
   ipcMain.handle(IPCChannels.logNotesEvent, (_event, payload: NotesLogEventPayload) => {
@@ -1496,13 +1989,20 @@ const registerIPC = () => {
 
   ipcMain.handle(IPCChannels.openDebugLogFile, async () => {
     const logFilePath = ensureDebugLogger().ensureCurrentLogFile()
-    await shell.openPath(logFilePath)
+    const openResult = await shell.openPath(logFilePath)
+    if (openResult) {
+      throw new Error(openResult)
+    }
   })
 
   ipcMain.handle(IPCChannels.getDisplayServer, () => getDisplayServer())
 }
 
 app.whenReady().then(async () => {
+  if (process.platform === 'win32') {
+    app.setAppUserModelId('dev.whispy.app')
+  }
+
   ensureDebugLogger()
   registerGlobalErrorHandlers()
   logDebug('system-diagnostics', 'Whispy startup sequence started', {
@@ -1518,11 +2018,14 @@ app.whenReady().then(async () => {
 
   ensureBackendStateStore()
   ensureSecretStore()
+  ensureNotesStore()
+  ensureUsageStatsService()
   ensureLocalModelStore()
   reconcileModelAvailabilityWithDisk()
   ensureDictationPipeline()
   ensureDictationRuntime()
   registerIPC()
+  ensureTray()
   await createControlPanelWindow()
   controlPanelWindow?.show()
   controlPanelWindow?.focus()
@@ -1590,8 +2093,23 @@ app.whenReady().then(async () => {
   logDebug('system-diagnostics', 'Auto-paste backend check', startupDiagnostics.autoPaste, 'Dependencies')
   logDebug('system-diagnostics', 'Runtime snapshot', startupDiagnostics.whisperRuntime, 'Runtime')
 
-  registerGlobalDictationHotkey(currentSettings.hotkey)
-  broadcast(IPCChannels.floatingIconAutoHideChanged, currentSettings.autoHideFloatingIcon)
+  const startupHotkeyRegistration = registerGlobalDictationHotkey(currentSettings.hotkey)
+  let startupEffectiveSettings = currentSettings
+  if (startupHotkeyRegistration.effectiveHotkey !== currentSettings.hotkey) {
+    startupEffectiveSettings = {
+      ...currentSettings,
+      hotkey: startupHotkeyRegistration.effectiveHotkey,
+    }
+
+    ensureBackendStateStore().setSettings({
+      ...ensureBackendStateStore().getSnapshot().settings,
+      hotkey: startupHotkeyRegistration.effectiveHotkey,
+    })
+  }
+
+  ensureSecretStore().setNonSecretSettings(startupEffectiveSettings)
+
+  broadcast(IPCChannels.floatingIconAutoHideChanged, startupEffectiveSettings.autoHideFloatingIcon)
 
   app.on('activate', async () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -1602,12 +2120,18 @@ app.whenReady().then(async () => {
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
+  if (process.platform !== 'darwin' && isAppQuitting) {
     app.quit()
   }
 })
 
+app.on('before-quit', () => {
+  isAppQuitting = true
+})
+
 app.on('will-quit', () => {
+  trayInstance?.destroy()
+  trayInstance = null
   void whisperServerManager?.stop()
   globalShortcut.unregisterAll()
 })

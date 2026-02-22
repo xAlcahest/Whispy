@@ -602,7 +602,7 @@ export class DictationPipeline {
     }
   }
 
-  async runNoteEnhancement(input: string): Promise<string> {
+  async runNoteEnhancement(input: string, customInstructions?: string): Promise<string> {
     const settings = await this.deps.loadSettings()
     const normalizedInput = input.trim()
 
@@ -610,7 +610,11 @@ export class DictationPipeline {
       return ''
     }
 
-    const noteCleanupPrompt = `${settings.normalPrompt}\n\nWhen cleaning notes, fix punctuation/capitalization, remove filler artifacts, keep the same language, and return plain text only.`
+    const normalizedInstructions = customInstructions?.trim() ?? ''
+    const noteCleanupPrompt = normalizedInstructions
+      ? `${settings.normalPrompt}\n\nCustom note action instructions:\n${normalizedInstructions}\n\nReturn plain text only.`
+      : `${settings.normalPrompt}\n\nWhen cleaning notes, fix punctuation/capitalization, remove filler artifacts, keep the same language, and return plain text only.`
+
     return this.runPostProcessing(settings, normalizedInput, noteCleanupPrompt)
   }
 

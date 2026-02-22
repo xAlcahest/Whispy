@@ -122,6 +122,16 @@ Set these environment variables only if you want local runtime execution:
 
 You can start from `.env.example` and export the values in your shell before running `npm run dev`.
 
+Whispy also persists selected non-sensitive preferences into the user `.env` (for easier portability/editing), including:
+
+- `WHISPY_HOTKEY`
+- `WHISPY_ACTIVATION_MODE`
+- `WHISPY_AUTO_HIDE_FLOATING_ICON`
+- `WHISPY_OVERLAY_RUNTIME_BADGE_ENABLED`
+- `WHISPY_THEME`
+- `WHISPY_DEBUG_MODE`
+- `WHISPY_LAUNCH_AT_LOGIN`
+
 If these variables are not set, Whispy attempts built-in local CLI fallbacks:
 
 - `whisper-cli` for local STT
@@ -150,6 +160,24 @@ npm run build:win
 npm run build:mac
 ```
 
+### Launching from terminal
+
+Linux packages expose the app executable as:
+
+```bash
+whispy
+```
+
+This command is available after installing the built package (`.rpm`, `.deb`, AppImage unpacked environment).
+
+### Notes storage
+
+Notes are persisted in the Whispy app data folder:
+
+- `~/.config/whispy-ui/notes/entries/<note-id>.raw.md`
+- `~/.config/whispy-ui/notes/entries/<note-id>.processed.md`
+- metadata: `~/.config/whispy-ui/notes/folders.json`, `~/.config/whispy-ui/notes/notes-index.json`, `~/.config/whispy-ui/notes/actions.json`
+
 ### Preparing local Whisper runtime prerequisites
 
 Use this when you want the app package to already include everything needed for local Whisper transcription:
@@ -174,6 +202,8 @@ Notes:
 
 - Runtime binaries are sourced from `OpenWhispr/whisper.cpp` release `0.0.6` when an official prebuilt exists for the target platform.
 - Runtime binaries are managed by npm build/package pipeline (in-app runtime download/remove is disabled).
+- Linux app icon is sourced from `assets4app/Web/android-chrome-512x512.png` during packaging.
+- Packaged app artifacts ship runtime binaries under `<app resources>/bin/whispercpp` for direct execution.
 - If no official prebuilt exists for a platform/variant, prepare fails unless you set `WHISPY_WHISPER_RUNTIME_CPU_URL` or `WHISPY_WHISPER_RUNTIME_CUDA_URL`.
 - Set `WHISPY_REQUIRE_CUDA_RUNTIME=1` to hard-fail when CUDA artifacts are unavailable.
 - Temporary download/extract files are stored under system temp directories (not in project `.cache`).

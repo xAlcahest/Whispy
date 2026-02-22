@@ -6,6 +6,8 @@ export type Provider = 'whisper' | 'parakeet'
 export type RuntimeMode = 'cloud' | 'local'
 export type TranslationHotkeyMode = 'combo' | 'custom'
 export type AutoPasteBackend = 'wtype' | 'xdotools' | 'ydotools'
+export type AutoPasteMode = 'instant' | 'stream'
+export type AutoPasteShortcut = 'ctrl-v' | 'ctrl-shift-v'
 export type WhisperRuntimeVariant = 'cpu' | 'cuda'
 
 export interface DictionaryRule {
@@ -20,9 +22,12 @@ export interface AppSettings {
   activationMode: ActivationMode
   autoPaste: boolean
   autoPasteBackend: AutoPasteBackend
+  autoPasteMode: AutoPasteMode
+  autoPasteShortcut: AutoPasteShortcut
   microphoneAccess: boolean
   autoHideFloatingIcon: boolean
   overlayRuntimeBadgeEnabled: boolean
+  overlayRuntimeBadgeOnlyOnUse: boolean
   launchAtLogin: boolean
   sounds: boolean
   theme: ThemeMode
@@ -63,6 +68,10 @@ export interface AppSettings {
   translationPrompt: string
   postProcessingDictionaryEnabled: boolean
   postProcessingDictionaryRules: DictionaryRule[]
+  spendingLimitOpenAIUSD: number
+  spendingLimitGroqUSD: number
+  spendingLimitGrokUSD: number
+  spendingLimitCustomUSD: number
   historyRetentionLimit: number
   keytarEnabled: boolean
   debugModeEnabled: boolean
@@ -76,6 +85,7 @@ export interface HistoryEntry {
   model: string
   targetApp: string
   text: string
+  durationSeconds?: number
 }
 
 export interface ModelDescriptor {
@@ -98,6 +108,7 @@ export interface DictationResult {
   provider: string
   model: string
   targetApp: string
+  durationSeconds?: number
 }
 
 export type FakeTranscriptionResult = DictationResult

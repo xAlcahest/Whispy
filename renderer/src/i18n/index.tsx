@@ -18,7 +18,7 @@ const DEFAULT_LOCALE: AppLocale = 'en'
 
 const translations: Record<AppLocale, Record<string, string>> = {
   en: {
-    menuConversations: 'Conversations',
+    menuConversations: 'Dictations',
     menuNotes: 'Notes',
     menuSettings: 'Settings',
     settingsGeneralTab: 'General',

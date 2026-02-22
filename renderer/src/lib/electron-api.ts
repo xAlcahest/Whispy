@@ -11,14 +11,45 @@ const fallbackElectronAPI: ElectronAPI = {
   setBackendModels: async () => {},
   setBackendPostModels: async () => {},
   setBackendOnboardingCompleted: async () => {},
+  getNotesSnapshot: async () => ({
+    folders: [],
+    notes: [],
+    actions: [],
+  }),
+  setNotesSnapshot: async () => {},
+  getAppUsageStats: async () => ({
+    generatedAt: Date.now(),
+    conversationsCount: 0,
+    notesCount: 0,
+    foldersCount: 0,
+    estimatedTranscriptionTokens: 0,
+    estimatedTranscriptionCostUSD: 0,
+    estimatedEnhancementTokens: 0,
+    estimatedEnhancementCostUSD: 0,
+    activeEnhancementModel: '',
+    activeEnhancementInputCostPerToken: null,
+    activeEnhancementOutputCostPerToken: null,
+    modelInputCostPerTokenById: {},
+    modelOutputCostPerTokenById: {},
+    litellmSource: 'unavailable' as const,
+    litellmLastSyncAt: null,
+    litellmTranscriptionCostUSD: null,
+    litellmLlmCostUSD: null,
+    litellmTotalCostUSD: null,
+    topModels: [],
+  }),
   scanCustomModels: async () => {
     throw new Error('scanCustomModels unavailable outside Electron runtime')
   },
   runPromptTest: async () => {
     throw new Error('runPromptTest unavailable outside Electron runtime')
   },
-  runNoteEnhancement: async () => {
-    throw new Error('runNoteEnhancement unavailable outside Electron runtime')
+  runNoteEnhancement: async (input: string) => {
+    return input
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .replace(/[ \t]{2,}/g, ' ')
+      .trim()
   },
   downloadLocalModel: async () => {
     throw new Error('downloadLocalModel unavailable outside Electron runtime')
@@ -121,6 +152,9 @@ const fallbackElectronAPI: ElectronAPI = {
     }
 
     throw new Error('Unsupported external URL scheme in fallback runtime')
+  },
+  openSecretEnvFile: async () => {
+    throw new Error('openSecretEnvFile unavailable outside Electron runtime')
   },
   logNotesEvent: async () => {},
   getDisplayServer: async () =>

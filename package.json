@@ -11,9 +11,22 @@
   "main": "out/main/index.js",
   "build": {
     "appId": "com.whispy.ui",
+    "executableName": "whispy",
+    "icon": "assets4app/Web/android-chrome-512x512.png",
     "linux": {
-      "maintainer": "Whispy Team <packaging@whispy.local>"
-    }
+      "maintainer": "Whispy Team <packaging@whispy.local>",
+      "icon": "assets4app/Web/android-chrome-512x512.png",
+      "category": "Utility"
+    },
+    "extraResources": [
+      {
+        "from": "resources/bin",
+        "to": "bin",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ]
   },
   "scripts": {
     "predev": "npm run prepare:whisper-runtime",
@@ -34,14 +47,19 @@
   },
   "dependencies": {
     "@lobehub/icons-static-svg": "^1.79.0",
+    "@uiw/react-markdown-preview": "^5.1.5",
     "better-sqlite3": "^12.6.2",
     "clsx": "^2.1.1",
     "get-windows": "^9.2.3",
     "lucide-react": "^0.475.0",
+    "marked": "^17.0.3",
     "node-record-lpcm16": "^1.0.1",
     "openai": "^6.22.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0",
+    "rehype-raw": "^7.0.0",
+    "remark-gfm": "^4.0.1",
     "tailwind-merge": "^2.5.5"
   },
   "devDependencies": {

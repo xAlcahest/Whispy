@@ -18,6 +18,8 @@ import type {
   SecretStorageMigrationPayload,
   SecretStorageStatusPayload,
   NotesLogEventPayload,
+  NotesSnapshotPayload,
+  AppUsageStatsPayload,
 } from './ipc'
 import type { AppSettings, AutoPasteBackend, HistoryEntry, ModelState } from './app'
 
@@ -29,9 +31,12 @@ export interface ElectronAPI {
   setBackendModels: (models: ModelState[]) => Promise<void>
   setBackendPostModels: (models: ModelState[]) => Promise<void>
   setBackendOnboardingCompleted: (value: boolean) => Promise<void>
+  getNotesSnapshot: () => Promise<NotesSnapshotPayload>
+  setNotesSnapshot: (snapshot: NotesSnapshotPayload) => Promise<void>
+  getAppUsageStats: (forceRefresh?: boolean) => Promise<AppUsageStatsPayload>
   scanCustomModels: (baseUrl: string, apiKey: string) => Promise<string[]>
   runPromptTest: (input: string) => Promise<PromptTestResultPayload>
-  runNoteEnhancement: (input: string) => Promise<string>
+  runNoteEnhancement: (input: string, instructions?: string) => Promise<string>
   downloadLocalModel: (scope: LocalModelScope, modelId: string) => Promise<void>
   cancelLocalModelDownload: (scope: LocalModelScope, modelId: string) => Promise<boolean>
   removeLocalModel: (scope: LocalModelScope, modelId: string) => Promise<void>
@@ -64,6 +69,7 @@ export interface ElectronAPI {
   openControlPanel: () => Promise<void>
   openExternal: (url: string) => Promise<void>
   openAppDataDirectory: () => Promise<void>
+  openSecretEnvFile: () => Promise<void>
   logNotesEvent: (payload: NotesLogEventPayload) => Promise<void>
   getDisplayServer: () => Promise<DisplayServer>
   onWindowMaximizeChanged: (callback: (maximized: boolean) => void) => () => void

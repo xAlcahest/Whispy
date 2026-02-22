@@ -100,13 +100,80 @@ export interface HotkeyRegistrationFailedPayload {
 }
 
 export interface HotkeyFallbackUsedPayload {
+  requestedHotkey: string
   fallbackHotkey: string
+  reason: string
   details: string
 }
 
 export interface NotesLogEventPayload {
   message: string
   details?: unknown
+}
+
+export interface NoteFolderPayload {
+  id: string
+  name: string
+  createdAt: number
+  updatedAt: number
+}
+
+export interface NoteEntryPayload {
+  id: string
+  folderId: string | null
+  title: string
+  rawText: string
+  processedText: string
+  autoTitleGenerated?: boolean
+  createdAt: number
+  updatedAt: number
+}
+
+export interface NoteActionPayload {
+  id: string
+  name: string
+  description: string
+  instructions: string
+  isBuiltIn: boolean
+  createdAt: number
+  updatedAt: number
+}
+
+export interface NotesSnapshotPayload {
+  folders: NoteFolderPayload[]
+  notes: NoteEntryPayload[]
+  actions: NoteActionPayload[]
+}
+
+export interface AppUsageModelBreakdownPayload {
+  model: string
+  scope: 'transcription' | 'llm' | 'unknown'
+  calls: number
+  tokens: number
+  costUSD: number
+}
+
+export interface AppUsageStatsPayload {
+  generatedAt: number
+  conversationsCount: number
+  notesCount: number
+  foldersCount: number
+  estimatedTranscriptionTokens: number
+  estimatedTranscriptionCostUSD: number
+  estimatedEnhancementTokens: number
+  estimatedEnhancementCostUSD: number
+  activeEnhancementModel: string
+  activeEnhancementInputCostPerToken: number | null
+  activeEnhancementOutputCostPerToken: number | null
+  modelInputCostPerTokenById: Record<string, number | null>
+  modelOutputCostPerTokenById: Record<string, number | null>
+  litellmSource: 'cache' | 'live' | 'unavailable'
+  litellmLastSyncAt: number | null
+  litellmTranscriptionCostUSD: number | null
+  litellmLlmCostUSD: number | null
+  litellmTotalCostUSD: number | null
+  litellmError?: string
+  topModels: AppUsageModelBreakdownPayload[]
 }
 
 export const IPCChannels = {
@@ -117,6 +184,9 @@ export const IPCChannels = {
   setBackendModels: 'backend:set-models',
   setBackendPostModels: 'backend:set-post-models',
   setBackendOnboardingCompleted: 'backend:set-onboarding-completed',
+  getNotesSnapshot: 'backend:get-notes-snapshot',
+  setNotesSnapshot: 'backend:set-notes-snapshot',
+  getAppUsageStats: 'backend:get-app-usage-stats',
   scanCustomModels: 'backend:scan-custom-models',
   runPromptTest: 'backend:run-prompt-test',
   runNoteEnhancement: 'backend:run-note-enhancement',
@@ -152,6 +222,7 @@ export const IPCChannels = {
   openControlPanel: 'ui:open-control-panel',
   openExternal: 'ui:open-external',
   openAppDataDirectory: 'ui:open-app-data-directory',
+  openSecretEnvFile: 'ui:open-secret-env-file',
   logNotesEvent: 'ui:log-notes-event',
   getDisplayServer: 'ui:get-display-server',
   windowMaximizeChanged: 'ui:event-window-maximize-changed',

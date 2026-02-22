@@ -22,6 +22,8 @@ import {
   type SecretStorageMigrationPayload,
   type SecretStorageStatusPayload,
   type NotesLogEventPayload,
+  type NotesSnapshotPayload,
+  type AppUsageStatsPayload,
 } from '../shared/ipc'
 import type { AppSettings, HistoryEntry, ModelState } from '../shared/app'
 
@@ -45,12 +47,16 @@ const electronAPI: ElectronAPI = {
   setBackendPostModels: (models: ModelState[]) => ipcRenderer.invoke(IPCChannels.setBackendPostModels, models),
   setBackendOnboardingCompleted: (value: boolean) =>
     ipcRenderer.invoke(IPCChannels.setBackendOnboardingCompleted, value),
+  getNotesSnapshot: () => ipcRenderer.invoke(IPCChannels.getNotesSnapshot) as Promise<NotesSnapshotPayload>,
+  setNotesSnapshot: (snapshot) => ipcRenderer.invoke(IPCChannels.setNotesSnapshot, snapshot),
+  getAppUsageStats: (forceRefresh = false) =>
+    ipcRenderer.invoke(IPCChannels.getAppUsageStats, forceRefresh) as Promise<AppUsageStatsPayload>,
   scanCustomModels: (baseUrl: string, apiKey: string) =>
     ipcRenderer.invoke(IPCChannels.scanCustomModels, baseUrl, apiKey) as Promise<string[]>,
   runPromptTest: (input: string) =>
     ipcRenderer.invoke(IPCChannels.runPromptTest, input) as Promise<PromptTestResultPayload>,
-  runNoteEnhancement: (input: string) =>
-    ipcRenderer.invoke(IPCChannels.runNoteEnhancement, input) as Promise<string>,
+  runNoteEnhancement: (input: string, instructions?: string) =>
+    ipcRenderer.invoke(IPCChannels.runNoteEnhancement, input, instructions) as Promise<string>,
   downloadLocalModel: (scope: LocalModelScope, modelId: string) =>
     ipcRenderer.invoke(IPCChannels.downloadLocalModel, scope, modelId),
   cancelLocalModelDownload: (scope: LocalModelScope, modelId: string) =>
@@ -100,6 +106,7 @@ const electronAPI: ElectronAPI = {
   openControlPanel: () => ipcRenderer.invoke(IPCChannels.openControlPanel),
   openExternal: (url: string) => ipcRenderer.invoke(IPCChannels.openExternal, url),
   openAppDataDirectory: () => ipcRenderer.invoke(IPCChannels.openAppDataDirectory),
+  openSecretEnvFile: () => ipcRenderer.invoke(IPCChannels.openSecretEnvFile),
   logNotesEvent: (payload: NotesLogEventPayload) => ipcRenderer.invoke(IPCChannels.logNotesEvent, payload),
   getDisplayServer: () => ipcRenderer.invoke(IPCChannels.getDisplayServer) as Promise<DisplayServer>,
   onWindowMaximizeChanged: (callback) =>

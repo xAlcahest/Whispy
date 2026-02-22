@@ -6,9 +6,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
   activationMode: 'tap',
   autoPaste: true,
   autoPasteBackend: 'ydotools',
+  autoPasteMode: 'stream',
+  autoPasteShortcut: 'ctrl-v',
   microphoneAccess: true,
   autoHideFloatingIcon: false,
   overlayRuntimeBadgeEnabled: true,
+  overlayRuntimeBadgeOnlyOnUse: false,
   launchAtLogin: false,
   sounds: true,
   theme: 'dark',
@@ -52,6 +55,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
     'Translate the transcription from {source_language} to {target_language} while preserving intent and tone.',
   postProcessingDictionaryEnabled: false,
   postProcessingDictionaryRules: [],
+  spendingLimitOpenAIUSD: 0,
+  spendingLimitGroqUSD: 0,
+  spendingLimitGrokUSD: 0,
+  spendingLimitCustomUSD: 0,
   historyRetentionLimit: 100,
   keytarEnabled: true,
   debugModeEnabled: false,
@@ -109,8 +116,12 @@ export const createDefaultPostModelState = (): ModelState[] => {
 }
 
 const VALID_AUTO_PASTE_BACKENDS = new Set(['wtype', 'xdotools', 'ydotools'])
+const VALID_AUTO_PASTE_MODES = new Set(['instant', 'stream'])
+const VALID_AUTO_PASTE_SHORTCUTS = new Set(['ctrl-v', 'ctrl-shift-v'])
 const VALID_WHISPER_RUNTIME_VARIANTS = new Set(['cpu', 'cuda'])
 const VALID_HISTORY_RETENTION_LIMITS = new Set([50, 100, 250, 500, -1])
+const VALID_TRANSCRIPTION_CLOUD_PROVIDERS = new Set(['openai', 'grok', 'groq', 'custom'])
+const VALID_POST_PROCESSING_CLOUD_PROVIDERS = new Set(['openai', 'grok', 'groq', 'custom'])
 
 export const normalizeSettings = (value: Partial<AppSettings>): AppSettings => {
   const mergedSettings: AppSettings = {
@@ -124,12 +135,41 @@ export const normalizeSettings = (value: Partial<AppSettings>): AppSettings => {
     mergedSettings.autoPasteBackend = DEFAULT_SETTINGS.autoPasteBackend
   }
 
+  if (!VALID_AUTO_PASTE_MODES.has(mergedSettings.autoPasteMode)) {
+    mergedSettings.autoPasteMode = DEFAULT_SETTINGS.autoPasteMode
+  }
+
+  if (!VALID_AUTO_PASTE_SHORTCUTS.has(mergedSettings.autoPasteShortcut)) {
+    mergedSettings.autoPasteShortcut = DEFAULT_SETTINGS.autoPasteShortcut
+  }
+
   if (!VALID_WHISPER_RUNTIME_VARIANTS.has(mergedSettings.whisperCppRuntimeVariant)) {
     mergedSettings.whisperCppRuntimeVariant = DEFAULT_SETTINGS.whisperCppRuntimeVariant
   }
 
   if (!VALID_HISTORY_RETENTION_LIMITS.has(mergedSettings.historyRetentionLimit)) {
     mergedSettings.historyRetentionLimit = DEFAULT_SETTINGS.historyRetentionLimit
+  }
+
+  const spendingLimitKeys: Array<
+    'spendingLimitOpenAIUSD' | 'spendingLimitGroqUSD' | 'spendingLimitGrokUSD' | 'spendingLimitCustomUSD'
+  > = ['spendingLimitOpenAIUSD', 'spendingLimitGroqUSD', 'spendingLimitGrokUSD', 'spendingLimitCustomUSD']
+
+  for (const key of spendingLimitKeys) {
+    const value = mergedSettings[key]
+    if (!Number.isFinite(value) || value < 0) {
+      mergedSettings[key] = 0
+    }
+  }
+
+  if (!VALID_TRANSCRIPTION_CLOUD_PROVIDERS.has(mergedSettings.transcriptionCloudProvider)) {
+    mergedSettings.transcriptionCloudProvider = DEFAULT_SETTINGS.transcriptionCloudProvider
+    mergedSettings.transcriptionCloudModelId = DEFAULT_SETTINGS.transcriptionCloudModelId
+  }
+
+  if (!VALID_POST_PROCESSING_CLOUD_PROVIDERS.has(mergedSettings.postProcessingCloudProvider)) {
+    mergedSettings.postProcessingCloudProvider = DEFAULT_SETTINGS.postProcessingCloudProvider
+    mergedSettings.postProcessingCloudModelId = DEFAULT_SETTINGS.postProcessingCloudModelId
   }
 
   if (typeof mergedSettings.microphoneAccess !== 'boolean') {
@@ -144,6 +184,10 @@ export const normalizeSettings = (value: Partial<AppSettings>): AppSettings => {
 
   if (typeof mergedSettings.overlayRuntimeBadgeEnabled !== 'boolean') {
     mergedSettings.overlayRuntimeBadgeEnabled = DEFAULT_SETTINGS.overlayRuntimeBadgeEnabled
+  }
+
+  if (typeof mergedSettings.overlayRuntimeBadgeOnlyOnUse !== 'boolean') {
+    mergedSettings.overlayRuntimeBadgeOnlyOnUse = DEFAULT_SETTINGS.overlayRuntimeBadgeOnlyOnUse
   }
 
   if (!mergedSettings.agentName || mergedSettings.agentName === 'ActionAgent') {

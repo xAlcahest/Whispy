@@ -26,6 +26,8 @@ interface DictationRuntimeHandlers {
 
 export type DictationProcessingMode = 'full' | 'transcription-only'
 
+const STOP_RECORDING_GRACE_PERIOD_MS = 1_800
+
 const loadRecorderModule = (): NodeRecordModule => {
   return require('node-record-lpcm16') as NodeRecordModule
 }
@@ -66,6 +68,7 @@ export class DictationRuntime {
   private recordingSession: NodeRecordSession | null = null
   private recordingWriteStream: NodeJS.WritableStream | null = null
   private recordingFilePath: string | null = null
+  private recordingStartedAtMs: number | null = null
   private recordingMode: DictationProcessingMode = 'full'
   private stoppingRecording = false
   private processingRunId = 0
@@ -114,6 +117,7 @@ export class DictationRuntime {
     if (this.status === 'RECORDING') {
       this.stopActiveRecording()
       this.recordingMode = 'full'
+      this.recordingStartedAtMs = null
       this.updateStatus('IDLE')
       return true
     }
@@ -173,14 +177,20 @@ export class DictationRuntime {
     this.recordingSession = recordingSession
     this.recordingWriteStream = recordingWriteStream
     this.recordingFilePath = recordingFilePath
+    this.recordingStartedAtMs = Date.now()
     this.recordingMode = mode
     this.updateStatus('RECORDING')
   }
 
   private stopRecordingAndProcess() {
     const activeRecordingPath = this.recordingFilePath
+    const measuredDurationSeconds =
+      this.recordingStartedAtMs !== null
+        ? Number(Math.max(0.1, (Date.now() - this.recordingStartedAtMs) / 1000).toFixed(2))
+        : null
     const activeMode = this.recordingMode
     this.recordingMode = 'full'
+    this.recordingStartedAtMs = null
     if (!activeRecordingPath) {
       this.updateStatus('IDLE')
       return
@@ -199,7 +209,10 @@ export class DictationRuntime {
           return
         }
 
-        this.handlers.onResult(result)
+        this.handlers.onResult({
+          ...result,
+          durationSeconds: measuredDurationSeconds ?? result.durationSeconds,
+        })
         this.updateStatus('IDLE')
         await rm(activeRecordingPath, { force: true })
       })
@@ -229,6 +242,7 @@ export class DictationRuntime {
     this.recordingWriteStream = null
 
     this.recordingFilePath = null
+    this.recordingStartedAtMs = null
 
     if (!activeWriteStream) {
       this.stoppingRecording = false
@@ -243,17 +257,34 @@ export class DictationRuntime {
         }
 
         settled = true
+        clearTimeout(forceStopTimer)
+        activeWriteStream.removeListener('close', handleStreamDone)
+        activeWriteStream.removeListener('finish', handleStreamDone)
+        activeWriteStream.removeListener('error', handleStreamDone)
         this.stoppingRecording = false
         resolve()
       }
 
-      activeWriteStream.once('close', () => {
+      const handleStreamDone = () => {
         finalize()
-      })
+      }
 
-      activeWriteStream.once('finish', () => {
+      const forceStopTimer = setTimeout(() => {
+        try {
+          const maybeDestroy = (activeWriteStream as NodeJS.WritableStream & { destroy?: () => void }).destroy
+          if (typeof maybeDestroy === 'function') {
+            maybeDestroy.call(activeWriteStream)
+          }
+        } catch {
+          // Ignore forced stream close errors.
+        }
+
         finalize()
-      })
+      }, STOP_RECORDING_GRACE_PERIOD_MS)
+
+      activeWriteStream.on('close', handleStreamDone)
+      activeWriteStream.on('finish', handleStreamDone)
+      activeWriteStream.on('error', handleStreamDone)
     })
   }
 

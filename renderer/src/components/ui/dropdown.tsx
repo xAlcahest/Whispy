@@ -1,9 +1,13 @@
-import { useEffect } from 'react'
+import { useEffect, type ReactNode } from 'react'
 import { cn } from '../../lib/cn'
 
 export interface DropdownItem {
-  label: string
-  onSelect: () => void
+  label?: string
+  onSelect?: () => void
+  description?: string
+  icon?: ReactNode
+  separator?: boolean
+  selected?: boolean
   destructive?: boolean
   disabled?: boolean
 }
@@ -54,26 +58,40 @@ export const Dropdown = ({ open, anchor, onClose, items }: DropdownProps) => {
         event.stopPropagation()
       }}
     >
-      {items.map((item) => (
-        <button
-          key={item.label}
-          type="button"
-          disabled={item.disabled}
-          onClick={() => {
-            item.onSelect()
-            onClose()
-          }}
-          className={cn(
-            'app-no-drag flex h-9 w-full items-center rounded-md px-3 text-left text-sm transition-colors',
-            item.destructive
-              ? 'text-destructive hover:bg-destructive/10'
-              : 'text-foreground hover:bg-surface-2',
-            item.disabled ? 'cursor-not-allowed opacity-50' : undefined,
-          )}
-        >
-          {item.label}
-        </button>
-      ))}
+      {items.map((item, index) => {
+        const itemKey = `${item.label ?? 'separator'}-${index}`
+
+        if (item.separator) {
+          return <div key={itemKey} className="my-1 h-px bg-border-subtle" />
+        }
+
+        return (
+          <button
+            key={itemKey}
+            type="button"
+            disabled={item.disabled}
+            onClick={() => {
+              item.onSelect?.()
+              onClose()
+            }}
+            className={cn(
+              'app-no-drag flex min-h-9 w-full items-start gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors',
+              item.destructive
+                ? 'text-destructive hover:bg-destructive/10'
+                : item.selected
+                  ? 'bg-surface-2 text-foreground'
+                  : 'text-foreground hover:bg-surface-2',
+              item.disabled ? 'cursor-not-allowed opacity-50' : undefined,
+            )}
+          >
+            {item.icon ? <span className="mt-0.5 shrink-0 text-foreground/55">{item.icon}</span> : null}
+            <span className="min-w-0">
+              <span className="block truncate">{item.label ?? ''}</span>
+              {item.description ? <span className="block truncate text-xs text-muted-foreground">{item.description}</span> : null}
+            </span>
+          </button>
+        )
+      })}
     </div>
   )
 }

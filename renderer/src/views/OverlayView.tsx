@@ -123,6 +123,10 @@ const OverlayScene = () => {
       model: resolveTranscriptionModelLabel(nextSettings),
       targetApp: result.targetApp,
       text: result.text,
+      durationSeconds:
+        typeof result.durationSeconds === 'number' && Number.isFinite(result.durationSeconds)
+          ? result.durationSeconds
+          : undefined,
     }
 
     appendHistoryEntry(historyEntry)
@@ -239,7 +243,8 @@ const OverlayScene = () => {
     const offFallback = electronAPI.onHotkeyFallbackUsed((payload) => {
       emitAppNotification({
         title: 'Fallback hotkey enabled',
-        description: payload.details,
+        description: `${payload.reason} ${payload.details}`,
+        variant: 'destructive',
       })
     })
 
@@ -302,7 +307,7 @@ const OverlayScene = () => {
       return
     }
 
-    if (!settings.overlayRuntimeBadgeEnabled && status === 'IDLE' && !hovered) {
+    if ((!settings.overlayRuntimeBadgeEnabled || settings.overlayRuntimeBadgeOnlyOnUse) && status === 'IDLE' && !hovered) {
       return
     }
 
@@ -317,6 +322,7 @@ const OverlayScene = () => {
     hovered,
     refreshRuntimeBadge,
     settings.overlayRuntimeBadgeEnabled,
+    settings.overlayRuntimeBadgeOnlyOnUse,
     settings.transcriptionRuntime,
     status,
   ])
@@ -456,7 +462,10 @@ const OverlayScene = () => {
     },
   ]
 
-  const showRuntimeBadge = settings.transcriptionRuntime === 'local' && settings.overlayRuntimeBadgeEnabled
+  const showRuntimeBadge =
+    settings.transcriptionRuntime === 'local' &&
+    settings.overlayRuntimeBadgeEnabled &&
+    (!settings.overlayRuntimeBadgeOnlyOnUse || status !== 'IDLE')
   const effectiveRuntimeVariant =
     runtimeDiagnostics?.activeVariant ?? runtimeStatus?.activeVariant ?? settings.whisperCppRuntimeVariant
   const runtimeHealthClass = runtimeDiagnostics?.running

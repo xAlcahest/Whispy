@@ -26,6 +26,8 @@ export const STORAGE_KEYS = {
   postModels: 'whispy.post-models',
   noteFolders: 'whispy.note-folders',
   notes: 'whispy.notes',
+  noteActions: 'whispy.note-actions',
+  noteLastAction: 'whispy.note-actions.last-used',
   appNotification: 'whispy.app.notification',
 } as const
 
@@ -98,14 +100,6 @@ export const CLOUD_TRANSCRIPTION_CATALOG = [
     ],
   },
   {
-    providerId: 'meta',
-    providerLabel: 'Meta',
-    models: [
-      { id: 'seamless-m4t-v2', label: 'seamless-m4t-v2', recommended: true },
-      { id: 'wav2vec2-large', label: 'wav2vec2-large' },
-    ],
-  },
-  {
     providerId: 'custom',
     providerLabel: 'Custom',
     models: [{ id: 'custom-stt-model', label: 'custom-stt-model' }],
@@ -147,15 +141,6 @@ export const CLOUD_POST_PROCESSING_CATALOG = [
       { id: 'llama-3.1-8b-instant', label: 'llama-3.1-8b-instant', recommended: true },
       { id: 'mixtral-8x7b-32768', label: 'mixtral-8x7b-32768' },
       { id: 'qwen-qwq-32b', label: 'qwen-qwq-32b' },
-    ],
-  },
-  {
-    providerId: 'meta',
-    providerLabel: 'Meta',
-    models: [
-      { id: 'llama-3.1-405b-instruct', label: 'llama-3.1-405b-instruct' },
-      { id: 'llama-3.1-70b-instruct', label: 'llama-3.1-70b-instruct', recommended: true },
-      { id: 'llama-3.1-8b-instruct', label: 'llama-3.1-8b-instruct' },
     ],
   },
   {

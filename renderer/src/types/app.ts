@@ -2,6 +2,8 @@ export type {
   ActivationMode,
   AppSettings,
   AutoPasteBackend,
+  AutoPasteMode,
+  AutoPasteShortcut,
   DictationResult,
   DictationStatus,
   DictionaryRule,

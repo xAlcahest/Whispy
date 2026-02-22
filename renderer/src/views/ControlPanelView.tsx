@@ -1,21 +1,36 @@
 import {
+  Bold,
   Bot,
   BrainCircuit,
   BookOpen,
+  CheckSquare,
   ChevronDown,
   Cloud,
+  Code2,
   Copy,
   Download,
+  Eye,
   FileText,
   FolderOpen,
+  Heading1,
+  Home,
+  ImagePlus,
+  Italic,
   KeyRound,
   Link,
+  Link2,
+  List,
+  ListOrdered,
   Lock,
   Languages,
   Mic,
   Minus,
   Moon,
+  Pencil,
   Plus,
+  Quote,
+  RotateCcw,
+  Power,
   Save,
   Search,
   Settings,
@@ -24,6 +39,8 @@ import {
   Sun,
   Trash2,
   UserRound,
+  Video,
+  Wallet,
   Wrench,
   X,
 } from 'lucide-react'
@@ -39,11 +56,11 @@ import {
 import openaiLogoSvg from '@lobehub/icons-static-svg/icons/openai.svg?raw'
 import grokLogoSvg from '@lobehub/icons-static-svg/icons/grok.svg?raw'
 import groqLogoSvg from '@lobehub/icons-static-svg/icons/groq.svg?raw'
-import metaColorLogoSvg from '@lobehub/icons-static-svg/icons/meta-color.svg?raw'
 import { Button } from '../components/ui/button'
 import { Badge } from '../components/ui/badge'
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '../components/ui/card'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '../components/ui/dialog'
+import { Dropdown } from '../components/ui/dropdown'
 import { Input } from '../components/ui/input'
 import { Switch } from '../components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
@@ -54,6 +71,11 @@ import { parseAppNotification } from '../lib/app-notifications'
 import { cn } from '../lib/cn'
 import { electronAPI } from '../lib/electron-api'
 import { fakeTranscriptionService } from '../services/fakeTranscriptionService'
+import MarkdownPreview from '@uiw/react-markdown-preview'
+import '@uiw/react-markdown-preview/markdown.css'
+import rehypeRaw from 'rehype-raw'
+import remarkGfm from 'remark-gfm'
+import { marked } from 'marked'
 import {
   AUTO_DETECT_LANGUAGE,
   AUTO_DETECT_SUPPORTED_TRANSCRIPTION_MODELS,
@@ -75,14 +97,17 @@ import {
   loadHistory,
   loadModelState,
   loadNoteFolders,
+  loadNoteActions,
   loadNotes,
   loadPostModelState,
   loadSettings,
   type NoteEntry,
   type NoteFolder,
+  type NoteAction,
   refreshSettingsFromBackend,
   saveHistory,
   saveModelState,
+  saveNoteActions,
   saveNoteFolders,
   saveNotes,
   savePostModelState,
@@ -91,6 +116,7 @@ import {
 } from '../lib/storage'
 import type { AppSettings, HistoryEntry, ModelState } from '../types/app'
 import type {
+  AppUsageStatsPayload,
   AutoPasteBackendSupportPayload,
   DebugLogStatusPayload,
   DisplayServer,
@@ -117,12 +143,119 @@ const HISTORY_RETENTION_OPTIONS = [
 
 const HISTORY_LAZY_LOAD_LIMITS = new Set([250, 500, -1])
 const HISTORY_LAZY_BATCH_SIZE = 100
+const INFO_SECTION_REQUEST_TIMEOUT_MS = 6_000
+
+async function runWithTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutLabel: string): Promise<T> {
+  let timeoutHandle: number | null = null
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutHandle = window.setTimeout(() => {
+      reject(new Error(timeoutLabel))
+    }, timeoutMs)
+  })
+
+  try {
+    return await Promise.race([promise, timeoutPromise])
+  } finally {
+    if (timeoutHandle !== null) {
+      window.clearTimeout(timeoutHandle)
+    }
+  }
+}
 
 const formatTimestamp = (value: number) =>
   new Intl.DateTimeFormat('en-US', {
     dateStyle: 'medium',
     timeStyle: 'short',
   }).format(value)
+
+const formatCurrency = (value: number | null) => {
+  if (value === null) {
+    return 'n/a'
+  }
+
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 4,
+    maximumFractionDigits: 4,
+  }).format(value)
+}
+
+const formatDurationCompact = (totalSeconds: number) => {
+  if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) {
+    return '0s'
+  }
+
+  const roundedSeconds = Math.max(1, Math.round(totalSeconds))
+  const hours = Math.floor(roundedSeconds / 3600)
+  const minutes = Math.floor((roundedSeconds % 3600) / 60)
+  const seconds = roundedSeconds % 60
+
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`
+  }
+
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`
+  }
+
+  return `${seconds}s`
+}
+
+const estimateTokensFromText = (value: string) => {
+  const normalized = value.trim()
+  if (!normalized) {
+    return 0
+  }
+
+  return Math.max(1, Math.ceil(normalized.length / 4))
+}
+
+const estimateWordsFromText = (value: string) => {
+  const normalized = value.trim()
+  if (!normalized) {
+    return 0
+  }
+
+  return normalized.split(/\s+/).filter(Boolean).length
+}
+
+const formatCount = (value: number) => new Intl.NumberFormat('en-US').format(value)
+
+const resolveTranscriptionTokenRateUSD = (modelId: string, usageStats: AppUsageStatsPayload | null) => {
+  if (!usageStats) {
+    return null
+  }
+
+  const inputById = usageStats.modelInputCostPerTokenById ?? {}
+  const directRate = inputById[modelId]
+  if (typeof directRate === 'number' && Number.isFinite(directRate)) {
+    return directRate
+  }
+
+  const normalizedModelId = modelId.trim().toLowerCase()
+  for (const [candidateModelId, rate] of Object.entries(inputById)) {
+    if (typeof rate !== 'number' || !Number.isFinite(rate)) {
+      continue
+    }
+
+    const normalizedCandidate = candidateModelId.toLowerCase()
+    if (normalizedCandidate === normalizedModelId) {
+      return rate
+    }
+
+    if (normalizedCandidate.includes(normalizedModelId) || normalizedModelId.includes(normalizedCandidate)) {
+      return rate
+    }
+  }
+
+  if (usageStats.estimatedTranscriptionTokens > 0 && usageStats.estimatedTranscriptionCostUSD > 0) {
+    return usageStats.estimatedTranscriptionCostUSD / usageStats.estimatedTranscriptionTokens
+  }
+
+  return null
+}
 
 const isMacOS = navigator.userAgent.includes('Mac')
 const isLinux = navigator.userAgent.includes('Linux')
@@ -187,7 +320,6 @@ const OPENAI_COMPATIBLE_BASE_URL_BY_PROVIDER: Record<string, string> = {
   openai: 'https://api.openai.com/v1',
   groq: 'https://api.groq.com/openai/v1',
   grok: 'https://api.x.ai/v1',
-  meta: 'https://api.llama.com/compat/v1',
 }
 
 const isAutoPasteSupportPayload = (value: unknown): value is AutoPasteBackendSupportPayload => {
@@ -277,6 +409,7 @@ interface HistorySectionProps {
   entries: HistoryEntry[]
   totalEntries: number
   loading: boolean
+  usageStats: AppUsageStatsPayload | null
   clearConfirmOpen: boolean
   onClearConfirmOpenChange: (open: boolean) => void
   onCopy: (text: string) => void
@@ -290,6 +423,7 @@ const HistorySection = ({
   entries,
   totalEntries,
   loading,
+  usageStats,
   clearConfirmOpen,
   onClearConfirmOpenChange,
   onCopy,
@@ -298,6 +432,7 @@ const HistorySection = ({
   onShowMore,
   canShowMore,
 }: HistorySectionProps) => {
+  const { pushToast } = useToast()
   const [expandedEntries, setExpandedEntries] = useState<Record<string, boolean>>({})
 
   if (loading) {
@@ -316,9 +451,9 @@ const HistorySection = ({
         <Card className="py-12">
           <CardContent className="flex flex-col items-center justify-center gap-2 text-center">
             <BookOpen className="h-10 w-10 text-muted-foreground" />
-            <p className="font-medium">No transcriptions found</p>
+            <p className="font-medium">No dictations found</p>
             <p className="max-w-md text-sm text-muted-foreground">
-              Start dictation from the floating panel. Transcriptions appear here with metadata and
+              Start dictation from the floating panel. Dictations appear here with metadata and
               quick actions.
             </p>
           </CardContent>
@@ -326,6 +461,11 @@ const HistorySection = ({
       ) : (
         entries.map((entry) => {
           const expanded = Boolean(expandedEntries[entry.id])
+          const wordCount = estimateWordsFromText(entry.text)
+          const tokenEstimate = estimateTokensFromText(entry.text)
+          const tokenRateUSD = resolveTranscriptionTokenRateUSD(entry.model, usageStats)
+          const entryCostEstimateUSD =
+            tokenRateUSD !== null ? Number((Math.max(1, tokenEstimate) * tokenRateUSD).toFixed(6)) : null
 
           return (
             <Card key={entry.id}>
@@ -333,9 +473,25 @@ const HistorySection = ({
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="space-y-0.5">
                     <CardTitle className="text-xs">{formatTimestamp(entry.timestamp)}</CardTitle>
-                    <CardDescription className="text-xs">
-                      {entry.language} | {entry.provider}/{entry.model}
-                    </CardDescription>
+                    <div className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
+                      <CardDescription className="text-xs">
+                        {entry.language} | {entry.provider}/{entry.model} | {formatCount(wordCount)} words · ~
+                        {formatCount(tokenEstimate)} tokens · ~{formatCurrency(entryCostEstimateUSD)}
+                      </CardDescription>
+                      <button
+                        type="button"
+                        className="app-no-drag inline-flex h-4 w-4 items-center justify-center rounded-full border border-border-subtle text-[10px] text-foreground/60 transition-colors hover:bg-surface-2 hover:text-foreground"
+                        title="Estimated dictation cost based on token count and LiteLLM model pricing. Final billed amount may vary by provider tokenization."
+                        onClick={() => {
+                          pushToast({
+                            title: 'Estimated dictation cost',
+                            description: `${entry.provider}/${entry.model}: ~${formatCount(tokenEstimate)} tokens, estimated ${formatCurrency(entryCostEstimateUSD)}.`,
+                          })
+                        }}
+                      >
+                        i
+                      </button>
+                    </div>
                   </div>
                   <div className="flex items-center gap-1.5">
                     <Button
@@ -393,7 +549,7 @@ const HistorySection = ({
       {canShowMore ? (
         <div className="flex items-center justify-between rounded-[var(--radius-premium)] border border-border-subtle bg-surface-1 px-3 py-2">
           <p className="text-xs text-muted-foreground">
-            Showing {entries.length} of {totalEntries} transcriptions.
+            Showing {entries.length} of {totalEntries} dictations.
           </p>
           <Button
             variant="outline"
@@ -416,9 +572,9 @@ const HistorySection = ({
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Confirm clear history</DialogTitle>
+            <DialogTitle>Confirm clear dictations</DialogTitle>
             <DialogDescription>
-              This action removes all transcriptions saved locally. It cannot be undone.
+              This action removes all dictations saved locally. It cannot be undone.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -447,8 +603,11 @@ const HistorySection = ({
 }
 
 interface NotesSectionProps {
+  settings: AppSettings
+  usageStats: AppUsageStatsPayload | null
   folders: NoteFolder[]
   notes: NoteEntry[]
+  actions: NoteAction[]
   activeFolderId: string | null
   activeNoteId: string | null
   dictationStatus: 'IDLE' | 'RECORDING' | 'PROCESSING'
@@ -459,10 +618,16 @@ interface NotesSectionProps {
   onDeleteFolder: (folderId: string) => void
   onCreateNote: (folderId: string | null) => void
   onSelectNote: (noteId: string) => void
-  onUpdateNote: (noteId: string, patch: Partial<Pick<NoteEntry, 'title' | 'rawText' | 'processedText' | 'folderId'>>) => void
+  onUpdateNote: (
+    noteId: string,
+    patch: Partial<Pick<NoteEntry, 'title' | 'rawText' | 'processedText' | 'folderId' | 'autoTitleGenerated'>>,
+  ) => void
   onDeleteNote: (noteId: string) => void
   onTranscribeNote: (noteId: string) => void
-  onPostProcessNote: (noteId: string) => void
+  onRunNoteAction: (noteId: string, actionId: string | null) => void
+  onCreateNoteAction: (name: string, description: string, instructions: string, actionId?: string | null) => void
+  onDeleteNoteAction: (actionId: string) => void
+  onForceSaveNote: (noteId: string) => void
 }
 
 const stripNotePreview = (value: string) =>
@@ -503,9 +668,72 @@ const formatRelativeNoteTime = (timestamp: number) => {
   })
 }
 
+const MAX_NOTES_EXPANDED_COUNT = 20
+const COLLAPSED_LIST_COUNT = 5
+
+const generateNoteTitleFromContent = (content: string) => {
+  const normalized = content
+    .replace(/`{1,3}[^`]*`{1,3}/g, ' ')
+    .replace(/[>#*_~\-]+/g, ' ')
+    .replace(/\[[^\]]+\]\([^)]+\)/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  if (!normalized) {
+    return 'Untitled'
+  }
+
+  const words = normalized.split(' ').slice(0, 8)
+  return words.join(' ').trim().replace(/[.,;:!?]+$/, '')
+}
+
+const createNoteSlug = (title: string) => {
+  const token = title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+
+  return token.length > 0 ? token : 'note'
+}
+
+const extractDefaultNoteIndex = (title: string) => {
+  const match = title.trim().match(/^note\s+(\d+)$/i)
+  if (!match) {
+    return null
+  }
+
+  const value = Number.parseInt(match[1] ?? '', 10)
+  return Number.isFinite(value) && value > 0 ? value : null
+}
+
+const getNextFolderNoteIndex = (notes: NoteEntry[], folderId: string | null) => {
+  const usedIndices = new Set<number>()
+
+  for (const note of notes) {
+    if (note.folderId !== folderId) {
+      continue
+    }
+
+    const defaultIndex = extractDefaultNoteIndex(note.title)
+    if (defaultIndex !== null) {
+      usedIndices.add(defaultIndex)
+    }
+  }
+
+  let nextIndex = 1
+  while (usedIndices.has(nextIndex)) {
+    nextIndex += 1
+  }
+
+  return nextIndex
+}
+
 const NotesSection = ({
+  settings,
+  usageStats,
   folders,
   notes,
+  actions,
   activeFolderId,
   activeNoteId,
   dictationStatus,
@@ -519,22 +747,84 @@ const NotesSection = ({
   onUpdateNote,
   onDeleteNote,
   onTranscribeNote,
-  onPostProcessNote,
+  onRunNoteAction,
+  onCreateNoteAction,
+  onDeleteNoteAction,
+  onForceSaveNote,
 }: NotesSectionProps) => {
+  const { pushToast } = useToast()
   const [isCreatingFolder, setIsCreatingFolder] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
-  const [viewMode, setViewMode] = useState<'raw' | 'processed'>('raw')
+  const [actionsMenuOpen, setActionsMenuOpen] = useState(false)
+  const [actionsMenuAnchor, setActionsMenuAnchor] = useState<{ x: number; y: number } | null>(null)
+  const [actionManagerOpen, setActionManagerOpen] = useState(false)
+  const [editingActionId, setEditingActionId] = useState<string | null>(null)
+  const [lastUsedActionId, setLastUsedActionId] = useState<string | null>(null)
+  const [customActionName, setCustomActionName] = useState('')
+  const [customActionDescription, setCustomActionDescription] = useState('')
+  const [customActionInstructions, setCustomActionInstructions] = useState('')
+  const [foldersCollapsed, setFoldersCollapsed] = useState(false)
+  const [notesCollapsed, setNotesCollapsed] = useState(false)
+  const [folderPanelRatio, setFolderPanelRatio] = useState(0.42)
+  const [isResizingPanels, setIsResizingPanels] = useState(false)
+  const [notesVisibleLimit, setNotesVisibleLimit] = useState(MAX_NOTES_EXPANDED_COUNT)
+  const [foldersVisibleLimit, setFoldersVisibleLimit] = useState(20)
+  const [bulkModeEnabled, setBulkModeEnabled] = useState(false)
+  const [selectedNoteIds, setSelectedNoteIds] = useState<string[]>([])
+  const [bulkTargetFolderId, setBulkTargetFolderId] = useState<string>('')
+  const [viewMode, setViewMode] = useState<'raw' | 'processed' | 'preview'>('raw')
+  const [exportMenuOpen, setExportMenuOpen] = useState(false)
+  const [exportMenuAnchor, setExportMenuAnchor] = useState<{ x: number; y: number } | null>(null)
+  const [markdownMenuOpen, setMarkdownMenuOpen] = useState(false)
+  const [markdownMenuAnchor, setMarkdownMenuAnchor] = useState<{ x: number; y: number } | null>(null)
+  const editorTextareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const panelResizeStartRef = useRef<{ y: number; ratio: number } | null>(null)
 
-  const visibleNotes = useMemo(() => {
+  const filteredNotes = useMemo(() => {
+    const recentFirst = [...notes].sort((left, right) => right.updatedAt - left.updatedAt)
+
     if (!activeFolderId) {
-      return notes
+      return recentFirst.filter((entry) => entry.folderId === null)
     }
 
-    return notes.filter((entry) => entry.folderId === activeFolderId)
+    return recentFirst.filter((entry) => entry.folderId === activeFolderId)
   }, [activeFolderId, notes])
 
+  const sortedFoldersByRecent = useMemo(
+    () => [...folders].sort((left, right) => right.updatedAt - left.updatedAt),
+    [folders],
+  )
+
+  const displayedFolders = useMemo(() => {
+    if (foldersCollapsed) {
+      return sortedFoldersByRecent.slice(0, COLLAPSED_LIST_COUNT)
+    }
+
+    return sortedFoldersByRecent.slice(0, foldersVisibleLimit)
+  }, [foldersCollapsed, foldersVisibleLimit, sortedFoldersByRecent])
+
+  const displayedNotes = useMemo(() => {
+    if (notesCollapsed) {
+      return filteredNotes.slice(0, COLLAPSED_LIST_COUNT)
+    }
+
+    return filteredNotes.slice(0, notesVisibleLimit)
+  }, [filteredNotes, notesCollapsed, notesVisibleLimit])
+
+  const canLoadMoreNotes = !notesCollapsed && filteredNotes.length > displayedNotes.length
+  const canLoadMoreFolders = !foldersCollapsed && sortedFoldersByRecent.length > displayedFolders.length
+  const showFolderNotesSplitter = !foldersCollapsed && !notesCollapsed
+
   const activeNote = notes.find((entry) => entry.id === activeNoteId) ?? null
-  const noteWordCount = (activeNote?.rawText.trim() ?? '').split(/\s+/).filter(Boolean).length
+  const uncategorizedNotesCount = useMemo(
+    () => notes.filter((entry) => entry.folderId === null).length,
+    [notes],
+  )
+  const rawNoteWordCount = activeNote ? estimateWordsFromText(activeNote.rawText) : 0
+  const enhancedNoteWordCount = activeNote ? estimateWordsFromText(activeNote.processedText) : 0
+  const noteRawTokenEstimate = activeNote ? estimateTokensFromText(activeNote.rawText) : 0
+  const noteEnhancedTokenEstimate = activeNote ? estimateTokensFromText(activeNote.processedText) : 0
+  const noteHasEnhancedOutput = Boolean(activeNote?.processedText.trim().length)
   const isRecordingActiveNote = dictationStatus === 'RECORDING' && transcribingNoteId === activeNote?.id
   const isTranscribingActiveNote = dictationStatus === 'PROCESSING' && transcribingNoteId === activeNote?.id
 
@@ -547,6 +837,65 @@ const NotesSection = ({
       setViewMode('raw')
     }
   }, [activeNote, viewMode])
+
+  useEffect(() => {
+    setNotesVisibleLimit(MAX_NOTES_EXPANDED_COUNT)
+  }, [activeFolderId])
+
+  useEffect(() => {
+    if (!isResizingPanels) {
+      return
+    }
+
+    const handlePointerMove = (event: PointerEvent) => {
+      if (!panelResizeStartRef.current) {
+        return
+      }
+
+      const delta = event.clientY - panelResizeStartRef.current.y
+      const deltaRatio = delta / 420
+      const nextRatio = Math.min(0.75, Math.max(0.2, panelResizeStartRef.current.ratio + deltaRatio))
+      setFolderPanelRatio(nextRatio)
+    }
+
+    const stopResizing = () => {
+      panelResizeStartRef.current = null
+      setIsResizingPanels(false)
+    }
+
+    window.addEventListener('pointermove', handlePointerMove)
+    window.addEventListener('pointerup', stopResizing)
+
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', stopResizing)
+    }
+  }, [isResizingPanels])
+
+  useEffect(() => {
+    if (!activeNote) {
+      return
+    }
+
+    const handleSaveShortcut = (event: KeyboardEvent) => {
+      const isSaveShortcut = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's'
+      if (!isSaveShortcut) {
+        return
+      }
+
+      event.preventDefault()
+      onForceSaveNote(activeNote.id)
+    }
+
+    window.addEventListener('keydown', handleSaveShortcut)
+    return () => {
+      window.removeEventListener('keydown', handleSaveShortcut)
+    }
+  }, [activeNote, onForceSaveNote])
+
+  useEffect(() => {
+    setSelectedNoteIds((current) => current.filter((id) => notes.some((note) => note.id === id)))
+  }, [notes])
 
   const commitFolderCreation = () => {
     const nextName = newFolderName.trim()
@@ -563,167 +912,843 @@ const NotesSection = ({
 
   const activeEditorValue = viewMode === 'processed' ? activeNote?.processedText ?? '' : activeNote?.rawText ?? ''
 
+  const updateActiveEditorValue = useCallback(
+    (nextValue: string) => {
+      if (!activeNote) {
+        return
+      }
+
+      if (viewMode === 'processed') {
+        onUpdateNote(activeNote.id, {
+          processedText: nextValue,
+        })
+        return
+      }
+
+      onUpdateNote(activeNote.id, {
+        rawText: nextValue,
+      })
+    },
+    [activeNote, onUpdateNote, viewMode],
+  )
+
+  const applyMarkdownWrapper = useCallback(
+    (prefix: string, suffix = prefix, placeholder = 'text') => {
+      if (!editorTextareaRef.current || !activeNote || viewMode === 'preview') {
+        return
+      }
+
+      const textarea = editorTextareaRef.current
+      const start = textarea.selectionStart
+      const end = textarea.selectionEnd
+      const source = activeEditorValue
+      const selected = source.slice(start, end)
+      const content = selected || placeholder
+      const replacement = `${prefix}${content}${suffix}`
+      const nextValue = `${source.slice(0, start)}${replacement}${source.slice(end)}`
+
+      updateActiveEditorValue(nextValue)
+
+      requestAnimationFrame(() => {
+        textarea.focus()
+        const cursorStart = start + prefix.length
+        const cursorEnd = cursorStart + content.length
+        textarea.setSelectionRange(cursorStart, cursorEnd)
+      })
+    },
+    [activeEditorValue, activeNote, updateActiveEditorValue, viewMode],
+  )
+
+  const applyMarkdownLinePrefix = useCallback(
+    (prefix: string) => {
+      if (!editorTextareaRef.current || !activeNote || viewMode === 'preview') {
+        return
+      }
+
+      const textarea = editorTextareaRef.current
+      const start = textarea.selectionStart
+      const end = textarea.selectionEnd
+      const source = activeEditorValue
+      const lineStart = source.lastIndexOf('\n', start - 1) + 1
+      const lineEndRaw = source.indexOf('\n', end)
+      const lineEnd = lineEndRaw === -1 ? source.length : lineEndRaw
+      const block = source.slice(lineStart, lineEnd)
+      const prefixed = block
+        .split('\n')
+        .map((line) => `${prefix}${line}`)
+        .join('\n')
+      const nextValue = `${source.slice(0, lineStart)}${prefixed}${source.slice(lineEnd)}`
+
+      updateActiveEditorValue(nextValue)
+      requestAnimationFrame(() => {
+        textarea.focus()
+      })
+    },
+    [activeEditorValue, activeNote, updateActiveEditorValue, viewMode],
+  )
+
+  const insertMarkdownSnippet = useCallback(
+    (snippetTemplate: string) => {
+      if (!editorTextareaRef.current || !activeNote || viewMode === 'preview') {
+        return
+      }
+
+      const textarea = editorTextareaRef.current
+      const start = textarea.selectionStart
+      const end = textarea.selectionEnd
+      const source = activeEditorValue
+      const marker = '{{cursor}}'
+      const markerIndex = snippetTemplate.indexOf(marker)
+      const snippet = snippetTemplate.replace(marker, '')
+      const nextValue = `${source.slice(0, start)}${snippet}${source.slice(end)}`
+
+      updateActiveEditorValue(nextValue)
+      requestAnimationFrame(() => {
+        textarea.focus()
+        const cursorOffset = markerIndex >= 0 ? markerIndex : snippet.length
+        const cursorPosition = start + cursorOffset
+        textarea.setSelectionRange(cursorPosition, cursorPosition)
+      })
+    },
+    [activeEditorValue, activeNote, updateActiveEditorValue, viewMode],
+  )
+
+  const exportActiveNote = useCallback(
+    async (format: 'txt' | 'md' | 'html') => {
+      if (!activeNote) {
+        return
+      }
+
+      const baseContent = viewMode === 'processed' ? activeNote.processedText : activeNote.rawText
+      const markdownContent = baseContent.trim()
+      const plainTextContent = markdownContent.replace(/\[[^\]]+\]\([^)]+\)/g, '$1').replace(/[*_`#>-]/g, '').trim()
+      const htmlContent = await marked.parse(markdownContent)
+
+      const payloadByFormat = {
+        txt: plainTextContent,
+        md: markdownContent,
+        html: `<!doctype html><html><head><meta charset="utf-8" /><title>${activeNote.title}</title></head><body>${htmlContent}</body></html>`,
+      }
+
+      const mimeByFormat = {
+        txt: 'text/plain;charset=utf-8',
+        md: 'text/markdown;charset=utf-8',
+        html: 'text/html;charset=utf-8',
+      }
+
+      const blob = new Blob([payloadByFormat[format]], {
+        type: mimeByFormat[format],
+      })
+      const fileName = `${createNoteSlug(activeNote.title)}.${format}`
+      const objectUrl = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = objectUrl
+      anchor.download = fileName
+      anchor.click()
+      URL.revokeObjectURL(objectUrl)
+    },
+    [activeNote, viewMode],
+  )
+
+  const canRunActions = Boolean(activeNote?.rawText.trim())
+  const activeAction = useMemo(() => actions.find((action) => action.id === lastUsedActionId) ?? actions[0] ?? null, [actions, lastUsedActionId])
+  const postProcessingModelForEstimate =
+    usageStats?.activeEnhancementModel ||
+    (settings.postProcessingRuntime === 'cloud' ? settings.postProcessingCloudModelId : settings.postProcessingLocalModelId)
+  const enhancementInputUnitCost = usageStats?.activeEnhancementInputCostPerToken ?? null
+  const enhancementOutputUnitCost = usageStats?.activeEnhancementOutputCostPerToken ?? null
+  const noteSpentCostUSD =
+    activeNote &&
+    noteHasEnhancedOutput &&
+    noteRawTokenEstimate > 0 &&
+    (enhancementInputUnitCost !== null || enhancementOutputUnitCost !== null)
+      ? Number(
+          (
+            noteRawTokenEstimate * (enhancementInputUnitCost ?? 0) +
+            noteEnhancedTokenEstimate * (enhancementOutputUnitCost ?? 0)
+          ).toFixed(6),
+        )
+      : noteHasEnhancedOutput
+        ? null
+        : 0
+  const noteComparedWordsLabel = noteHasEnhancedOutput
+    ? `${formatCount(rawNoteWordCount)}/${formatCount(enhancedNoteWordCount)} words`
+    : `${formatCount(rawNoteWordCount)}/-- words`
+  const noteComparedTokensLabel = noteHasEnhancedOutput
+    ? `~${formatCount(noteRawTokenEstimate)}/~${formatCount(noteEnhancedTokenEstimate)} tokens`
+    : `~${formatCount(noteRawTokenEstimate)}/-- tokens`
+  const noteSpentLabel = noteSpentCostUSD === null ? 'n/a now spent' : `~${formatCurrency(noteSpentCostUSD)} now spent`
+
+  useEffect(() => {
+    const storedActionId = localStorage.getItem(STORAGE_KEYS.noteLastAction)
+    if (storedActionId) {
+      setLastUsedActionId(storedActionId)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!activeAction) {
+      return
+    }
+
+    if (lastUsedActionId !== activeAction.id) {
+      setLastUsedActionId(activeAction.id)
+    }
+  }, [activeAction, lastUsedActionId])
+
+  useEffect(() => {
+    if (!lastUsedActionId) {
+      return
+    }
+
+    localStorage.setItem(STORAGE_KEYS.noteLastAction, lastUsedActionId)
+  }, [lastUsedActionId])
+
+  const handleRunAction = useCallback(
+    (action: NoteAction) => {
+      if (!activeNote) {
+        return
+      }
+
+      setLastUsedActionId(action.id)
+      onRunNoteAction(activeNote.id, action.id)
+    },
+    [activeNote, onRunNoteAction],
+  )
+
+  const actionMenuItems = useMemo(() => {
+    return [
+      ...actions.map((action) => ({
+        label: action.name,
+        description: action.description || undefined,
+        icon: <Sparkles className="h-3.5 w-3.5" />,
+        selected: activeAction?.id === action.id,
+        disabled: !activeNote || !canRunActions || postProcessingNoteId === activeNote.id,
+        onSelect: () => {
+          setLastUsedActionId(action.id)
+        },
+      })),
+      {
+        separator: true,
+      },
+      {
+        label: 'Add action...',
+        icon: <Plus className="h-3.5 w-3.5" />,
+        onSelect: () => {
+          resetActionEditor()
+          setActionManagerOpen(true)
+        },
+      },
+      {
+        label: 'Manage actions',
+        icon: <Settings className="h-3.5 w-3.5" />,
+        onSelect: () => {
+          setActionManagerOpen(true)
+        },
+      },
+    ]
+  }, [actions, activeAction?.id, activeNote, canRunActions, postProcessingNoteId])
+
+  const markdownCommandsDisabled = viewMode === 'preview' || !activeNote
+
+  const markdownToolbarItems = [
+    {
+      id: 'bold',
+      icon: <Bold className="h-3.5 w-3.5" />,
+      label: 'Bold',
+      onClick: () => applyMarkdownWrapper('**'),
+    },
+    {
+      id: 'italic',
+      icon: <Italic className="h-3.5 w-3.5" />,
+      label: 'Italic',
+      onClick: () => applyMarkdownWrapper('*'),
+    },
+    {
+      id: 'strike',
+      icon: <span className="text-[11px] font-semibold">S</span>,
+      label: 'Strikethrough',
+      onClick: () => applyMarkdownWrapper('~~'),
+    },
+    {
+      id: 'h1',
+      icon: <Heading1 className="h-3.5 w-3.5" />,
+      label: 'Heading 1',
+      onClick: () => applyMarkdownLinePrefix('# '),
+    },
+    {
+      id: 'bullet',
+      icon: <List className="h-3.5 w-3.5" />,
+      label: 'Bullet list',
+      onClick: () => applyMarkdownLinePrefix('- '),
+    },
+    {
+      id: 'ordered',
+      icon: <ListOrdered className="h-3.5 w-3.5" />,
+      label: 'Numbered list',
+      onClick: () => applyMarkdownLinePrefix('1. '),
+    },
+    {
+      id: 'task',
+      icon: <CheckSquare className="h-3.5 w-3.5" />,
+      label: 'Task list',
+      onClick: () => applyMarkdownLinePrefix('- [ ] '),
+    },
+    {
+      id: 'quote',
+      icon: <Quote className="h-3.5 w-3.5" />,
+      label: 'Quote',
+      onClick: () => applyMarkdownLinePrefix('> '),
+    },
+    {
+      id: 'code-inline',
+      icon: <Code2 className="h-3.5 w-3.5" />,
+      label: 'Inline code',
+      onClick: () => applyMarkdownWrapper('`'),
+    },
+    {
+      id: 'code-block',
+      icon: <span className="text-[11px] font-semibold">```</span>,
+      label: 'Code block',
+      onClick: () => insertMarkdownSnippet('```markdown\n{{cursor}}\n```'),
+    },
+    {
+      id: 'link',
+      icon: <Link2 className="h-3.5 w-3.5" />,
+      label: 'Link',
+      onClick: () => applyMarkdownWrapper('[', '](https://example.com)', 'link text'),
+    },
+    {
+      id: 'image',
+      icon: <ImagePlus className="h-3.5 w-3.5" />,
+      label: 'Image',
+      onClick: () => applyMarkdownWrapper('![', '](https://example.com/image.png)', 'alt text'),
+    },
+    {
+      id: 'table',
+      icon: <span className="text-[11px] font-semibold">Tbl</span>,
+      label: 'Table',
+      onClick: () =>
+        insertMarkdownSnippet('| Column 1 | Column 2 |\n| --- | --- |\n| {{cursor}} | Value 2 |'),
+    },
+    {
+      id: 'hr',
+      icon: <Minus className="h-3.5 w-3.5" />,
+      label: 'Horizontal line',
+      onClick: () => insertMarkdownSnippet('\n---\n{{cursor}}'),
+    },
+    {
+      id: 'video',
+      icon: <Video className="h-3.5 w-3.5" />,
+      label: 'Video',
+      onClick: () =>
+        applyMarkdownWrapper('<video controls src="', '"></video>', 'https://example.com/video.mp4'),
+    },
+  ]
+
+  const markdownMenuItems = [
+    {
+      label: 'Heading 2',
+      icon: <span className="text-[11px] font-semibold">H2</span>,
+      disabled: markdownCommandsDisabled,
+      onSelect: () => applyMarkdownLinePrefix('## '),
+    },
+    {
+      label: 'Heading 3',
+      icon: <span className="text-[11px] font-semibold">H3</span>,
+      disabled: markdownCommandsDisabled,
+      onSelect: () => applyMarkdownLinePrefix('### '),
+    },
+    {
+      label: 'Heading 4',
+      icon: <span className="text-[11px] font-semibold">H4</span>,
+      disabled: markdownCommandsDisabled,
+      onSelect: () => applyMarkdownLinePrefix('#### '),
+    },
+    {
+      label: 'Heading 5',
+      icon: <span className="text-[11px] font-semibold">H5</span>,
+      disabled: markdownCommandsDisabled,
+      onSelect: () => applyMarkdownLinePrefix('##### '),
+    },
+    {
+      label: 'Heading 6',
+      icon: <span className="text-[11px] font-semibold">H6</span>,
+      disabled: markdownCommandsDisabled,
+      onSelect: () => applyMarkdownLinePrefix('###### '),
+    },
+    { separator: true },
+    {
+      label: 'Checked task',
+      icon: <CheckSquare className="h-3.5 w-3.5" />,
+      disabled: markdownCommandsDisabled,
+      onSelect: () => applyMarkdownLinePrefix('- [x] '),
+    },
+    {
+      label: 'Footnote ref',
+      icon: <span className="text-[11px] font-semibold">Fn</span>,
+      disabled: markdownCommandsDisabled,
+      onSelect: () => insertMarkdownSnippet('[^1]{{cursor}}\n\n[^1]: Footnote text'),
+    },
+    {
+      label: 'Reference link',
+      icon: <Link2 className="h-3.5 w-3.5" />,
+      disabled: markdownCommandsDisabled,
+      onSelect: () =>
+        insertMarkdownSnippet('[link text][ref]{{cursor}}\n\n[ref]: https://example.com "title"'),
+    },
+    {
+      label: 'Table aligned',
+      icon: <span className="text-[11px] font-semibold">Tbl+</span>,
+      disabled: markdownCommandsDisabled,
+      onSelect: () =>
+        insertMarkdownSnippet('| Left | Center | Right |\n| :--- | :---: | ---: |\n| {{cursor}} | value | value |'),
+    },
+    {
+      label: 'Details block',
+      icon: <ChevronDown className="h-3.5 w-3.5" />,
+      disabled: markdownCommandsDisabled,
+      onSelect: () =>
+        insertMarkdownSnippet('<details>\n<summary>More details</summary>\n\n{{cursor}}\n\n</details>'),
+    },
+    {
+      label: 'Underline (HTML)',
+      icon: <span className="text-[11px] font-semibold">U</span>,
+      disabled: markdownCommandsDisabled,
+      onSelect: () => applyMarkdownWrapper('<u>', '</u>'),
+    },
+    {
+      label: 'Superscript (HTML)',
+      icon: <span className="text-[11px] font-semibold">X2</span>,
+      disabled: markdownCommandsDisabled,
+      onSelect: () => applyMarkdownWrapper('<sup>', '</sup>'),
+    },
+    {
+      label: 'Subscript (HTML)',
+      icon: <span className="text-[11px] font-semibold">X0</span>,
+      disabled: markdownCommandsDisabled,
+      onSelect: () => applyMarkdownWrapper('<sub>', '</sub>'),
+    },
+  ]
+
+  const openMarkdownMenu = (targetButton: HTMLButtonElement) => {
+    const buttonRect = targetButton.getBoundingClientRect()
+    const estimatedMenuHeight = Math.min(460, markdownMenuItems.length * 36 + 16)
+    const menuWidth = 224
+
+    setMarkdownMenuAnchor({
+      x: Math.max(12, Math.min(buttonRect.left, window.innerWidth - menuWidth - 12)),
+      y: Math.max(12, buttonRect.top - estimatedMenuHeight - 8),
+    })
+    setMarkdownMenuOpen(true)
+  }
+
+  const openActionsMenu = (targetButton: HTMLButtonElement) => {
+    const buttonRect = targetButton.getBoundingClientRect()
+    const estimatedMenuHeight = Math.min(420, actionMenuItems.length * 36 + 16)
+    const menuWidth = 224
+
+    setActionsMenuAnchor({
+      x: Math.max(12, Math.min(buttonRect.left, window.innerWidth - menuWidth - 12)),
+      y: Math.max(12, buttonRect.top - estimatedMenuHeight - 8),
+    })
+    setActionsMenuOpen(true)
+  }
+
+  const exportMenuItems = [
+    {
+      label: 'Export as TXT',
+      icon: <FileText className="h-3.5 w-3.5" />,
+      onSelect: () => {
+        void exportActiveNote('txt')
+      },
+    },
+    {
+      label: 'Export as Markdown',
+      icon: <FileText className="h-3.5 w-3.5" />,
+      onSelect: () => {
+        void exportActiveNote('md')
+      },
+    },
+    {
+      label: 'Export as HTML',
+      icon: <Eye className="h-3.5 w-3.5" />,
+      onSelect: () => {
+        void exportActiveNote('html')
+      },
+    },
+  ]
+
+  const openExportMenu = (targetButton: HTMLButtonElement) => {
+    const buttonRect = targetButton.getBoundingClientRect()
+    const menuWidth = 196
+    const estimatedMenuHeight = 140
+
+    setExportMenuAnchor({
+      x: Math.max(12, Math.min(buttonRect.left - menuWidth + buttonRect.width, window.innerWidth - menuWidth - 12)),
+      y: Math.max(12, buttonRect.top - estimatedMenuHeight - 8),
+    })
+    setExportMenuOpen(true)
+  }
+
+  const resetActionEditor = () => {
+    setEditingActionId(null)
+    setCustomActionName('')
+    setCustomActionDescription('')
+    setCustomActionInstructions('')
+  }
+
+  const commitCustomAction = () => {
+    const normalizedName = customActionName.trim()
+    const normalizedDescription = customActionDescription.trim()
+    const normalizedInstructions = customActionInstructions.trim()
+
+    if (!normalizedName || !normalizedInstructions) {
+      return
+    }
+
+    onCreateNoteAction(normalizedName, normalizedDescription, normalizedInstructions, editingActionId)
+    resetActionEditor()
+  }
+
   return (
     <div className="flex h-full min-h-[36rem] overflow-hidden rounded-[14px] border border-border-subtle bg-surface-0">
-      <aside className="flex w-52 shrink-0 flex-col border-r border-border-subtle bg-surface-1/90">
-        <div className="flex items-center justify-between px-3 py-2">
-          <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-foreground/30">Folders</span>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-5 w-5 rounded-md text-foreground/50 hover:bg-surface-2 hover:text-foreground"
-            onClick={() => {
-              setIsCreatingFolder(true)
-            }}
+      <aside className="flex w-64 shrink-0 flex-col border-r border-border-subtle bg-surface-1/90">
+        <div className="flex min-h-0 flex-1 flex-col">
+          <div className="flex items-center justify-between px-3 py-2">
+            <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-foreground/30">Folders</span>
+            <div className="flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-5 w-5 rounded-md text-foreground/50 hover:bg-surface-2 hover:text-foreground"
+                onClick={() => {
+                  setFoldersCollapsed((current) => !current)
+                }}
+              >
+                {foldersCollapsed ? <Plus className="h-3.5 w-3.5" /> : <Minus className="h-3.5 w-3.5" />}
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-5 w-5 rounded-md text-foreground/50 hover:bg-surface-2 hover:text-foreground"
+                onClick={() => {
+                  setIsCreatingFolder(true)
+                }}
+              >
+                <Plus className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          </div>
+
+          <div
+            className="min-h-0 px-1.5"
+            style={showFolderNotesSplitter ? { height: `${Math.round(folderPanelRatio * 100)}%` } : { height: '50%' }}
           >
-            <Plus className="h-3.5 w-3.5" />
-          </Button>
-        </div>
-
-        <div className="space-y-px px-1.5">
-          <button
-            type="button"
-            className={cn(
-              'group relative flex h-7 w-full items-center gap-2 rounded-md px-2 text-left transition-colors',
-              activeFolderId === null
-                ? 'bg-primary/15 text-foreground'
-                : 'text-foreground/70 hover:bg-surface-2/70 hover:text-foreground/90',
-            )}
-            onClick={() => {
-              onSelectFolder(null)
-            }}
-          >
-            {activeFolderId === null ? <span className="absolute left-0 h-4 w-0.5 rounded-r-full bg-primary" /> : null}
-            <FolderOpen className={cn('h-3.5 w-3.5', activeFolderId === null ? 'text-primary' : 'text-foreground/35')} />
-            <span className={cn('truncate text-xs', activeFolderId === null ? 'font-medium' : undefined)}>
-              All notes
-            </span>
-            <span className="ml-auto text-[11px] tabular-nums text-foreground/35">{notes.length > 0 ? notes.length : ''}</span>
-          </button>
-
-          {folders.map((folder) => {
-            const count = notes.filter((entry) => entry.folderId === folder.id).length
-            const isActive = activeFolderId === folder.id
-            const isMeetingsFolder = folder.name.trim().toLowerCase() === 'meetings'
-
-            return (
-              <div key={folder.id} className="group relative flex items-center gap-1">
+            <div className="h-full overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              <div className="space-y-px pb-2">
                 <button
                   type="button"
                   className={cn(
-                    'relative flex h-7 w-full items-center gap-2 rounded-md px-2 text-left transition-colors',
-                    isActive
+                    'group relative flex h-7 w-full items-center gap-2 rounded-md px-2 text-left transition-colors',
+                    activeFolderId === null
                       ? 'bg-primary/15 text-foreground'
                       : 'text-foreground/70 hover:bg-surface-2/70 hover:text-foreground/90',
                   )}
                   onClick={() => {
-                    onSelectFolder(folder.id)
+                    onSelectFolder(null)
                   }}
                 >
-                  {isActive ? <span className="absolute left-0 h-4 w-0.5 rounded-r-full bg-primary" /> : null}
-                  <FolderOpen className={cn('h-3.5 w-3.5', isActive ? 'text-primary' : 'text-foreground/35')} />
-                  <span className={cn('truncate pr-2 text-xs', isActive ? 'font-medium' : undefined)}>
-                    {folder.name}
+                  {activeFolderId === null ? <span className="absolute left-0 h-4 w-0.5 rounded-r-full bg-primary" /> : null}
+                  <FolderOpen className={cn('h-3.5 w-3.5', activeFolderId === null ? 'text-primary' : 'text-foreground/35')} />
+                  <span className={cn('truncate text-xs', activeFolderId === null ? 'font-medium' : undefined)}>
+                    Uncategorized
                   </span>
-                  {isMeetingsFolder ? (
-                    <span className="ml-auto rounded bg-surface-2 px-1 py-px text-[8px] font-semibold uppercase tracking-wider text-foreground/45">
-                      Soon
-                    </span>
-                  ) : (
-                    <span className="ml-auto text-[11px] tabular-nums text-foreground/35">{count > 0 ? count : ''}</span>
-                  )}
+                  <span className="ml-auto text-[11px] tabular-nums text-foreground/35">
+                    {uncategorizedNotesCount > 0 ? uncategorizedNotesCount : ''}
+                  </span>
                 </button>
+
+                {displayedFolders.map((folder) => {
+                  const count = notes.filter((entry) => entry.folderId === folder.id).length
+                  const isActive = activeFolderId === folder.id
+
+                  return (
+                    <div key={folder.id} className="group relative flex items-center gap-1">
+                      <button
+                        type="button"
+                        className={cn(
+                          'relative flex h-7 w-full items-center gap-2 rounded-md px-2 text-left transition-colors',
+                          isActive
+                            ? 'bg-primary/15 text-foreground'
+                            : 'text-foreground/70 hover:bg-surface-2/70 hover:text-foreground/90',
+                        )}
+                        onClick={() => {
+                          onSelectFolder(folder.id)
+                        }}
+                      >
+                        {isActive ? <span className="absolute left-0 h-4 w-0.5 rounded-r-full bg-primary" /> : null}
+                        <FolderOpen className={cn('h-3.5 w-3.5', isActive ? 'text-primary' : 'text-foreground/35')} />
+                        <span className={cn('truncate pr-2 text-xs', isActive ? 'font-medium' : undefined)}>{folder.name}</span>
+                        <span className="ml-auto text-[11px] tabular-nums text-foreground/35">{count > 0 ? count : ''}</span>
+                      </button>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="absolute right-1 h-5 w-5 opacity-0 transition-opacity group-hover:opacity-100"
+                        onClick={() => {
+                          onDeleteFolder(folder.id)
+                        }}
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </Button>
+                    </div>
+                  )
+                })}
+
+                {canLoadMoreFolders ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 w-full text-[11px]"
+                    onClick={() => {
+                      setFoldersVisibleLimit((current) => current + 20)
+                    }}
+                  >
+                    Load more folders
+                  </Button>
+                ) : null}
+
+                {isCreatingFolder ? (
+                  <Input
+                    className="h-7 border-border-subtle bg-surface-0 text-xs"
+                    autoFocus
+                    value={newFolderName}
+                    onChange={(event) => {
+                      setNewFolderName(event.target.value)
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        commitFolderCreation()
+                      }
+
+                      if (event.key === 'Escape') {
+                        setIsCreatingFolder(false)
+                        setNewFolderName('')
+                      }
+                    }}
+                    onBlur={commitFolderCreation}
+                    placeholder="Folder name"
+                  />
+                ) : null}
+              </div>
+            </div>
+          </div>
+
+          {showFolderNotesSplitter ? (
+            <button
+              type="button"
+              className="mx-2 my-1 h-2 cursor-row-resize rounded-md bg-transparent app-no-drag"
+              onPointerDown={(event) => {
+                panelResizeStartRef.current = {
+                  y: event.clientY,
+                  ratio: folderPanelRatio,
+                }
+                setIsResizingPanels(true)
+              }}
+            >
+              <span className="block h-px w-full bg-border-subtle" />
+            </button>
+          ) : (
+            <div className="mx-3 my-1 h-px bg-border-subtle" />
+          )}
+
+          <div className="flex items-center justify-between px-3 py-1">
+            <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-foreground/30">Notes</span>
+            <div className="flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-5 w-5 rounded-md text-foreground/50 hover:bg-surface-2 hover:text-foreground"
+                onClick={() => {
+                  setNotesCollapsed((current) => !current)
+                }}
+              >
+                {notesCollapsed ? <Plus className="h-3.5 w-3.5" /> : <Minus className="h-3.5 w-3.5" />}
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className={cn(
+                  'h-5 w-5 rounded-md text-foreground/50 hover:bg-surface-2 hover:text-foreground',
+                  bulkModeEnabled ? 'bg-surface-2 text-foreground' : undefined,
+                )}
+                onClick={() => {
+                  setBulkModeEnabled((current) => !current)
+                  setSelectedNoteIds([])
+                }}
+              >
+                <CheckSquare className="h-3.5 w-3.5" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-5 w-5 rounded-md text-foreground/50 hover:bg-surface-2 hover:text-foreground"
+                onClick={() => {
+                  onCreateNote(activeFolderId)
+                }}
+              >
+                <Plus className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          </div>
+
+          <div
+            className="min-h-0 px-1.5 pb-2"
+            style={showFolderNotesSplitter ? { height: `${Math.round((1 - folderPanelRatio) * 100)}%` } : { height: '50%' }}
+          >
+            <div className="h-full overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              {displayedNotes.length === 0 ? (
+                <div className="px-3 py-8 text-center">
+                  <BookOpen className="mx-auto h-4 w-4 text-foreground/30" />
+                  <p className="mt-2 text-xs text-foreground/35">No notes in this section.</p>
+                </div>
+              ) : (
+                displayedNotes.map((entry) => {
+                  const preview = stripNotePreview(entry.rawText)
+                  const isActive = activeNoteId === entry.id
+                  const isSelected = selectedNoteIds.includes(entry.id)
+
+                  return (
+                    <button
+                      key={entry.id}
+                      type="button"
+                      className={cn(
+                        'group relative w-full px-3 py-1.5 text-left transition-colors',
+                        isActive || isSelected ? 'bg-primary/15' : 'hover:bg-surface-2/70',
+                      )}
+                      onClick={() => {
+                        if (bulkModeEnabled) {
+                          setSelectedNoteIds((current) =>
+                            current.includes(entry.id) ? current.filter((id) => id !== entry.id) : [...current, entry.id],
+                          )
+                          return
+                        }
+
+                        onSelectNote(entry.id)
+                      }}
+                    >
+                      {isActive || isSelected ? (
+                        <span className="absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-r-full bg-primary" />
+                      ) : null}
+                      <div className="flex items-center gap-2">
+                        {bulkModeEnabled ? (
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={(event) => {
+                              event.stopPropagation()
+                              setSelectedNoteIds((current) =>
+                                current.includes(entry.id)
+                                  ? current.filter((id) => id !== entry.id)
+                                  : [...current, entry.id],
+                              )
+                            }}
+                            className="h-3.5 w-3.5 rounded border-border-subtle"
+                          />
+                        ) : null}
+                        <p className={cn('truncate text-xs', isActive ? 'font-medium text-foreground' : 'text-foreground/80')}>
+                          {entry.title || 'Untitled'}
+                        </p>
+                        <span className="ml-auto text-[11px] tabular-nums text-foreground/35">
+                          {formatRelativeNoteTime(entry.updatedAt)}
+                        </span>
+                      </div>
+                      {preview ? <p className="mt-0.5 line-clamp-1 text-[11px] text-foreground/45">{preview}</p> : null}
+                    </button>
+                  )
+                })
+              )}
+
+              {canLoadMoreNotes ? (
                 <Button
-                  size="icon"
                   variant="ghost"
-                  className="absolute right-1 h-5 w-5 opacity-0 transition-opacity group-hover:opacity-100"
+                  size="sm"
+                  className="mt-1 h-7 w-full text-[11px]"
                   onClick={() => {
-                    onDeleteFolder(folder.id)
+                    setNotesVisibleLimit((current) => current + MAX_NOTES_EXPANDED_COUNT)
                   }}
                 >
-                  <Trash2 className="h-3 w-3" />
+                  Load more notes
+                </Button>
+              ) : null}
+            </div>
+          </div>
+
+          {bulkModeEnabled ? (
+            <div className="space-y-2 border-t border-border-subtle px-3 py-2">
+              <p className="text-[11px] text-muted-foreground">Selected: {selectedNoteIds.length}</p>
+              <div className="flex items-center gap-1.5">
+                <select
+                  className="app-no-drag h-7 flex-1 rounded-md border border-border-subtle bg-surface-0 px-2 text-[11px]"
+                  value={bulkTargetFolderId}
+                  onChange={(event) => {
+                    setBulkTargetFolderId(event.target.value)
+                  }}
+                >
+                  <option value="">Move to Uncategorized</option>
+                  {folders.map((folder) => (
+                    <option key={folder.id} value={folder.id}>
+                      {folder.name}
+                    </option>
+                  ))}
+                </select>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7"
+                  disabled={selectedNoteIds.length === 0}
+                  onClick={() => {
+                    for (const noteId of selectedNoteIds) {
+                      onUpdateNote(noteId, {
+                        folderId: bulkTargetFolderId || null,
+                      })
+                    }
+                    setSelectedNoteIds([])
+                  }}
+                >
+                  Move
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7"
+                  disabled={selectedNoteIds.length === 0 || !activeAction}
+                  onClick={() => {
+                    for (const noteId of selectedNoteIds) {
+                      onRunNoteAction(noteId, activeAction?.id ?? null)
+                    }
+                  }}
+                >
+                  Enhance
+                </Button>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  className="h-7"
+                  disabled={selectedNoteIds.length === 0}
+                  onClick={() => {
+                    for (const noteId of selectedNoteIds) {
+                      onDeleteNote(noteId)
+                    }
+                    setSelectedNoteIds([])
+                  }}
+                >
+                  Delete
                 </Button>
               </div>
-            )
-          })}
-
-          {isCreatingFolder ? (
-            <Input
-              className="h-7 border-border-subtle bg-surface-0 text-xs"
-              autoFocus
-              value={newFolderName}
-              onChange={(event) => {
-                setNewFolderName(event.target.value)
-              }}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') {
-                  commitFolderCreation()
-                }
-
-                if (event.key === 'Escape') {
-                  setIsCreatingFolder(false)
-                  setNewFolderName('')
-                }
-              }}
-              onBlur={commitFolderCreation}
-              placeholder="Folder name"
-            />
-          ) : null}
-        </div>
-
-        <div className="mx-3 my-2 h-px bg-border-subtle" />
-
-        <div className="flex items-center justify-between px-3 py-1">
-          <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-foreground/30">Notes</span>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-5 w-5 rounded-md text-foreground/50 hover:bg-surface-2 hover:text-foreground"
-            onClick={() => {
-              onCreateNote(activeFolderId)
-            }}
-          >
-            <Plus className="h-3.5 w-3.5" />
-          </Button>
-        </div>
-
-        <div className="flex-1 overflow-y-auto pb-2">
-          {visibleNotes.length === 0 ? (
-            <div className="px-3 py-8 text-center">
-              <BookOpen className="mx-auto h-4 w-4 text-foreground/30" />
-              <p className="mt-2 text-xs text-foreground/35">No notes in this folder.</p>
             </div>
-          ) : (
-            visibleNotes.map((entry) => {
-              const preview = stripNotePreview(entry.rawText)
-              const isActive = activeNoteId === entry.id
-
-              return (
-                <button
-                  key={entry.id}
-                  type="button"
-                  className={cn(
-                    'group relative w-full px-3 py-1.5 text-left transition-colors',
-                    isActive ? 'bg-primary/15' : 'hover:bg-surface-2/70',
-                  )}
-                  onClick={() => {
-                    onSelectNote(entry.id)
-                  }}
-                >
-                  {isActive ? <span className="absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-r-full bg-primary" /> : null}
-                  <div className="flex items-center gap-2">
-                    <p className={cn('truncate text-xs', isActive ? 'font-medium text-foreground' : 'text-foreground/80')}>
-                      {entry.title || 'Untitled'}
-                    </p>
-                    <span className="ml-auto text-[11px] tabular-nums text-foreground/35">
-                      {formatRelativeNoteTime(entry.updatedAt)}
-                    </span>
-                  </div>
-                  {preview ? <p className="mt-0.5 line-clamp-1 text-[11px] text-foreground/45">{preview}</p> : null}
-                </button>
-              )
-            })
-          )}
+          ) : null}
         </div>
       </aside>
 
@@ -737,7 +1762,7 @@ const NotesSection = ({
         ) : (
           <>
             <div className="px-6 pb-2 pt-6">
-              <div className="flex items-start justify-between gap-3">
+              <div className="flex min-w-0 items-start justify-between gap-3">
                 <Input
                   value={activeNote.title}
                   onChange={(event) => {
@@ -745,10 +1770,35 @@ const NotesSection = ({
                       title: event.target.value,
                     })
                   }}
+                  onKeyDown={(event) => {
+                    const isSaveShortcut = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's'
+                    if (isSaveShortcut) {
+                      event.preventDefault()
+                      onForceSaveNote(activeNote.id)
+                    }
+
+                    event.stopPropagation()
+                  }}
                   placeholder="Untitled Note"
-                  className="h-auto border-none bg-transparent px-0 text-[30px] font-semibold leading-tight tracking-[-0.02em] text-foreground shadow-none focus-visible:ring-0"
+                  className="h-auto min-w-0 flex-1 border-none bg-transparent px-0 text-[30px] font-semibold leading-tight tracking-[-0.02em] text-foreground shadow-none focus-visible:ring-0"
                 />
-                <div className="flex items-center gap-1">
+                <div className="shrink-0 flex items-center gap-1">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 text-foreground/45 hover:bg-surface-2 hover:text-foreground"
+                    title="Regenerate note title"
+                    onClick={() => {
+                      const sourceText = (activeNote.processedText || activeNote.rawText).trim()
+                      const generatedTitle = generateNoteTitleFromContent(sourceText)
+                      onUpdateNote(activeNote.id, {
+                        title: generatedTitle,
+                        autoTitleGenerated: true,
+                      })
+                    }}
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" />
+                  </Button>
                   <Button
                     variant="ghost"
                     size="icon"
@@ -763,21 +1813,44 @@ const NotesSection = ({
                     variant="ghost"
                     size="icon"
                     className="h-7 w-7 text-foreground/45 hover:bg-surface-2 hover:text-foreground"
-                    onClick={() => {
-                      void navigator.clipboard.writeText(activeEditorValue)
+                    onClick={(event) => {
+                      if (exportMenuOpen) {
+                        setExportMenuOpen(false)
+                        return
+                      }
+
+                      openExportMenu(event.currentTarget)
                     }}
+                    title="Export note"
                   >
                     <Download className="h-3.5 w-3.5" />
                   </Button>
                 </div>
               </div>
-              <div className="mt-1 flex items-center gap-2 text-xs text-foreground/40">
-                <span>{formatTimestamp(activeNote.createdAt)}</span>
+              <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-foreground/45">
+                <span>Created {formatTimestamp(activeNote.createdAt)}</span>
                 <span>&middot;</span>
-                <span>{noteWordCount} words</span>
+                <span>{noteComparedWordsLabel}</span>
+                <span>&middot;</span>
+                <span>{noteComparedTokensLabel}</span>
+                <span>&middot;</span>
+                <span>{noteSpentLabel}</span>
+                <button
+                  type="button"
+                  className="app-no-drag inline-flex h-4 w-4 items-center justify-center rounded-full border border-border-subtle text-[10px] text-foreground/60 transition-colors hover:bg-surface-2 hover:text-foreground"
+                  title="Cost reflects processed Enhanced output only. Raw draft-only notes are not counted as spent usage."
+                  onClick={() => {
+                    pushToast({
+                      title: 'Enhanced spend summary',
+                      description: `Raw/Enhanced compare uses this note and model ${postProcessingModelForEstimate}. Displayed value counts only processed enhanced text.`,
+                    })
+                  }}
+                >
+                  i
+                </button>
               </div>
 
-              <div className="mt-2 flex items-center gap-2">
+              <div className="mt-2 flex flex-wrap items-center gap-2">
                 <select
                   className="app-no-drag h-7 rounded-md border border-border-subtle bg-surface-1 px-2 text-[11px] text-foreground/80"
                   value={activeNote.folderId ?? ''}
@@ -788,7 +1861,7 @@ const NotesSection = ({
                     })
                   }}
                 >
-                  <option value="">All notes</option>
+                  <option value="">Uncategorized</option>
                   {folders.map((folder) => (
                     <option key={folder.id} value={folder.id}>
                       {folder.name}
@@ -796,64 +1869,140 @@ const NotesSection = ({
                   ))}
                 </select>
 
-                {activeNote.processedText.trim() ? (
-                  <div className="inline-flex rounded-md border border-border-subtle bg-surface-1 p-0.5">
-                    <button
-                      type="button"
-                      className={cn(
-                        'rounded px-2 py-1 text-[11px] transition-colors',
-                        viewMode === 'raw' ? 'bg-surface-2 text-foreground' : 'text-foreground/60 hover:text-foreground',
-                      )}
-                      onClick={() => {
-                        setViewMode('raw')
-                      }}
-                    >
-                      Raw
-                    </button>
-                    <button
-                      type="button"
-                      className={cn(
-                        'rounded px-2 py-1 text-[11px] transition-colors',
-                        viewMode === 'processed'
-                          ? 'bg-surface-2 text-foreground'
-                          : 'text-foreground/60 hover:text-foreground',
-                      )}
-                      onClick={() => {
-                        setViewMode('processed')
-                      }}
-                    >
-                      Enhanced
-                    </button>
-                  </div>
-                ) : null}
+                <div className="inline-flex rounded-md border border-border-subtle bg-surface-1 p-0.5">
+                  <button
+                    type="button"
+                    className={cn(
+                      'rounded px-2 py-1 text-[11px] transition-colors',
+                      viewMode === 'raw' ? 'bg-surface-2 text-foreground' : 'text-foreground/60 hover:text-foreground',
+                    )}
+                    onClick={() => {
+                      setViewMode('raw')
+                    }}
+                  >
+                    Raw
+                  </button>
+                  <button
+                    type="button"
+                    className={cn(
+                      'rounded px-2 py-1 text-[11px] transition-colors',
+                      viewMode === 'processed'
+                        ? 'bg-surface-2 text-foreground'
+                        : activeNote.processedText.trim()
+                          ? 'text-foreground/60 hover:text-foreground'
+                          : 'cursor-not-allowed text-foreground/35',
+                    )}
+                    disabled={!activeNote.processedText.trim()}
+                    onClick={() => {
+                      setViewMode('processed')
+                    }}
+                  >
+                    Enhanced
+                  </button>
+                  <button
+                    type="button"
+                    className={cn(
+                      'rounded px-2 py-1 text-[11px] transition-colors',
+                      viewMode === 'preview' ? 'bg-surface-2 text-foreground' : 'text-foreground/60 hover:text-foreground',
+                    )}
+                    onClick={() => {
+                      setViewMode('preview')
+                    }}
+                  >
+                    Preview
+                  </button>
+                </div>
+              </div>
+
+              <div className="mt-2 flex flex-wrap items-center gap-1.5 rounded-md border border-border-subtle bg-surface-1 px-2 py-1.5">
+                {markdownToolbarItems.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className="app-no-drag inline-flex h-7 w-7 items-center justify-center rounded-md text-foreground/65 transition-colors hover:bg-surface-2 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                    onClick={item.onClick}
+                    disabled={markdownCommandsDisabled}
+                    title={item.label}
+                  >
+                    {item.icon}
+                  </button>
+                ))}
+
+                <button
+                  type="button"
+                  className="app-no-drag inline-flex h-7 items-center gap-1 rounded-md border border-border-subtle px-2 text-[11px] text-foreground/70 transition-colors hover:bg-surface-2 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                  disabled={markdownCommandsDisabled}
+                  onClick={(event) => {
+                    event.preventDefault()
+                    event.stopPropagation()
+
+                    if (markdownMenuOpen) {
+                      setMarkdownMenuOpen(false)
+                      return
+                    }
+
+                    openMarkdownMenu(event.currentTarget)
+                  }}
+                >
+                  More
+                  <ChevronDown className="h-3 w-3" />
+                </button>
               </div>
             </div>
 
-            <div className="relative flex-1 overflow-hidden px-5 pb-24 pt-2">
-              <Textarea
-                className="h-full min-h-[26rem] resize-none border-none bg-transparent px-1 py-0 text-[15px] leading-6 text-foreground/85 shadow-none focus-visible:ring-0"
-                value={activeEditorValue}
-                onChange={(event) => {
-                  if (viewMode === 'processed') {
-                    onUpdateNote(activeNote.id, {
-                      processedText: event.target.value,
-                    })
-                    return
-                  }
+            <div className="flex min-h-0 flex-1 flex-col gap-3 pl-3 pr-0 pt-2">
+              <div className="min-h-0 flex-1 overflow-hidden">
+                {viewMode === 'preview' ? (
+                  <div className="h-full min-h-0 overflow-hidden rounded-xl border border-border-subtle bg-surface-0/70">
+                    <div className="h-full overflow-y-auto px-5 py-4 pr-12 [scrollbar-width:thin]">
+                      <MarkdownPreview
+                        source={activeEditorValue || '*Nothing to preview yet.*'}
+                        remarkPlugins={[remarkGfm]}
+                        rehypePlugins={[rehypeRaw]}
+                        wrapperElement={{
+                          'data-color-mode': settings.theme === 'dark' ? 'dark' : 'light',
+                        }}
+                        style={{
+                          backgroundColor: 'transparent',
+                          color: 'inherit',
+                          boxShadow: 'none',
+                          margin: 0,
+                          padding: 0,
+                          minHeight: '100%',
+                          fontSize: '15px',
+                          lineHeight: 1.6,
+                        }}
+                      />
+                    </div>
+                  </div>
+                ) : (
+                  <Textarea
+                    ref={editorTextareaRef}
+                    className="h-full min-h-0 resize-none rounded-xl border border-border-subtle bg-surface-0/70 px-5 py-4 pr-12 text-[15px] leading-6 text-foreground/85 shadow-none focus-visible:border-primary/45 focus-visible:ring-2 focus-visible:ring-primary/15"
+                    value={activeEditorValue}
+                    onChange={(event) => {
+                      updateActiveEditorValue(event.target.value)
+                    }}
+                    onKeyDown={(event) => {
+                      const isSaveShortcut = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's'
+                      if (isSaveShortcut) {
+                        event.preventDefault()
+                        onForceSaveNote(activeNote.id)
+                      }
 
-                  onUpdateNote(activeNote.id, {
-                    rawText: event.target.value,
-                  })
-                }}
-                placeholder="Start writing..."
-              />
+                      event.stopPropagation()
+                    }}
+                    placeholder={
+                      viewMode === 'processed' && !activeNote.processedText.trim()
+                        ? 'Run an action to generate an enhanced version.'
+                        : 'Start writing in Markdown...'
+                    }
+                    disabled={viewMode === 'processed' && !activeNote.processedText.trim()}
+                  />
+                )}
+              </div>
 
-              <div
-                className="pointer-events-none absolute bottom-20 left-0 right-0 h-24"
-                style={{ background: 'linear-gradient(to bottom, transparent, var(--surface-0))' }}
-              />
-
-              <div className="absolute bottom-5 left-1/2 z-10 flex -translate-x-1/2 items-center gap-2">
+              <div className="flex flex-wrap items-center justify-center gap-2 pb-5">
                 <Button
                   variant="outline"
                   className="h-11 rounded-xl border-primary/30 bg-primary/10 px-5 text-primary hover:bg-primary/15"
@@ -869,20 +2018,209 @@ const NotesSection = ({
                   {isRecordingActiveNote ? 'Stop' : isTranscribingActiveNote ? 'Transcribing...' : 'Transcribe'}
                 </Button>
 
-                <Button
-                  variant="outline"
-                  className="h-11 rounded-xl border-border-subtle bg-surface-1 px-5 text-foreground/80 hover:bg-surface-2"
-                  onClick={() => {
-                    onPostProcessNote(activeNote.id)
-                  }}
-                  disabled={postProcessingNoteId === activeNote.id || !activeNote.rawText.trim()}
-                >
-                  <Sparkles className="mr-1.5 h-3.5 w-3.5" />
-                  {postProcessingNoteId === activeNote.id ? 'Processing...' : 'Clean Up Notes'}
-                  <ChevronDown className="ml-2 h-3.5 w-3.5 opacity-70" />
-                </Button>
+                <div className="relative inline-flex">
+                  <button
+                    type="button"
+                    aria-label="Run selected note action"
+                    className="app-no-drag inline-flex h-11 items-center gap-2 rounded-xl border border-border-subtle bg-surface-1 pl-5 pr-12 text-sm text-foreground/80 transition-colors hover:bg-surface-2 disabled:pointer-events-none disabled:opacity-50"
+                    onClick={() => {
+                      if (!activeAction) {
+                        return
+                      }
+
+                      handleRunAction(activeAction)
+                    }}
+                    disabled={postProcessingNoteId === activeNote.id || !activeNote.rawText.trim() || !activeAction}
+                  >
+                    <Sparkles className="h-3.5 w-3.5" />
+                    <span className="truncate">
+                      {postProcessingNoteId === activeNote.id ? 'Processing...' : activeAction?.name ?? 'Clean Up Notes'}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    aria-label="Open note actions menu"
+                    className="app-no-drag absolute right-0 top-0 inline-flex h-11 w-10 items-center justify-center rounded-r-xl border-l border-border-subtle bg-surface-2/70 text-foreground/70 transition-colors hover:bg-surface-2 disabled:pointer-events-none disabled:opacity-50"
+                    onPointerDown={(event) => {
+                      event.stopPropagation()
+                    }}
+                    onClick={(event) => {
+                      event.preventDefault()
+                      event.stopPropagation()
+
+                      if (actionsMenuOpen) {
+                        setActionsMenuOpen(false)
+                        return
+                      }
+
+                      openActionsMenu(event.currentTarget)
+                    }}
+                    disabled={postProcessingNoteId === activeNote.id || !activeNote.rawText.trim()}
+                  >
+                    <ChevronDown className="h-3.5 w-3.5 opacity-70" />
+                  </button>
+                </div>
               </div>
             </div>
+
+            <Dropdown
+              open={actionsMenuOpen}
+              anchor={actionsMenuAnchor}
+              onClose={() => {
+                setActionsMenuOpen(false)
+              }}
+              items={actionMenuItems}
+            />
+
+            <Dropdown
+              open={exportMenuOpen}
+              anchor={exportMenuAnchor}
+              onClose={() => {
+                setExportMenuOpen(false)
+              }}
+              items={exportMenuItems}
+            />
+
+            <Dropdown
+              open={markdownMenuOpen}
+              anchor={markdownMenuAnchor}
+              onClose={() => {
+                setMarkdownMenuOpen(false)
+              }}
+              items={markdownMenuItems}
+            />
+
+              <Dialog
+                open={actionManagerOpen}
+                onOpenChange={(open) => {
+                  setActionManagerOpen(open)
+                  if (!open) {
+                    resetActionEditor()
+                  }
+                }}
+              >
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>Manage Actions</DialogTitle>
+                    <DialogDescription>
+                      Add, edit, or remove custom note actions.
+                    </DialogDescription>
+                  </DialogHeader>
+
+                  <div className="space-y-3">
+                    <div className="space-y-1.5">
+                      <p className="text-sm font-medium">Action name</p>
+                      <Input
+                        value={customActionName}
+                        onChange={(event) => {
+                          setCustomActionName(event.target.value)
+                        }}
+                        placeholder="Ex: Meeting summary"
+                        autoFocus
+                      />
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <p className="text-sm font-medium">Description</p>
+                      <Input
+                        value={customActionDescription}
+                        onChange={(event) => {
+                          setCustomActionDescription(event.target.value)
+                        }}
+                        placeholder="Ex: Fix grammar and structure"
+                      />
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <p className="text-sm font-medium">Instructions</p>
+                      <Textarea
+                        value={customActionInstructions}
+                        onChange={(event) => {
+                          setCustomActionInstructions(event.target.value)
+                        }}
+                        placeholder="Describe what this action should do..."
+                        className="min-h-32"
+                      />
+                    </div>
+                  </div>
+
+                  <DialogFooter>
+                    {editingActionId ? (
+                      <Button variant="ghost" onClick={resetActionEditor}>
+                        Cancel
+                      </Button>
+                    ) : null}
+                    <Button
+                      onClick={commitCustomAction}
+                      disabled={!customActionName.trim() || !customActionInstructions.trim()}
+                    >
+                      {editingActionId ? 'Update action' : 'Save action'}
+                    </Button>
+                  </DialogFooter>
+
+                  <div className="border-t border-border-subtle pt-3">
+                    {actions.length === 0 ? (
+                      <p className="py-2 text-center text-xs text-muted-foreground">No actions available.</p>
+                    ) : (
+                      <div className="max-h-52 space-y-1 overflow-y-auto">
+                        {actions.map((action) => (
+                          <div
+                            key={action.id}
+                            className="group flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-surface-2"
+                          >
+                            <Sparkles className="h-3.5 w-3.5 shrink-0 text-foreground/45" />
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-1.5">
+                                <span className="truncate text-xs font-medium">{action.name}</span>
+                                {action.isBuiltIn ? (
+                                  <span className="rounded bg-surface-2 px-1.5 py-px text-[10px] text-muted-foreground">
+                                    Built-in
+                                  </span>
+                                ) : null}
+                              </div>
+                              {action.description ? (
+                                <p className="truncate text-[11px] text-muted-foreground">{action.description}</p>
+                              ) : null}
+                            </div>
+
+                            <div className="flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-6 w-6"
+                                onClick={() => {
+                                  setEditingActionId(action.id)
+                                  setCustomActionName(action.name)
+                                  setCustomActionDescription(action.description)
+                                  setCustomActionInstructions(action.instructions)
+                                }}
+                              >
+                                <Pencil className="h-3.5 w-3.5" />
+                              </Button>
+                              {!action.isBuiltIn ? (
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-6 w-6 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                                  onClick={() => {
+                                    onDeleteNoteAction(action.id)
+                                    if (editingActionId === action.id) {
+                                      resetActionEditor()
+                                    }
+                                  }}
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </Button>
+                              ) : null}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </DialogContent>
+              </Dialog>
           </>
         )}
       </section>
@@ -1365,13 +2703,27 @@ const PreferencesSettingsPanel = ({
         <div className="space-y-2 rounded-md border border-border-subtle bg-surface-0 px-3 py-2.5">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <p className="text-sm">Show runtime monitor on floating icon</p>
-              <p className="text-xs text-muted-foreground">Always show CPU/CUDA mode with RAM and VRAM usage in the mic badge.</p>
+              <p className="text-sm">Show microphone badge</p>
+              <p className="text-xs text-muted-foreground">Show CPU/CUDA mode with RAM and VRAM usage on the floating mic.</p>
             </div>
             <Switch
               checked={settings.overlayRuntimeBadgeEnabled}
               onCheckedChange={(checked) => {
                 onChange({ overlayRuntimeBadgeEnabled: checked })
+              }}
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-3 rounded-md border border-border-subtle bg-surface-1/70 px-2.5 py-2">
+            <div>
+              <p className="text-xs font-medium">Show only while dictating</p>
+              <p className="text-[11px] text-muted-foreground">When enabled, the badge appears only during recording/processing.</p>
+            </div>
+            <Switch
+              checked={settings.overlayRuntimeBadgeOnlyOnUse}
+              disabled={!settings.overlayRuntimeBadgeEnabled}
+              onCheckedChange={(checked) => {
+                onChange({ overlayRuntimeBadgeOnlyOnUse: checked })
               }}
             />
           </div>
@@ -1431,6 +2783,46 @@ const PreferencesSettingsPanel = ({
                 </option>
               ))}
             </select>
+          </div>
+
+          <div className="grid gap-2 md:grid-cols-2">
+            <div className="rounded-md border border-border-subtle bg-surface-1/70 px-2.5 py-2">
+              <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Paste mode</p>
+              <select
+                className="app-no-drag h-8 w-full rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 px-2 text-xs"
+                value={settings.autoPasteMode}
+                onChange={(event) => {
+                  onChange({ autoPasteMode: event.target.value as AppSettings['autoPasteMode'] })
+                }}
+              >
+                <option value="instant">Instant paste</option>
+                <option value="stream">Streaming typing</option>
+              </select>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                {settings.autoPasteMode === 'instant'
+                  ? 'Clipboard paste hotkey is sent to the focused app.'
+                  : 'Types characters sequentially with a very low key delay.'}
+              </p>
+            </div>
+
+            <div className="rounded-md border border-border-subtle bg-surface-1/70 px-2.5 py-2">
+              <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Paste shortcut</p>
+              <select
+                className="app-no-drag h-8 w-full rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 px-2 text-xs"
+                value={settings.autoPasteShortcut}
+                onChange={(event) => {
+                  onChange({ autoPasteShortcut: event.target.value as AppSettings['autoPasteShortcut'] })
+                }}
+              >
+                <option value="ctrl-v">Ctrl+V</option>
+                <option value="ctrl-shift-v">Ctrl+Shift+V</option>
+              </select>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                {settings.autoPasteMode === 'instant'
+                  ? 'Pick standard paste or terminal-safe paste.'
+                  : 'Shortcut selection is used only in Instant mode.'}
+              </p>
+            </div>
           </div>
 
           <div className="rounded-md border border-border-subtle bg-surface-1/70 p-2.5">
@@ -1526,6 +2918,130 @@ const PrivacyPanel = () => (
   </Card>
 )
 
+interface SpendingLimitsSectionProps {
+  settings: AppSettings
+  onChange: (next: Partial<AppSettings>) => void
+}
+
+const SpendingLimitsSection = ({ settings, onChange }: SpendingLimitsSectionProps) => {
+  const activeCloudProviders = new Set<string>()
+  if (settings.transcriptionRuntime === 'cloud') {
+    activeCloudProviders.add(settings.transcriptionCloudProvider)
+  }
+  if (settings.postProcessingRuntime === 'cloud') {
+    activeCloudProviders.add(settings.postProcessingCloudProvider)
+  }
+
+  const limitRows: Array<{
+    providerId: 'openai' | 'groq' | 'grok' | 'custom'
+    label: string
+    field: 'spendingLimitOpenAIUSD' | 'spendingLimitGroqUSD' | 'spendingLimitGrokUSD' | 'spendingLimitCustomUSD'
+  }> = [
+    { providerId: 'openai', label: 'OpenAI', field: 'spendingLimitOpenAIUSD' },
+    { providerId: 'groq', label: 'Groq', field: 'spendingLimitGroqUSD' },
+    { providerId: 'grok', label: 'Grok (xAI)', field: 'spendingLimitGrokUSD' },
+    { providerId: 'custom', label: 'Custom endpoint', field: 'spendingLimitCustomUSD' },
+  ]
+
+  return (
+    <Card id="settings-node-spending-limits" className="scroll-mt-6">
+      <CardHeader>
+        <CardTitle>Spending limits</CardTitle>
+        <CardDescription>Set monthly soft limits per provider. Set 0 to disable a provider limit.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {limitRows.map((row) => {
+          const isActive = activeCloudProviders.has(row.providerId)
+          const currentValue = settings[row.field]
+
+          return (
+            <div key={row.providerId} className="rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 p-3">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <p className="text-sm font-medium">{row.label}</p>
+                <Badge tone={isActive ? 'success' : 'neutral'}>{isActive ? 'Active' : 'Inactive'}</Badge>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-muted-foreground">$</span>
+                <Input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={Number.isFinite(currentValue) ? String(currentValue) : '0'}
+                  onChange={(event) => {
+                    const parsed = Number.parseFloat(event.target.value)
+                    onChange({
+                      [row.field]: Number.isFinite(parsed) && parsed >= 0 ? parsed : 0,
+                    } as Partial<AppSettings>)
+                  }}
+                  className="h-9"
+                />
+              </div>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                {isActive
+                  ? 'Current runtime uses this provider. You can monitor usage in the sidebar.'
+                  : 'Not currently selected in cloud runtime.'}
+              </p>
+            </div>
+          )
+        })}
+      </CardContent>
+    </Card>
+  )
+}
+
+const FaqSection = () => {
+  const entries = [
+    {
+      question: 'How are costs calculated?',
+      answer:
+        'Whispy calculates token-based estimates using the LiteLLM pricing catalog. For notes, only enhanced (processed) notes are counted as spent usage.',
+    },
+    {
+      question: 'Why can estimates differ from provider billing?',
+      answer:
+        'Providers can tokenize differently and may bill transcription by audio minute. Whispy shows practical estimates and keeps source status visible (Live, Cached, or Unavailable).',
+    },
+    {
+      question: 'What does Recorded time mean in Dictations stats?',
+      answer:
+        'It is the total captured recording duration from dictation sessions. If duration metadata is missing, Whispy falls back to a words-per-minute estimate.',
+    },
+    {
+      question: 'What is the difference between Auto-paste Instant and Streaming?',
+      answer:
+        'Instant sends paste shortcut (Ctrl+V or Ctrl+Shift+V) after placing text in clipboard. Streaming types characters sequentially with very low delay.',
+    },
+    {
+      question: 'When are local models loaded?',
+      answer:
+        'Local models are loaded only when local runtime is active. If cloud runtime is selected, local models stay on disk and are not loaded into RAM/VRAM.',
+    },
+    {
+      question: 'How do spending limits work?',
+      answer:
+        'Spending Limits are soft limits per provider to help monitoring. They do not block API calls automatically yet; they are intended for awareness and planned guardrails.',
+    },
+  ]
+
+  return (
+    <Card id="settings-node-faq" className="scroll-mt-6">
+      <CardHeader>
+        <CardTitle>FAQ</CardTitle>
+        <CardDescription>Quick answers for usage, pricing, dictation, notes, and runtime behavior.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {entries.map((entry) => (
+          <div key={entry.question} className="rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 p-3">
+            <p className="text-sm font-semibold text-foreground">{entry.question}</p>
+            <p className="mt-1 text-sm text-muted-foreground">{entry.answer}</p>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  )
+}
+
 interface ModelsSectionProps {
   scope: 'transcriptions' | 'post'
   mode: 'cloud' | 'local'
@@ -1556,9 +3072,6 @@ const renderProviderIcon = (providerId: string) => {
     groq: {
       svg: groqLogoSvg,
       className: 'text-[#f55036]',
-    },
-    meta: {
-      svg: metaColorLogoSvg,
     },
   }
 
@@ -1944,6 +3457,10 @@ const ModelsSection = ({
 
   const autoScanProviderModels = useCallback(
     async (scopeKey: 'transcription' | 'post', providerId: string, apiKey: string) => {
+      if (providerId === 'grok') {
+        return
+      }
+
       const baseUrl = OPENAI_COMPATIBLE_BASE_URL_BY_PROVIDER[providerId]
       if (!baseUrl || !apiKey.trim()) {
         return
@@ -2038,7 +3555,6 @@ const ModelsSection = ({
     settings.transcriptionOpenAIApiKey,
     settings.transcriptionGroqApiKey,
     settings.transcriptionGrokApiKey,
-    settings.transcriptionMetaApiKey,
   ])
 
   useEffect(() => {
@@ -2061,7 +3577,6 @@ const ModelsSection = ({
     settings.postProcessingOpenAIApiKey,
     settings.postProcessingGroqApiKey,
     settings.postProcessingGrokApiKey,
-    settings.postProcessingMetaApiKey,
   ])
 
   const handleCustomTranscriptionModelScan = async () => {
@@ -2150,21 +3665,18 @@ const ModelsSection = ({
     | 'transcriptionOpenAIApiKey'
     | 'transcriptionGrokApiKey'
     | 'transcriptionGroqApiKey'
-    | 'transcriptionMetaApiKey'
     | 'transcriptionCustomApiKey'
 
   type PostProcessingApiKeyField =
     | 'postProcessingOpenAIApiKey'
     | 'postProcessingGrokApiKey'
     | 'postProcessingGroqApiKey'
-    | 'postProcessingMetaApiKey'
     | 'postProcessingCustomApiKey'
 
   const transcriptionApiKeyFieldByProvider: Record<string, TranscriptionApiKeyField> = {
     openai: 'transcriptionOpenAIApiKey',
     grok: 'transcriptionGrokApiKey',
     groq: 'transcriptionGroqApiKey',
-    meta: 'transcriptionMetaApiKey',
     custom: 'transcriptionCustomApiKey',
   }
 
@@ -2172,7 +3684,6 @@ const ModelsSection = ({
     openai: 'postProcessingOpenAIApiKey',
     grok: 'postProcessingGrokApiKey',
     groq: 'postProcessingGroqApiKey',
-    meta: 'postProcessingMetaApiKey',
     custom: 'postProcessingCustomApiKey',
   }
 
@@ -2220,7 +3731,6 @@ const ModelsSection = ({
     openai: 'https://platform.openai.com/api-keys',
     grok: 'https://console.x.ai/team/api-keys',
     groq: 'https://console.groq.com/keys',
-    meta: 'https://www.llama.com/docs/api/getting-started/',
   }
 
   const getProviderApiKeyDocsUrl = (providerId: string) => providerApiKeyDocsByProvider[providerId] ?? null
@@ -3135,10 +4645,15 @@ interface PromptsSectionProps {
 }
 
 const PromptsSection = ({ settings, onChange }: PromptsSectionProps) => {
+  const { pushToast } = useToast()
   const [view, setView] = useState<PromptView>('preview')
   const [testInput, setTestInput] = useState('')
   const [testOutput, setTestOutput] = useState('')
   const [testLoading, setTestLoading] = useState(false)
+  const [customizeTarget, setCustomizeTarget] = useState<'normal' | 'agent' | 'translation'>('agent')
+  const [normalPromptDraft, setNormalPromptDraft] = useState(settings.normalPrompt)
+  const [agentPromptDraft, setAgentPromptDraft] = useState(settings.agentPrompt)
+  const [translationPromptDraft, setTranslationPromptDraft] = useState(settings.translationPrompt)
 
   const translationComboHotkey = useMemo(
     () => buildTranslationComboHotkey(settings.hotkey),
@@ -3147,6 +4662,67 @@ const PromptsSection = ({ settings, onChange }: PromptsSectionProps) => {
 
   const translationHotkey =
     settings.translationHotkeyMode === 'combo' ? translationComboHotkey : settings.translationCustomHotkey
+
+  useEffect(() => {
+    setNormalPromptDraft(settings.normalPrompt)
+  }, [settings.normalPrompt])
+
+  useEffect(() => {
+    setAgentPromptDraft(settings.agentPrompt)
+  }, [settings.agentPrompt])
+
+  useEffect(() => {
+    setTranslationPromptDraft(settings.translationPrompt)
+  }, [settings.translationPrompt])
+
+  const hasUnsavedPromptChanges =
+    normalPromptDraft !== settings.normalPrompt ||
+    agentPromptDraft !== settings.agentPrompt ||
+    translationPromptDraft !== settings.translationPrompt
+
+  const activePromptDraft =
+    customizeTarget === 'normal'
+      ? normalPromptDraft
+      : customizeTarget === 'agent'
+        ? agentPromptDraft
+        : translationPromptDraft
+
+  const activePromptLabel =
+    customizeTarget === 'normal' ? 'Normal prompt' : customizeTarget === 'agent' ? 'Agent prompt' : 'Translation prompt'
+
+  const updateActivePromptDraft = (nextValue: string) => {
+    if (customizeTarget === 'normal') {
+      setNormalPromptDraft(nextValue)
+      return
+    }
+
+    if (customizeTarget === 'agent') {
+      setAgentPromptDraft(nextValue)
+      return
+    }
+
+    setTranslationPromptDraft(nextValue)
+  }
+
+  const savePromptDrafts = () => {
+    onChange({
+      normalPrompt: normalPromptDraft,
+      agentPrompt: agentPromptDraft,
+      translationPrompt: translationPromptDraft,
+    })
+
+    pushToast({
+      title: 'System prompts saved',
+      description: 'Prompt templates have been updated.',
+      variant: 'success',
+    })
+  }
+
+  const resetPromptDrafts = () => {
+    setNormalPromptDraft(settings.normalPrompt)
+    setAgentPromptDraft(settings.agentPrompt)
+    setTranslationPromptDraft(settings.translationPrompt)
+  }
 
   const runPromptTest = async () => {
     if (typeof window.electronAPI !== 'undefined') {
@@ -3199,120 +4775,152 @@ const PromptsSection = ({ settings, onChange }: PromptsSectionProps) => {
       <Card id="settings-node-prompts" className="scroll-mt-6">
         <CardHeader>
           <CardTitle>Prompts</CardTitle>
-          <CardDescription>Standalone prompt workspace with Preview, Customize, and Test.</CardDescription>
+          <CardDescription>Standalone prompt workspace with View, Customize, and Test.</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="mx-auto max-w-3xl space-y-4">
+          <div className="mx-auto w-full max-w-[1100px] space-y-4">
           <Tabs
             value={view}
             onValueChange={(nextValue) => {
               setView(nextValue as PromptView)
             }}
           >
-            <div className="overflow-x-auto">
-              <TabsList className="mx-auto h-auto w-max flex-nowrap justify-start gap-1 bg-surface-2/80 p-1">
-                <TabsTrigger value="preview" className="min-w-[120px]">
-                  Preview
+            <div className="rounded-[14px] border border-border-subtle bg-[#050b16]/95">
+              <TabsList className="grid h-11 w-full grid-cols-3 rounded-none border-b border-border-subtle bg-transparent p-0">
+                <TabsTrigger value="preview" className="h-11 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-surface-0/40">
+                  <Eye className="mr-1.5 h-3.5 w-3.5" />
+                  View
                 </TabsTrigger>
-                <TabsTrigger value="customize" className="min-w-[120px]">
+                <TabsTrigger value="customize" className="h-11 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-surface-0/40">
+                  <Pencil className="mr-1.5 h-3.5 w-3.5" />
                   Customize
                 </TabsTrigger>
-                <TabsTrigger value="test" className="min-w-[120px]">
+                <TabsTrigger value="test" className="h-11 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-surface-0/40">
+                  <Search className="mr-1.5 h-3.5 w-3.5" />
                   Test
                 </TabsTrigger>
               </TabsList>
+
+              <TabsContent value="preview" className="space-y-3 p-4">
+                <div className="rounded-md border border-border-subtle bg-surface-0 p-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Normal prompt</p>
+                  <p className="mt-2 whitespace-pre-wrap text-sm text-foreground">{settings.normalPrompt}</p>
+                </div>
+                <div className="rounded-md border border-border-subtle bg-surface-0 p-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Agent route</p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Triggered when input includes: <span className="font-medium text-foreground">{settings.agentName || 'Agent'}</span>
+                  </p>
+                  <p className="mt-2 whitespace-pre-wrap text-sm text-foreground">{settings.agentPrompt}</p>
+                </div>
+
+                <div className="rounded-md border border-border-subtle bg-surface-0 p-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Translation mode</p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {settings.translationModeEnabled
+                      ? `Enabled | hotkey: ${translationHotkey}`
+                      : 'Disabled'}
+                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {languageLabelWithFlag(settings.translationSourceLanguage)} {' -> '}
+                    {languageLabelWithFlag(settings.translationTargetLanguage)}
+                  </p>
+                  <p className="mt-2 whitespace-pre-wrap text-sm text-foreground">{settings.translationPrompt}</p>
+                </div>
+              </TabsContent>
+
+              <TabsContent value="customize" className="space-y-4 p-4">
+                <div className="inline-flex rounded-md border border-border-subtle bg-surface-1 p-0.5">
+                  {[
+                    { id: 'normal', label: 'Normal' },
+                    { id: 'agent', label: 'Agent' },
+                    { id: 'translation', label: 'Translation' },
+                  ].map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      className={cn(
+                        'rounded px-2.5 py-1 text-[11px] transition-colors',
+                        customizeTarget === option.id
+                          ? 'bg-surface-2 text-foreground'
+                          : 'text-foreground/60 hover:text-foreground',
+                      )}
+                      onClick={() => {
+                        setCustomizeTarget(option.id as 'normal' | 'agent' | 'translation')
+                      }}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+
+                <p className="rounded-md border border-amber-500/25 bg-amber-500/8 px-3 py-2 text-sm text-amber-200/90">
+                  <span className="font-semibold text-amber-300">Caution</span> Editing system prompts affects processing quality.
+                  Keep placeholders like <code className="font-mono text-[12px]">{'{agentName}'}</code> where required.
+                </p>
+
+                <div className="rounded-xl border border-border-subtle bg-surface-0/90 p-3">
+                  <p className="mb-2 text-sm font-medium">{activePromptLabel}</p>
+                  <Textarea
+                    value={activePromptDraft}
+                    onChange={(event) => {
+                      updateActivePromptDraft(event.target.value)
+                    }}
+                    placeholder="Write your system prompt here..."
+                    className="min-h-[22rem] rounded-lg border border-border-subtle bg-[#030710] px-3 py-3 font-mono text-[13px] leading-6"
+                  />
+                  <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                    <span>Agent name: <span className="font-medium text-foreground">{settings.agentName || 'Agent'}</span></span>
+                    <span>{activePromptDraft.length} characters</span>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-end gap-2">
+                  <Button
+                    variant="outline"
+                    onClick={resetPromptDrafts}
+                    disabled={!hasUnsavedPromptChanges}
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" />
+                    Reset
+                  </Button>
+                  <Button onClick={savePromptDrafts} disabled={!hasUnsavedPromptChanges}>
+                    <Save className="h-3.5 w-3.5" />
+                    Save
+                  </Button>
+                </div>
+              </TabsContent>
+
+              <TabsContent value="test" className="space-y-3 p-4">
+                <div className="space-y-1.5">
+                  <p className="text-sm font-medium">Test input</p>
+                  <Textarea
+                    value={testInput}
+                    onChange={(event) => {
+                      setTestInput(event.target.value)
+                    }}
+                    placeholder={`Try text with "${settings.agentName || 'Agent'}" or prefix with "translate:".`}
+                    className="min-h-28"
+                  />
+                </div>
+                <div className="flex justify-end">
+                  <Button
+                    onClick={() => {
+                      void runPromptTest()
+                    }}
+                    disabled={testLoading}
+                  >
+                    {testLoading ? 'Running...' : 'Run test'}
+                  </Button>
+                </div>
+                <div className="rounded-md border border-border-subtle bg-surface-0 p-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Result</p>
+                  <p className="mt-2 whitespace-pre-wrap text-sm text-foreground">
+                    {testOutput || 'No output yet. Run a test to preview routing behavior.'}
+                  </p>
+                </div>
+              </TabsContent>
             </div>
-
-            <TabsContent value="preview" className="mt-4 space-y-3">
-              <div className="rounded-md border border-border-subtle bg-surface-0 p-3">
-                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Normal prompt</p>
-                <p className="mt-2 whitespace-pre-wrap text-sm text-foreground">{settings.normalPrompt}</p>
-              </div>
-              <div className="rounded-md border border-border-subtle bg-surface-0 p-3">
-                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Agent route</p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Triggered when input includes: <span className="font-medium text-foreground">{settings.agentName || 'Agent'}</span>
-                </p>
-                <p className="mt-2 whitespace-pre-wrap text-sm text-foreground">{settings.agentPrompt}</p>
-              </div>
-
-              <div className="rounded-md border border-border-subtle bg-surface-0 p-3">
-                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Translation mode</p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {settings.translationModeEnabled
-                    ? `Enabled | hotkey: ${translationHotkey}`
-                    : 'Disabled'}
-                </p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {languageLabelWithFlag(settings.translationSourceLanguage)} {' -> '}
-                  {languageLabelWithFlag(settings.translationTargetLanguage)}
-                </p>
-                <p className="mt-2 whitespace-pre-wrap text-sm text-foreground">{settings.translationPrompt}</p>
-              </div>
-            </TabsContent>
-
-            <TabsContent value="customize" className="mt-4 space-y-4">
-              <div className="space-y-1.5">
-                <p className="text-sm font-medium">Normal prompt</p>
-                <Textarea
-                  value={settings.normalPrompt}
-                  onChange={(event) => {
-                    onChange({ normalPrompt: event.target.value })
-                  }}
-                  placeholder="Prompt used for regular post-processing."
-                />
-              </div>
-              <div className="space-y-1.5">
-                <p className="text-sm font-medium">Agent prompt</p>
-                <Textarea
-                  value={settings.agentPrompt}
-                  onChange={(event) => {
-                    onChange({ agentPrompt: event.target.value })
-                  }}
-                  placeholder="Prompt used when the agent name is detected."
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <p className="text-sm font-medium">Translation prompt</p>
-                <Textarea
-                  value={settings.translationPrompt}
-                  onChange={(event) => {
-                    onChange({ translationPrompt: event.target.value })
-                  }}
-                  placeholder="Prompt used when translation mode is active."
-                />
-              </div>
-            </TabsContent>
-
-            <TabsContent value="test" className="mt-4 space-y-3">
-              <div className="space-y-1.5">
-                <p className="text-sm font-medium">Test input</p>
-                <Textarea
-                  value={testInput}
-                  onChange={(event) => {
-                    setTestInput(event.target.value)
-                  }}
-                  placeholder={`Try text with "${settings.agentName || 'Agent'}" or prefix with "translate:".`}
-                />
-              </div>
-              <div className="flex justify-end">
-                <Button
-                  onClick={() => {
-                    void runPromptTest()
-                  }}
-                  disabled={testLoading}
-                >
-                  {testLoading ? 'Running...' : 'Run test'}
-                </Button>
-              </div>
-              <div className="rounded-md border border-border-subtle bg-surface-0 p-3">
-                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Result</p>
-                <p className="mt-2 whitespace-pre-wrap text-sm text-foreground">
-                  {testOutput || 'No output yet. Run a test to preview routing behavior.'}
-                </p>
-              </div>
-            </TabsContent>
           </Tabs>
           </div>
         </CardContent>
@@ -3374,9 +4982,11 @@ const InfoSection = ({
   const [showBugLogs, setShowBugLogs] = useState(false)
   const [debugLogStatus, setDebugLogStatus] = useState<DebugLogStatusPayload | null>(null)
   const [debugLogStatusLoading, setDebugLogStatusLoading] = useState(false)
+  const [debugLogFileOpening, setDebugLogFileOpening] = useState(false)
   const [showSecretStorage, setShowSecretStorage] = useState(false)
   const [secretStorageStatus, setSecretStorageStatus] = useState<SecretStorageStatusPayload | null>(null)
   const [secretStorageStatusLoading, setSecretStorageStatusLoading] = useState(false)
+  const [secretEnvFileOpening, setSecretEnvFileOpening] = useState(false)
   const [secretMigrationLoading, setSecretMigrationLoading] = useState(false)
 
   const activeTranscriptionProviderLabel =
@@ -3393,14 +5003,18 @@ const InfoSection = ({
       setDebugLogStatusLoading(true)
 
       try {
-        const status = await electronAPI.getDebugLogStatus()
+        const status = await runWithTimeout(
+          electronAPI.getDebugLogStatus(),
+          INFO_SECTION_REQUEST_TIMEOUT_MS,
+          'Debug log status request timed out.',
+        )
         setDebugLogStatus(status)
-      } catch {
+      } catch (error: unknown) {
         setDebugLogStatus(null)
         if (showErrorToast) {
           pushToast({
             title: 'Debug log status unavailable',
-            description: 'Unable to read debug log status in this runtime.',
+            description: error instanceof Error ? error.message : 'Unable to read debug log status in this runtime.',
             variant: 'destructive',
           })
         }
@@ -3416,7 +5030,7 @@ const InfoSection = ({
       return
     }
 
-    void refreshDebugLogStatus(false)
+    void refreshDebugLogStatus(true)
   }, [refreshDebugLogStatus, showBugLogs])
 
   const refreshSecretStorageStatus = useCallback(
@@ -3424,14 +5038,18 @@ const InfoSection = ({
       setSecretStorageStatusLoading(true)
 
       try {
-        const status = await electronAPI.getSecretStorageStatus()
+        const status = await runWithTimeout(
+          electronAPI.getSecretStorageStatus(),
+          INFO_SECTION_REQUEST_TIMEOUT_MS,
+          'Secret storage status request timed out.',
+        )
         setSecretStorageStatus(status)
-      } catch {
+      } catch (error: unknown) {
         setSecretStorageStatus(null)
         if (showErrorToast) {
           pushToast({
             title: 'Secret storage status unavailable',
-            description: 'Unable to read keyring/env status in this runtime.',
+            description: error instanceof Error ? error.message : 'Unable to read keyring/env status in this runtime.',
             variant: 'destructive',
           })
         }
@@ -3447,7 +5065,7 @@ const InfoSection = ({
       return
     }
 
-    void refreshSecretStorageStatus(false)
+    void refreshSecretStorageStatus(true)
   }, [refreshSecretStorageStatus, showSecretStorage])
 
   const handleSecretMigration = useCallback(async () => {
@@ -3518,7 +5136,11 @@ const InfoSection = ({
               {settings.debugModeEnabled ? (
                 <>
                   <p className="mt-2">Current debug log file:</p>
-                  <p className="text-xs">{debugLogStatus?.currentLogFile ?? 'Loading...'}</p>
+                  <p className="text-xs">
+                    {debugLogStatusLoading
+                      ? 'Loading...'
+                      : debugLogStatus?.currentLogFile ?? 'Unavailable (check debug runtime status)'}
+                  </p>
                 </>
               ) : null}
             </div>
@@ -3539,11 +5161,28 @@ const InfoSection = ({
               <Button
                 variant="outline"
                 size="sm"
+                disabled={debugLogFileOpening}
                 onClick={() => {
-                  void electronAPI.openDebugLogFile()
+                  setDebugLogFileOpening(true)
+
+                  void runWithTimeout(
+                    electronAPI.openDebugLogFile(),
+                    INFO_SECTION_REQUEST_TIMEOUT_MS,
+                    'Opening debug log file timed out.',
+                  )
+                    .catch((error: unknown) => {
+                      pushToast({
+                        title: 'Unable to open debug log file',
+                        description: error instanceof Error ? error.message : 'Unknown runtime error.',
+                        variant: 'destructive',
+                      })
+                    })
+                    .finally(() => {
+                      setDebugLogFileOpening(false)
+                    })
                 }}
               >
-                Open debug logs file
+                {debugLogFileOpening ? 'Opening...' : 'Open debug logs file'}
               </Button>
             </div>
           ) : null}
@@ -3576,7 +5215,10 @@ const InfoSection = ({
               </p>
 
               <p className="text-xs text-muted-foreground">
-                Env path: {secretStorageStatus?.envFilePath ?? 'Loading...'}
+                Env path:{' '}
+                {secretStorageStatusLoading
+                  ? 'Loading...'
+                  : secretStorageStatus?.envFilePath ?? 'Unavailable (check storage runtime status)'}
               </p>
 
               <p className="text-xs text-muted-foreground">
@@ -3600,6 +5242,33 @@ const InfoSection = ({
                   }}
                 >
                   {secretStorageStatusLoading ? 'Checking...' : 'Refresh status'}
+                </Button>
+
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={secretEnvFileOpening}
+                  onClick={() => {
+                  setSecretEnvFileOpening(true)
+
+                    void runWithTimeout(
+                      electronAPI.openSecretEnvFile(),
+                      INFO_SECTION_REQUEST_TIMEOUT_MS,
+                      'Opening .env file timed out.',
+                    )
+                      .catch((error: unknown) => {
+                        pushToast({
+                          title: 'Unable to open .env file',
+                          description: error instanceof Error ? error.message : 'Unknown runtime error.',
+                          variant: 'destructive',
+                        })
+                      })
+                      .finally(() => {
+                        setSecretEnvFileOpening(false)
+                      })
+                  }}
+                >
+                  {secretEnvFileOpening ? 'Opening...' : 'Open .env file'}
                 </Button>
 
                 {secretStorageStatus?.activeBackend === 'env' && secretStorageStatus.keyringSupported ? (
@@ -3670,9 +5339,11 @@ type SettingsNodeId =
   | 'translation'
   | 'prompts'
   | 'agent.name'
+  | 'spending-limits'
   | 'privacy'
   | 'developer'
   | 'shortcuts'
+  | 'faq'
 
 interface SettingsMenuGroup {
   label: string
@@ -3709,9 +5380,11 @@ const SETTINGS_MENU_GROUPS: SettingsMenuGroup[] = [
   {
     label: 'System',
     items: [
+      { id: 'spending-limits', label: 'Spending Limits', icon: Wallet },
       { id: 'privacy', label: 'Privacy', icon: Lock },
       { id: 'developer', label: 'Developer', icon: Wrench },
       { id: 'shortcuts', label: 'Shortcuts', icon: Settings },
+      { id: 'faq', label: 'FAQ', icon: BookOpen },
     ],
   },
 ]
@@ -3723,6 +5396,7 @@ interface SettingsWorkspaceProps {
   displayServer: DisplayServer
   autoPasteSupport: AutoPasteBackendSupportPayload | null
   autoPasteSupportLoading: boolean
+  requestedNode: SettingsNodeId | null
   onRefreshAutoPasteSupport: () => void
   onSettingsChange: (next: Partial<AppSettings>) => void
   onModelsChange: Dispatch<SetStateAction<ModelState[]>>
@@ -3736,6 +5410,7 @@ const SettingsWorkspace = ({
   displayServer,
   autoPasteSupport,
   autoPasteSupportLoading,
+  requestedNode,
   onRefreshAutoPasteSupport,
   onSettingsChange,
   onModelsChange,
@@ -3773,6 +5448,14 @@ const SettingsWorkspace = ({
   useEffect(() => {
     setPostProcessingMode(settings.postProcessingRuntime === 'local' ? 'local' : 'cloud')
   }, [settings.postProcessingRuntime])
+
+  useEffect(() => {
+    if (!requestedNode) {
+      return
+    }
+
+    setActiveNode(requestedNode)
+  }, [requestedNode])
 
   const renderContent = () => {
     if (activeNode === 'account') {
@@ -3869,12 +5552,20 @@ const SettingsWorkspace = ({
       return <AgentIdentitySection settings={settings} onChange={onSettingsChange} />
     }
 
+    if (activeNode === 'spending-limits') {
+      return <SpendingLimitsSection settings={settings} onChange={onSettingsChange} />
+    }
+
     if (activeNode === 'privacy') {
       return <PrivacyPanel />
     }
 
     if (activeNode === 'shortcuts') {
       return <ShortcutsSection hotkey={settings.hotkey} />
+    }
+
+    if (activeNode === 'faq') {
+      return <FaqSection />
     }
 
     return <InfoSection settings={settings} onChange={onSettingsChange} />
@@ -4025,7 +5716,7 @@ const OnboardingWizard = ({ settings, models, onSettingsChange, onComplete }: On
               <div className="grid gap-2 sm:grid-cols-3">
                 <div className="rounded-md border border-border-subtle bg-surface-0 p-3 text-sm">Always-ready overlay</div>
                 <div className="rounded-md border border-border-subtle bg-surface-0 p-3 text-sm">Full model controls</div>
-                <div className="rounded-md border border-border-subtle bg-surface-0 p-3 text-sm">Local conversations</div>
+                <div className="rounded-md border border-border-subtle bg-surface-0 p-3 text-sm">Local dictations</div>
               </div>
             </div>
           ) : null}
@@ -4211,13 +5902,16 @@ const ControlPanelScene = () => {
   const { pushToast } = useToast()
   const { t } = useI18n()
   const [section, setSection] = useState<PanelSection>('conversations')
+  const [settingsNodeRequest, setSettingsNodeRequest] = useState<SettingsNodeId | null>(null)
   const [settings, setSettings] = useState<AppSettings>(loadSettings)
   const [models, setModels] = useState<ModelState[]>(loadModelState)
   const [postModels, setPostModels] = useState<ModelState[]>(loadPostModelState)
   const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([])
+  const [historyForEstimates, setHistoryForEstimates] = useState<HistoryEntry[]>(loadHistory)
   const [historyTotalEntries, setHistoryTotalEntries] = useState(0)
   const [noteFolders, setNoteFolders] = useState<NoteFolder[]>(loadNoteFolders)
   const [notes, setNotes] = useState<NoteEntry[]>(loadNotes)
+  const [noteActions, setNoteActions] = useState<NoteAction[]>(loadNoteActions)
   const [activeFolderId, setActiveFolderId] = useState<string | null>(null)
   const [activeNoteId, setActiveNoteId] = useState<string | null>(null)
   const [dictationStatus, setDictationStatus] = useState<'IDLE' | 'RECORDING' | 'PROCESSING'>('IDLE')
@@ -4231,6 +5925,8 @@ const ControlPanelScene = () => {
   const [autoPasteSupport, setAutoPasteSupport] = useState<AutoPasteBackendSupportPayload | null>(null)
   const [autoPasteSupportLoading, setAutoPasteSupportLoading] = useState(true)
   const [windowMaximized, setWindowMaximized] = useState(false)
+  const [usageStats, setUsageStats] = useState<AppUsageStatsPayload | null>(null)
+  const [usageStatsLoading, setUsageStatsLoading] = useState(false)
   const secretFallbackToastShownRef = useRef(false)
 
   const historyLazyLoadingEnabled = HISTORY_LAZY_LOAD_LIMITS.has(settings.historyRetentionLimit)
@@ -4243,6 +5939,7 @@ const ControlPanelScene = () => {
         : fullHistory.length
 
       setHistoryTotalEntries(fullHistory.length)
+      setHistoryForEstimates(fullHistory)
       setHistoryVisibleCount(normalizedVisibleCount)
       setHistoryEntries(historyLazyLoadingEnabled ? fullHistory.slice(0, normalizedVisibleCount) : fullHistory)
     },
@@ -4408,9 +6105,48 @@ const ControlPanelScene = () => {
     [pushToast, requestAutoPasteSupportViaWindowAction],
   )
 
+  const refreshUsageStats = useCallback(async (forceRefresh: boolean) => {
+    setUsageStatsLoading(true)
+
+    try {
+      const payload = await electronAPI.getAppUsageStats(forceRefresh)
+      setUsageStats(payload)
+    } catch {
+      setUsageStats(null)
+    } finally {
+      setUsageStatsLoading(false)
+    }
+  }, [])
+
   useEffect(() => {
     void refreshAutoPasteSupport(false)
   }, [refreshAutoPasteSupport])
+
+  useEffect(() => {
+    if (!onboardingDone) {
+      return
+    }
+
+    void refreshUsageStats(false)
+  }, [
+    onboardingDone,
+    historyTotalEntries,
+    noteFolders.length,
+    notes.length,
+    settings.transcriptionCustomBaseUrl,
+    settings.transcriptionCustomApiKey,
+    settings.transcriptionRuntime,
+    settings.transcriptionCloudProvider,
+    settings.transcriptionCloudModelId,
+    settings.transcriptionLocalModelId,
+    settings.postProcessingCustomBaseUrl,
+    settings.postProcessingCustomApiKey,
+    settings.postProcessingRuntime,
+    settings.postProcessingCloudProvider,
+    settings.postProcessingCloudModelId,
+    settings.postProcessingLocalModelId,
+    refreshUsageStats,
+  ])
 
   useEffect(() => {
     let alive = true
@@ -4522,6 +6258,10 @@ const ControlPanelScene = () => {
   }, [notes])
 
   useEffect(() => {
+    saveNoteActions(noteActions)
+  }, [noteActions])
+
+  useEffect(() => {
     if (activeFolderId && !noteFolders.some((folder) => folder.id === activeFolderId)) {
       setActiveFolderId(null)
     }
@@ -4569,7 +6309,8 @@ const ControlPanelScene = () => {
 
       pushToast({
         title: 'Fallback hotkey applied',
-        description: payload.details,
+        description: `${payload.reason} ${payload.details}`,
+        variant: 'destructive',
       })
     })
 
@@ -4602,6 +6343,10 @@ const ControlPanelScene = () => {
 
       if (event.key === STORAGE_KEYS.notes) {
         setNotes(loadNotes())
+      }
+
+      if (event.key === STORAGE_KEYS.noteActions) {
+        setNoteActions(loadNoteActions())
       }
 
       if (event.key === STORAGE_KEYS.appNotification) {
@@ -4678,7 +6423,7 @@ const ControlPanelScene = () => {
 
     pushToast({
       title: 'Folder removed',
-      description: `${folder.name} was deleted. Notes were moved to All notes.`,
+      description: `${folder.name} was deleted. Notes were moved to Uncategorized.`,
     })
 
     emitNotesLog('Folder deleted', {
@@ -4690,13 +6435,14 @@ const ControlPanelScene = () => {
 
   const handleCreateNote = (folderId: string | null) => {
     const timestamp = Date.now()
-    const noteCount = notes.length + 1
+    const folderScopedNoteIndex = getNextFolderNoteIndex(notes, folderId)
     const nextNote: NoteEntry = {
       id: crypto.randomUUID(),
       folderId,
-      title: `Note ${noteCount}`,
+      title: `Note ${folderScopedNoteIndex}`,
       rawText: '',
       processedText: '',
+      autoTitleGenerated: false,
       createdAt: timestamp,
       updatedAt: timestamp,
     }
@@ -4718,7 +6464,7 @@ const ControlPanelScene = () => {
 
   const handleUpdateNote = (
     noteId: string,
-    patch: Partial<Pick<NoteEntry, 'title' | 'rawText' | 'processedText' | 'folderId'>>,
+    patch: Partial<Pick<NoteEntry, 'title' | 'rawText' | 'processedText' | 'folderId' | 'autoTitleGenerated'>>,
   ) => {
     setNotes((current) =>
       current.map((entry) => {
@@ -4752,6 +6498,28 @@ const ControlPanelScene = () => {
     emitNotesLog('Note deleted', {
       noteId,
       title: removedNote?.title ?? null,
+    })
+  }
+
+  const handleForceSaveNote = (noteId: string) => {
+    const targetNote = notes.find((entry) => entry.id === noteId)
+    if (!targetNote) {
+      return
+    }
+
+    saveNoteFolders(noteFolders)
+    saveNotes(notes)
+    saveNoteActions(noteActions)
+
+    pushToast({
+      title: 'Note saved',
+      description: `"${targetNote.title || 'Untitled'}" has been saved successfully.`,
+      variant: 'success',
+    })
+
+    emitNotesLog('Manual note save triggered', {
+      noteId,
+      title: targetNote.title,
     })
   }
 
@@ -4904,7 +6672,7 @@ const ControlPanelScene = () => {
     }
   }
 
-  const handlePostProcessNote = async (noteId: string) => {
+  const handlePostProcessNote = async (noteId: string, actionId: string | null = null) => {
     const targetNote = notes.find((entry) => entry.id === noteId)
     if (!targetNote || !targetNote.rawText.trim()) {
       emitNotesLog('Post-process skipped: note has no raw text', {
@@ -4919,27 +6687,54 @@ const ControlPanelScene = () => {
       return
     }
 
+    const selectedAction = actionId ? noteActions.find((action) => action.id === actionId) ?? null : null
+    if (actionId && !selectedAction) {
+      pushToast({
+        title: 'Custom action unavailable',
+        description: 'The selected custom action was not found.',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    const actionLabel = selectedAction ? `custom action: ${selectedAction.name}` : 'normal cleanup'
+
     setPostProcessingNoteId(noteId)
 
     emitNotesLog('Post-process started', {
       noteId,
+      action: actionLabel,
       inputLength: targetNote.rawText.trim().length,
     })
 
     try {
-      const output = await electronAPI.runNoteEnhancement(targetNote.rawText)
+      const output = await electronAPI.runNoteEnhancement(targetNote.rawText, selectedAction?.instructions)
+      const shouldGenerateTitle =
+        !targetNote.autoTitleGenerated &&
+        (/^note\s+\d+$/i.test(targetNote.title.trim()) || targetNote.title.trim().length === 0)
+
+      const generatedTitle = shouldGenerateTitle ? generateNoteTitleFromContent(output || targetNote.rawText) : targetNote.title
+
       handleUpdateNote(noteId, {
         processedText: output,
+        ...(shouldGenerateTitle
+          ? {
+              title: generatedTitle,
+              autoTitleGenerated: true,
+            }
+          : {}),
       })
 
       emitNotesLog('Post-process completed', {
         noteId,
+        action: actionLabel,
         outputLength: output.trim().length,
         unchanged: output.trim() === targetNote.rawText.trim(),
       })
 
       pushToast({
         title: output.trim() === targetNote.rawText.trim() ? 'Cleanup completed (no major changes)' : 'Post-processing completed',
+        description: selectedAction ? `Applied ${selectedAction.name}.` : undefined,
         variant: 'success',
       })
     } catch (error: unknown) {
@@ -4952,10 +6747,17 @@ const ControlPanelScene = () => {
 
       handleUpdateNote(noteId, {
         processedText: fallbackOutput,
+        ...(!targetNote.autoTitleGenerated && /^note\s+\d+$/i.test(targetNote.title.trim())
+          ? {
+              title: generateNoteTitleFromContent(fallbackOutput || targetNote.rawText),
+              autoTitleGenerated: true,
+            }
+          : {}),
       })
 
       emitNotesLog('Post-process failed: fallback cleanup applied', {
         noteId,
+        action: actionLabel,
         error: message,
         fallbackLength: fallbackOutput.length,
       })
@@ -4972,8 +6774,92 @@ const ControlPanelScene = () => {
     }
   }
 
+  const handleCreateNoteAction = (
+    name: string,
+    description: string,
+    instructions: string,
+    actionId: string | null = null,
+  ) => {
+    const normalizedName = name.trim()
+    const normalizedDescription = description.trim()
+    const normalizedInstructions = instructions.trim()
+
+    if (!normalizedName || !normalizedInstructions) {
+      pushToast({
+        title: 'Custom action is incomplete',
+        description: 'Provide both action name and instructions.',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    const timestamp = Date.now()
+    setNoteActions((current) => {
+      if (actionId) {
+        return current.map((entry) =>
+          entry.id === actionId
+            ? {
+                ...entry,
+                name: normalizedName,
+                description: normalizedDescription,
+                instructions: normalizedInstructions,
+                updatedAt: timestamp,
+              }
+            : entry,
+        )
+      }
+
+      return [
+        ...current,
+        {
+          id: crypto.randomUUID(),
+          name: normalizedName,
+          description: normalizedDescription,
+          instructions: normalizedInstructions,
+          isBuiltIn: false,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        },
+      ]
+    })
+
+    emitNotesLog('Custom note action saved', {
+      name: normalizedName,
+      instructionsLength: normalizedInstructions.length,
+    })
+
+    pushToast({
+      title: actionId ? 'Action updated' : 'Custom action saved',
+      description: `${normalizedName} is ready to use.`,
+      variant: 'success',
+    })
+  }
+
+  const handleDeleteNoteAction = (actionId: string) => {
+    setNoteActions((current) => {
+      const targetAction = current.find((action) => action.id === actionId)
+      if (!targetAction || targetAction.isBuiltIn) {
+        return current
+      }
+
+      return current.filter((action) => action.id !== actionId)
+    })
+
+    emitNotesLog('Custom note action deleted', {
+      actionId,
+    })
+
+    pushToast({
+      title: 'Custom action removed',
+    })
+  }
+
   useEffect(() => {
     const handleResult = (payload: { text: string }) => {
+      window.setTimeout(() => {
+        loadHistoryForSection(historyVisibleCount)
+      }, 120)
+
       setTranscribingNoteId((currentNoteId) => {
         if (!currentNoteId) {
           return currentNoteId
@@ -5044,7 +6930,7 @@ const ControlPanelScene = () => {
       offResult()
       offError()
     }
-  }, [emitNotesLog, pushToast])
+  }, [emitNotesLog, historyVisibleCount, loadHistoryForSection, pushToast])
 
   const renderSection = () => {
     if (section === 'conversations') {
@@ -5053,6 +6939,7 @@ const ControlPanelScene = () => {
           entries={historyEntries}
           totalEntries={historyTotalEntries}
           loading={historyLoading}
+          usageStats={usageStats}
           clearConfirmOpen={historyClearConfirmOpen}
           onClearConfirmOpenChange={setHistoryClearConfirmOpen}
           onShowMore={() => {
@@ -5081,11 +6968,12 @@ const ControlPanelScene = () => {
           onClear={() => {
             clearHistory()
             setHistoryEntries([])
+            setHistoryForEstimates([])
             setHistoryTotalEntries(0)
             setHistoryVisibleCount(0)
             setHistoryClearConfirmOpen(false)
             pushToast({
-              title: 'Conversations removed',
+              title: 'Dictations removed',
             })
           }}
         />
@@ -5101,6 +6989,7 @@ const ControlPanelScene = () => {
           displayServer={displayServer}
           autoPasteSupport={autoPasteSupport}
           autoPasteSupportLoading={autoPasteSupportLoading}
+          requestedNode={settingsNodeRequest}
           onRefreshAutoPasteSupport={() => {
             void refreshAutoPasteSupport(true)
           }}
@@ -5114,8 +7003,11 @@ const ControlPanelScene = () => {
     if (section === 'notes') {
       return (
         <NotesSection
+          settings={settings}
+          usageStats={usageStats}
           folders={noteFolders}
           notes={notes}
+          actions={noteActions}
           activeFolderId={activeFolderId}
           activeNoteId={activeNoteId}
           dictationStatus={dictationStatus}
@@ -5131,9 +7023,12 @@ const ControlPanelScene = () => {
           onTranscribeNote={(noteId) => {
             void handleRequestNoteTranscription(noteId)
           }}
-          onPostProcessNote={(noteId) => {
-            void handlePostProcessNote(noteId)
+          onRunNoteAction={(noteId, actionId) => {
+            void handlePostProcessNote(noteId, actionId)
           }}
+          onCreateNoteAction={handleCreateNoteAction}
+          onDeleteNoteAction={handleDeleteNoteAction}
+          onForceSaveNote={handleForceSaveNote}
         />
       )
     }
@@ -5167,8 +7062,8 @@ const ControlPanelScene = () => {
 
     try {
       if (controlId === 'close') {
-        const requestedQuit = await requestInternalAction('whispy-action://app/quit')
-        if (!requestedQuit) {
+        const requestedClose = await requestInternalAction('whispy-action://window/close')
+        if (!requestedClose) {
           const closed = await tryInvoke(() => electronAPI.closeWindow())
           if (!closed) {
             await tryInvoke(() => electronAPI.hideWindow())
@@ -5205,6 +7100,36 @@ const ControlPanelScene = () => {
     }
   }
 
+  const handleQuitApplication = async () => {
+    const tryInvoke = async (callback: () => Promise<void>) => {
+      try {
+        await callback()
+        return true
+      } catch {
+        return false
+      }
+    }
+
+    try {
+      const dispatchedViaBridge = await tryInvoke(() => electronAPI.openExternal('whispy-action://app/quit'))
+      if (dispatchedViaBridge) {
+        return
+      }
+
+      try {
+        window.open('whispy-action://app/quit', '_blank', 'noopener,noreferrer')
+      } catch {
+        await tryInvoke(() => electronAPI.closeWindow())
+      }
+    } catch {
+      pushToast({
+        title: 'Quit unavailable',
+        description: 'Unable to quit from this runtime.',
+        variant: 'destructive',
+      })
+    }
+  }
+
   const conversationsCountLabel = historyLoading
     ? '...'
     : historyTotalEntries > 999
@@ -5212,8 +7137,150 @@ const ControlPanelScene = () => {
       : String(historyTotalEntries)
 
   const notesCountLabel = notes.length > 999 ? '999+' : String(notes.length)
+  const conversationsTotalLabel = historyLoading ? '...' : formatCount(historyTotalEntries)
+  const notesTotalLabel = formatCount(notes.length)
+  const notesEstimateFromState = useMemo(() => {
+    const inputRate = usageStats?.activeEnhancementInputCostPerToken
+    const outputRate = usageStats?.activeEnhancementOutputCostPerToken
+
+    if ((inputRate === null || inputRate === undefined) && (outputRate === null || outputRate === undefined)) {
+      return 0
+    }
+
+    let totalCost = 0
+    for (const note of notes) {
+      const rawText = note.rawText.trim()
+      const processedText = note.processedText.trim()
+      if (!rawText || !processedText) {
+        continue
+      }
+
+      const inputTokens = estimateTokensFromText(rawText)
+      const outputTokens = estimateTokensFromText(processedText)
+      if (inputTokens <= 0 || outputTokens <= 0) {
+        continue
+      }
+
+      totalCost += inputTokens * (inputRate ?? 0) + outputTokens * (outputRate ?? 0)
+    }
+
+    return Number(totalCost.toFixed(6))
+  }, [notes, usageStats?.activeEnhancementInputCostPerToken, usageStats?.activeEnhancementOutputCostPerToken])
+
+  const transcriptionEstimateFromState = useMemo(() => {
+    const fallbackRate =
+      usageStats && usageStats.estimatedTranscriptionTokens > 0
+        ? usageStats.estimatedTranscriptionCostUSD / usageStats.estimatedTranscriptionTokens
+        : null
+
+    let totalCost = 0
+    for (const entry of historyForEstimates) {
+      const tokenEstimate = estimateTokensFromText(entry.text)
+      const unitRate = resolveTranscriptionTokenRateUSD(entry.model, usageStats) ?? fallbackRate
+      if (unitRate === null) {
+        continue
+      }
+
+      totalCost += tokenEstimate * unitRate
+    }
+
+    const rounded = Number(totalCost.toFixed(6))
+    if (rounded > 0) {
+      return rounded
+    }
+
+    return usageStats?.estimatedTranscriptionCostUSD ?? 0
+  }, [
+    historyForEstimates,
+    usageStats,
+    usageStats?.estimatedTranscriptionCostUSD,
+    usageStats?.estimatedTranscriptionTokens,
+    usageStats?.modelInputCostPerTokenById,
+  ])
+
+  const transcriptionEstimate = transcriptionEstimateFromState
+  const notesEstimate = notesEstimateFromState
+  const overallUsedCost = Number((transcriptionEstimate + notesEstimate).toFixed(6))
+  const dictationAggregate = useMemo(() => {
+    let wordsTotal = 0
+    let tokensTotal = 0
+    let durationSecondsTotal = 0
+
+    for (const entry of historyForEstimates) {
+      const words = estimateWordsFromText(entry.text)
+      const tokens = estimateTokensFromText(entry.text)
+      const explicitDuration =
+        typeof entry.durationSeconds === 'number' && Number.isFinite(entry.durationSeconds) && entry.durationSeconds > 0
+          ? entry.durationSeconds
+          : null
+
+      wordsTotal += words
+      tokensTotal += tokens
+      durationSecondsTotal += explicitDuration ?? (words > 0 ? (words / 150) * 60 : 0)
+    }
+
+    return {
+      wordsTotal,
+      tokensTotal,
+      durationSecondsTotal: Number(durationSecondsTotal.toFixed(2)),
+      durationMinutesTotal: Number((durationSecondsTotal / 60).toFixed(2)),
+      durationHoursTotal: Number((durationSecondsTotal / 3600).toFixed(2)),
+    }
+  }, [historyForEstimates])
+
+  const notesAggregate = useMemo(() => {
+    let rawWordsTotal = 0
+    let enhancedWordsTotal = 0
+    let rawTokensTotal = 0
+    let enhancedTokensTotal = 0
+
+    for (const note of notes) {
+      const rawText = note.rawText.trim()
+      const enhancedText = note.processedText.trim()
+      if (!rawText || !enhancedText) {
+        continue
+      }
+
+      rawWordsTotal += estimateWordsFromText(rawText)
+      enhancedWordsTotal += estimateWordsFromText(enhancedText)
+      rawTokensTotal += estimateTokensFromText(rawText)
+      enhancedTokensTotal += estimateTokensFromText(enhancedText)
+    }
+
+    const rawReadSeconds = (rawWordsTotal / 180) * 60
+    const enhancedReadSeconds = (enhancedWordsTotal / 180) * 60
+
+    return {
+      rawWordsTotal,
+      enhancedWordsTotal,
+      rawTokensTotal,
+      enhancedTokensTotal,
+      rawReadSeconds: Number(rawReadSeconds.toFixed(2)),
+      enhancedReadSeconds: Number(enhancedReadSeconds.toFixed(2)),
+    }
+  }, [notes])
+  const sourceStatusLabel = usageStats?.litellmSource === 'unavailable' ? 'LiteLLM | Unavailable' : 'LiteLLM'
+  const sourceStatusClass =
+    usageStats?.litellmSource === 'live'
+      ? 'text-emerald-400'
+      : usageStats?.litellmSource === 'cache'
+        ? 'text-amber-300'
+        : 'text-red-400'
   const sectionTitle =
     section === 'conversations' ? t('menuConversations') : section === 'notes' ? t('menuNotes') : t('menuSettings')
+
+  const openSection = (nextSection: PanelSection, nextSettingsNode: SettingsNodeId | null = null) => {
+    setSection(nextSection)
+    setSettingsNodeRequest(nextSettingsNode)
+  }
+
+  const sidebarButtonClass = (active: boolean) =>
+    cn(
+      'app-no-drag flex h-10 w-full items-center gap-3 rounded-xl px-3 text-left text-sm transition-colors',
+      active
+        ? 'bg-primary/20 text-foreground shadow-[0_0_0_1px_rgba(59,130,246,0.35)]'
+        : 'text-foreground/70 hover:bg-surface-2/70 hover:text-foreground',
+    )
 
   return (
     <div
@@ -5256,7 +7323,7 @@ const ControlPanelScene = () => {
                     className="relative inline-flex h-3 w-3 items-center justify-center rounded-full border border-black/15"
                     style={{ backgroundColor: control.color }}
                   >
-                    <Icon className="pointer-events-none absolute inset-0 m-auto h-2.5 w-2.5 text-black/85 opacity-20 drop-shadow-[0_0.5px_0_rgba(255,255,255,0.35)] transition-opacity duration-150 group-hover:opacity-100" />
+                    <Icon className="pointer-events-none absolute inset-0 m-auto h-2.5 w-2.5 text-black/85 opacity-55 drop-shadow-[0_0.5px_0_rgba(255,255,255,0.35)] transition-opacity duration-150 group-hover:opacity-100" />
                   </span>
                 </button>
                 )
@@ -5274,36 +7341,6 @@ const ControlPanelScene = () => {
         </div>
 
         <div className="app-no-drag z-10 ml-auto flex items-center gap-2">
-          <button
-            type="button"
-            className={cn(
-              'app-no-drag inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors',
-              section === 'conversations'
-                ? 'bg-primary/15 text-primary ring-1 ring-primary/25'
-                : 'text-muted-foreground hover:bg-surface-2 hover:text-foreground',
-            )}
-            onClick={() => {
-              setSection('conversations')
-            }}
-          >
-            <BookOpen className="h-4 w-4" />
-          </button>
-
-          <button
-            type="button"
-            className={cn(
-              'app-no-drag inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors',
-              section === 'notes'
-                ? 'bg-primary/15 text-primary ring-1 ring-primary/25'
-                : 'text-muted-foreground hover:bg-surface-2 hover:text-foreground',
-            )}
-            onClick={() => {
-              setSection('notes')
-            }}
-          >
-            <FileText className="h-4 w-4" />
-          </button>
-
           <Button
             variant="ghost"
             size="icon"
@@ -5315,32 +7352,11 @@ const ControlPanelScene = () => {
           >
             {settings.theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
           </Button>
-
-          <button
-            type="button"
-            className={cn(
-              'app-no-drag inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors',
-              section === 'settings'
-                ? 'bg-primary/15 text-primary ring-1 ring-primary/25'
-                : 'text-muted-foreground hover:bg-surface-2 hover:text-foreground',
-            )}
-            onClick={() => {
-              setSection('settings')
-            }}
-          >
-            <Settings className="h-4 w-4" />
-          </button>
-
         </div>
       </header>
 
-      <main
-        className={cn(
-          'min-h-0 flex-1 p-6',
-          onboardingDone && section === 'settings' ? 'overflow-hidden' : 'overflow-y-auto',
-        )}
-      >
-        {!onboardingDone ? (
+      {!onboardingDone ? (
+        <main className="min-h-0 flex-1 overflow-y-auto p-6">
           <OnboardingWizard
             settings={settings}
             models={models}
@@ -5355,65 +7371,240 @@ const ControlPanelScene = () => {
               })
             }}
           />
-        ) : (
-          <div
-            className={cn(
-              'mx-auto max-w-5xl',
-              section === 'settings' ? 'flex h-full min-h-0 flex-col gap-4' : 'space-y-4',
-            )}
-          >
-            <div className="flex items-center gap-2">
-              <div className="flex items-center gap-2">
-                <h1 className="text-lg font-semibold">{sectionTitle}</h1>
-                {section === 'conversations' ? (
-                  <span className="inline-flex min-w-6 items-center justify-center rounded-full border border-primary/30 bg-primary/15 px-1.5 text-[11px] font-semibold text-primary">
-                    {conversationsCountLabel}
-                  </span>
-                ) : null}
-                {section === 'notes' ? (
-                  <span className="inline-flex min-w-6 items-center justify-center rounded-full border border-primary/30 bg-primary/15 px-1.5 text-[11px] font-semibold text-primary">
-                    {notesCountLabel}
-                  </span>
-                ) : null}
-                {section === 'conversations' ? (
-                  <label className="inline-flex items-center gap-2 rounded-md border border-border-subtle bg-surface-1 px-2 py-1 text-xs text-muted-foreground">
-                    <span>Retention</span>
-                    <select
-                      className="app-no-drag h-7 rounded border border-border-subtle bg-surface-0 px-2 text-xs text-foreground"
-                      value={String(settings.historyRetentionLimit)}
-                      onChange={(event) => {
-                        handleSettingsChange({
-                          historyRetentionLimit: Number(event.target.value),
-                        })
+        </main>
+      ) : (
+        <main className="min-h-0 flex-1 overflow-hidden p-3">
+          <div className="grid h-full min-h-0 grid-cols-[244px_minmax(0,1fr)] gap-3">
+            <aside className="flex min-h-0 flex-col overflow-y-auto rounded-[16px] border border-border-subtle bg-[#040a15]/95 p-3">
+              <div className="mb-3 inline-flex items-center gap-2 px-2 text-xs font-semibold uppercase tracking-[0.14em] text-foreground/50">
+                <Sparkles className="h-3.5 w-3.5 text-primary" />
+                Workspace
+              </div>
+
+              <nav className="space-y-1.5">
+                <button
+                  type="button"
+                  className={sidebarButtonClass(section === 'conversations')}
+                  onClick={() => {
+                    openSection('conversations')
+                  }}
+                >
+                  <Home className="h-4 w-4" />
+                  <span>Dictations</span>
+                  <span className="ml-auto text-[11px] text-foreground/45">{conversationsCountLabel}</span>
+                </button>
+
+                <button
+                  type="button"
+                  className={sidebarButtonClass(section === 'notes')}
+                  onClick={() => {
+                    openSection('notes')
+                  }}
+                >
+                  <FileText className="h-4 w-4" />
+                  <span>Notes</span>
+                  <span className="ml-auto text-[11px] text-foreground/45">{notesCountLabel}</span>
+                </button>
+
+              </nav>
+
+              <div className="my-3 h-px bg-border-subtle/80" />
+
+              <div className="space-y-2.5">
+                <div className="rounded-xl border border-border-subtle bg-surface-0/45 px-3 py-2.5 shadow-[0_1px_0_rgba(255,255,255,0.03)_inset]">
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-foreground/55">Transcriptions</p>
+                    <button
+                      type="button"
+                      className="app-no-drag text-[10px] text-primary/90 hover:text-primary disabled:cursor-not-allowed disabled:opacity-45"
+                      disabled={usageStatsLoading}
+                      onClick={() => {
+                        void refreshUsageStats(true)
                       }}
                     >
-                      {HISTORY_RETENTION_OPTIONS.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                ) : null}
-                {section === 'conversations' ? (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => {
-                      setHistoryClearConfirmOpen(true)
-                    }}
-                    disabled={historyTotalEntries === 0}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                    Clear history
-                  </Button>
-                ) : null}
+                      {usageStatsLoading ? '...' : 'Refresh'}
+                    </button>
+                  </div>
+                  <div className="space-y-1.5 text-[11px] text-foreground/80">
+                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
+                      <span className="text-foreground/55">Count</span>
+                      <span className="font-medium tabular-nums whitespace-nowrap">{conversationsTotalLabel}</span>
+                    </div>
+                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
+                      <span className="text-foreground/55">Recorded</span>
+                      <span className="font-medium tabular-nums whitespace-nowrap">{formatDurationCompact(dictationAggregate.durationSecondsTotal)}</span>
+                    </div>
+                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
+                      <span className="text-foreground/55">Minutes / Hours</span>
+                      <span className="font-medium tabular-nums whitespace-nowrap">
+                        {dictationAggregate.durationMinutesTotal}m / {dictationAggregate.durationHoursTotal}h
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
+                      <span className="text-foreground/55">Words</span>
+                      <span className="font-medium tabular-nums whitespace-nowrap">{formatCount(dictationAggregate.wordsTotal)}</span>
+                    </div>
+                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
+                      <span className="text-foreground/55">Tokens</span>
+                      <span className="font-medium tabular-nums whitespace-nowrap">~{formatCount(dictationAggregate.tokensTotal)}</span>
+                    </div>
+                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
+                      <span className="text-foreground/55">Estimate</span>
+                      <span className="font-semibold tabular-nums whitespace-nowrap">{formatCurrency(transcriptionEstimate)}</span>
+                    </div>
+                  </div>
+                  <p className="mt-2 text-[10px] text-muted-foreground">Duration prefers measured recording time; fallback is words-per-minute estimation.</p>
+                </div>
+
+                <div className="rounded-xl border border-border-subtle bg-surface-0/45 px-3 py-2.5 shadow-[0_1px_0_rgba(255,255,255,0.03)_inset]">
+                  <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-foreground/55">Notes</p>
+                  <div className="space-y-1.5 text-[11px] text-foreground/80">
+                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
+                      <span className="text-foreground/55">Count</span>
+                      <span className="font-medium tabular-nums whitespace-nowrap">{notesTotalLabel}</span>
+                    </div>
+                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
+                      <span className="text-foreground/55">Words raw/enh</span>
+                      <span className="font-medium tabular-nums whitespace-nowrap">
+                        {formatCount(notesAggregate.rawWordsTotal)} / {formatCount(notesAggregate.enhancedWordsTotal)}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
+                      <span className="text-foreground/55">Tokens raw/enh</span>
+                      <span className="font-medium tabular-nums whitespace-nowrap">
+                        ~{formatCount(notesAggregate.rawTokensTotal)} / ~{formatCount(notesAggregate.enhancedTokensTotal)}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
+                      <span className="text-foreground/55">Read raw/enh</span>
+                      <span className="font-medium tabular-nums whitespace-nowrap">
+                        {formatDurationCompact(notesAggregate.rawReadSeconds)} / {formatDurationCompact(notesAggregate.enhancedReadSeconds)}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
+                      <span className="text-foreground/55">Enhanced spent</span>
+                      <span className="font-semibold tabular-nums whitespace-nowrap">{formatCurrency(notesEstimate)}</span>
+                    </div>
+                  </div>
+                  <p className="mt-2 text-[10px] text-muted-foreground">Spend counts only notes with Enhanced output, not drafts.</p>
+                </div>
+
+                <div className="rounded-xl border border-border-subtle bg-surface-0/45 px-3 py-2.5 shadow-[0_1px_0_rgba(255,255,255,0.03)_inset]">
+                  <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-foreground/55">Cost source</p>
+                  <div className="space-y-1.5 text-[11px] text-foreground/80">
+                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
+                      <span className="text-foreground/55">Source</span>
+                      <span className={cn('font-semibold whitespace-nowrap', sourceStatusClass)}>{sourceStatusLabel}</span>
+                    </div>
+                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
+                      <span className="text-foreground/55">Overall $ used</span>
+                      <span className="font-semibold tabular-nums whitespace-nowrap text-foreground">{formatCurrency(overallUsedCost)}</span>
+                    </div>
+                    {usageStats?.litellmError ? <div className="text-[10px] text-red-300/90">{usageStats.litellmError}</div> : null}
+                  </div>
+                </div>
               </div>
-            </div>
-            {section === 'settings' ? <div className="min-h-0 flex-1">{renderSection()}</div> : renderSection()}
+
+              <div className="mt-auto space-y-1.5 border-t border-border-subtle/80 pt-3">
+                <button
+                  type="button"
+                  className={sidebarButtonClass(section === 'settings')}
+                  onClick={() => {
+                    openSection('settings', 'preferences')
+                  }}
+                >
+                  <Settings className="h-4 w-4" />
+                  <span>Settings</span>
+                </button>
+
+                <button
+                  type="button"
+                  className={sidebarButtonClass(false)}
+                  onClick={() => {
+                    void handleQuitApplication()
+                  }}
+                >
+                  <Power className="h-4 w-4" />
+                  <span>Quit</span>
+                </button>
+              </div>
+            </aside>
+
+            <section
+              className={cn(
+                'min-h-0 overflow-hidden rounded-[16px] border border-border-subtle bg-surface-1/80',
+                section === 'notes' ? 'p-3' : 'p-5',
+              )}
+            >
+              <div
+                className={cn(
+                  'flex h-full min-h-0 flex-col',
+                  section === 'conversations' ? 'overflow-y-auto' : undefined,
+                )}
+              >
+                <div className={cn('flex items-center gap-2', section === 'notes' ? 'pl-2.5' : undefined)}>
+                  <div className="flex items-center gap-2">
+                    <h1 className="text-lg font-semibold">{sectionTitle}</h1>
+                    {section === 'conversations' ? (
+                      <span className="inline-flex min-w-6 items-center justify-center rounded-full border border-primary/30 bg-primary/15 px-1.5 text-[11px] font-semibold text-primary">
+                        {conversationsCountLabel}
+                      </span>
+                    ) : null}
+                    {section === 'notes' ? (
+                      <span className="inline-flex min-w-6 items-center justify-center rounded-full border border-primary/30 bg-primary/15 px-1.5 text-[11px] font-semibold text-primary">
+                        {notesCountLabel}
+                      </span>
+                    ) : null}
+                    {section === 'conversations' ? (
+                      <label className="inline-flex items-center gap-2 rounded-md border border-border-subtle bg-surface-1 px-2 py-1 text-xs text-muted-foreground">
+                        <span>Retention</span>
+                        <select
+                          className="app-no-drag h-7 rounded border border-border-subtle bg-surface-0 px-2 text-xs text-foreground"
+                          value={String(settings.historyRetentionLimit)}
+                          onChange={(event) => {
+                            handleSettingsChange({
+                              historyRetentionLimit: Number(event.target.value),
+                            })
+                          }}
+                        >
+                          {HISTORY_RETENTION_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    ) : null}
+                    {section === 'conversations' ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          setHistoryClearConfirmOpen(true)
+                        }}
+                        disabled={historyTotalEntries === 0}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        Clear dictations
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div
+                  className={cn(
+                    'mt-4 min-h-0',
+                    section === 'settings' ? 'flex-1 overflow-hidden' : undefined,
+                    section === 'notes' ? 'flex-1 overflow-hidden' : undefined,
+                  )}
+                >
+                  {section === 'settings' ? <div className="h-full min-h-0">{renderSection()}</div> : renderSection()}
+                </div>
+              </div>
+            </section>
           </div>
-        )}
-      </main>
+        </main>
+      )}
     </div>
   )
 }

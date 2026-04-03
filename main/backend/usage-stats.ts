@@ -251,11 +251,14 @@ const resolvePricingForModel = (
   return null
 }
 
+// Audio models are priced per-hour, not per-token. These are approximate
+// per-token rates derived from each model's hourly rate assuming ~195
+// output tokens per minute of audio (150 words/min * 1.3 tokens/word).
 const AUDIO_MODEL_FALLBACK_PRICING: Record<string, LiteLLMModelPricing> = {
-  'whisper-large-v3-turbo': { input_cost_per_token: 0.000004, output_cost_per_token: 0 },
-  'whisper-large-v3': { input_cost_per_token: 0.000004, output_cost_per_token: 0 },
-  'whisper-1': { input_cost_per_token: 0.000006, output_cost_per_token: 0 },
-  'distil-whisper-large-v3-en': { input_cost_per_token: 0.000002, output_cost_per_token: 0 },
+  'whisper-large-v3-turbo': { input_cost_per_token: 0.0000034, output_cost_per_token: 0 },
+  'whisper-large-v3': { input_cost_per_token: 0.0000095, output_cost_per_token: 0 },
+  'whisper-1': { input_cost_per_token: 0.0000031, output_cost_per_token: 0 },
+  'distil-whisper-large-v3-en': { input_cost_per_token: 0.0000034, output_cost_per_token: 0 },
 }
 
 const resolvePricingWithFallback = (

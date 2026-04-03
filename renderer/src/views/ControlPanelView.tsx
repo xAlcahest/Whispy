@@ -7866,7 +7866,6 @@ const ControlPanelScene = () => {
       : String(historyTotalEntries)
 
   const notesCountLabel = notes.length > 999 ? '999+' : String(notes.length)
-  const conversationsTotalLabel = historyLoading ? '...' : formatCount(historyTotalEntries)
   const notesTotalLabel = formatCount(notes.length)
   const notesEstimateFromState = useMemo(() => {
     const inputRate = usageStats?.activeEnhancementInputCostPerToken
@@ -8187,13 +8186,6 @@ const ControlPanelScene = () => {
     })
   }, [notes, resolveCurrentPostProcessingModelMeta, settings.detailedStatsLoggingEnabled, usageStats])
 
-  const sourceStatusLabel = usageStats?.litellmSource === 'unavailable' ? 'LiteLLM | Unavailable' : 'LiteLLM'
-  const sourceStatusClass =
-    usageStats?.litellmSource === 'live'
-      ? 'text-emerald-400'
-      : usageStats?.litellmSource === 'cache'
-        ? 'text-amber-300'
-        : 'text-red-400'
   const sectionTitle =
     section === 'conversations' ? t('menuConversations') : section === 'notes' ? t('menuNotes') : t('menuSettings')
 

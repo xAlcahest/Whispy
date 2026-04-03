@@ -41,7 +41,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [AppImage, deb, rpm]
+        target: [pacman, deb, rpm]
 
     steps:
       - name: Checkout
@@ -52,6 +52,10 @@ jobs:
         with:
           node-version: 22
           cache: npm
+
+      - name: Install system dependencies
+        if: matrix.target == 'pacman'
+        run: sudo apt-get update && sudo apt-get install -y libarchive-tools
 
       - name: Install dependencies
         run: npm ci --legacy-peer-deps
@@ -69,7 +73,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: pr-linux-${{ matrix.target }}-${{ github.event.pull_request.number }}
-          path: dist/
+          path: |
+            dist/*.pkg.tar.zst
+            dist/*.deb
+            dist/*.rpm
           retention-days: 5
 
   build-windows:

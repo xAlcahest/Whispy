@@ -141,7 +141,25 @@ const fallbackElectronAPI: ElectronAPI = {
   getDebugLogStatus: async () => {
     throw new Error('getDebugLogStatus unavailable outside Electron runtime')
   },
+  getLogLevel: async () => 'info',
+  log: async (entry) => {
+    const scopeTag = entry.scope ? `[${entry.scope}]` : ''
+    const sourceTag = entry.source ? `[${entry.source}]` : ''
+    const prefix = `[${entry.level.toUpperCase()}]${scopeTag}${sourceTag}`
+    if (entry.level === 'error' || entry.level === 'fatal') {
+      console.error(`${prefix} ${entry.message}`, entry.meta)
+      return
+    }
+
+    if (entry.level === 'warn') {
+      console.warn(`${prefix} ${entry.message}`, entry.meta)
+      return
+    }
+
+    console.log(`${prefix} ${entry.message}`, entry.meta)
+  },
   openDebugLogFile: async () => {},
+  openDebugLogsDirectory: async () => {},
   resizeMainWindow: async () => {},
   setMainWindowInteractivity: async () => {},
   openControlPanel: async () => {},

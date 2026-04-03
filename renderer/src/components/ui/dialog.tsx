@@ -38,7 +38,7 @@ export const Dialog = ({ open, onOpenChange, children }: DialogProps) => {
   return (
     <DialogContext.Provider value={{ open, onOpenChange }}>
       <div
-        className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-[2px]"
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
         onMouseDown={(event) => {
           if (event.target === event.currentTarget) {
             onOpenChange(false)
@@ -57,7 +57,7 @@ export const DialogContent = ({ className, children, ...props }: PropsWithChildr
   return (
     <div
       className={cn(
-        'relative w-full max-w-md rounded-[var(--radius-premium)] border border-border-subtle bg-surface-1 p-5 text-foreground shadow-xl',
+        'relative w-full max-w-md rounded-[var(--radius-premium)] border border-border-subtle bg-surface-1 p-4 text-foreground',
         className,
       )}
       {...props}
@@ -77,15 +77,15 @@ export const DialogContent = ({ className, children, ...props }: PropsWithChildr
 }
 
 export const DialogHeader = ({ className, ...props }: HTMLAttributes<HTMLDivElement>) => (
-  <div className={cn('space-y-1.5 pr-8', className)} {...props} />
+  <div className={cn('space-y-1 pr-8', className)} {...props} />
 )
 
 export const DialogTitle = ({ className, ...props }: HTMLAttributes<HTMLHeadingElement>) => (
-  <h4 className={cn('text-base font-semibold', className)} {...props} />
+  <h4 className={cn('text-sm font-semibold', className)} {...props} />
 )
 
 export const DialogDescription = ({ className, ...props }: HTMLAttributes<HTMLParagraphElement>) => (
-  <p className={cn('text-sm text-muted-foreground', className)} {...props} />
+  <p className={cn('text-xs text-muted-foreground', className)} {...props} />
 )
 
 export const DialogFooter = ({ className, ...props }: HTMLAttributes<HTMLDivElement>) => (

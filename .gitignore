@@ -16,3 +16,5 @@ docs/
 resources/bin/whispercpp/
 .reference/
 assets4app/
+subprojects/**/node_modules/
+subprojects/**/dist/

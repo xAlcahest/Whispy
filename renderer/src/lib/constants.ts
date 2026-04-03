@@ -28,6 +28,8 @@ export const STORAGE_KEYS = {
   notes: 'whispy.notes',
   noteActions: 'whispy.note-actions',
   noteLastAction: 'whispy.note-actions.last-used',
+  noteProcessingEvents: 'whispy.notes.processing-events',
+  detailedStatsLogs: 'whispy.stats.detailed-logs',
   appNotification: 'whispy.app.notification',
 } as const
 

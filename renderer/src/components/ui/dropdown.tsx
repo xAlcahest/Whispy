@@ -49,7 +49,7 @@ export const Dropdown = ({ open, anchor, onClose, items }: DropdownProps) => {
 
   return (
     <div
-      className="fixed z-50 w-56 rounded-[var(--radius-premium)] border border-border-subtle bg-surface-1 p-1.5 shadow-xl app-no-drag"
+      className="fixed z-50 w-56 rounded-[var(--radius-premium)] border border-border-subtle bg-surface-1 p-1 app-no-drag"
       style={{
         left: anchor.x,
         top: anchor.y,
@@ -75,7 +75,7 @@ export const Dropdown = ({ open, anchor, onClose, items }: DropdownProps) => {
               onClose()
             }}
             className={cn(
-              'app-no-drag flex min-h-9 w-full items-start gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors',
+              'app-no-drag flex min-h-8 w-full items-start gap-2 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors',
               item.destructive
                 ? 'text-destructive hover:bg-destructive/10'
                 : item.selected

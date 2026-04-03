@@ -97,23 +97,34 @@ import {
   loadHistory,
   loadModelState,
   loadNoteFolders,
+  loadNoteProcessingEvents,
   loadNoteActions,
   loadNotes,
   loadPostModelState,
   loadSettings,
-  type NoteEntry,
-  type NoteFolder,
-  type NoteAction,
   refreshSettingsFromBackend,
   saveHistory,
   saveModelState,
   saveNoteActions,
   saveNoteFolders,
+  saveNoteProcessingEvents,
   saveNotes,
   savePostModelState,
   saveSettings,
   setOnboardingCompleted,
+  type NoteProcessingEvent,
+  type NoteAction,
+  type NoteEntry,
+  type NoteFolder,
 } from '../lib/storage'
+import {
+  ESTIMATED_READING_WPM,
+  ESTIMATED_SPEAKING_WPM,
+  estimateDurationFromWords,
+  estimateTokensFromText,
+  estimateWordsFromText,
+  resolvePostProcessingMetadata,
+} from '../../../shared/app'
 import type { AppSettings, HistoryEntry, ModelState } from '../types/app'
 import type {
   AppUsageStatsPayload,
@@ -132,6 +143,29 @@ import {
 } from '../../../shared/model-discovery'
 
 type PanelSection = 'conversations' | 'notes' | 'settings'
+
+type DetailedStatsCategory = 'dictations' | 'notes' | 'combined'
+type DetailedStatsCallSource = 'dictation' | 'note'
+
+interface DetailedStatsCallRow {
+  id: string
+  timestamp: number
+  source: DetailedStatsCallSource
+  title: string
+  provider: string
+  model: string
+  durationSeconds: number
+  words: number
+  tokens: number
+  transcriptionCostUSD: number
+  postProcessingCostUSD: number
+  totalCostUSD: number
+  postProcessingApplied: boolean
+  postProcessingProvider: string
+  postProcessingModel: string
+  actionName?: string
+  estimated: boolean
+}
 
 const HISTORY_RETENTION_OPTIONS = [
   { value: 50, label: '50 entries' },
@@ -203,39 +237,40 @@ const formatDurationCompact = (totalSeconds: number) => {
   return `${seconds}s`
 }
 
-const estimateTokensFromText = (value: string) => {
-  const normalized = value.trim()
-  if (!normalized) {
-    return 0
-  }
-
-  return Math.max(1, Math.ceil(normalized.length / 4))
-}
-
-const estimateWordsFromText = (value: string) => {
-  const normalized = value.trim()
-  if (!normalized) {
-    return 0
-  }
-
-  return normalized.split(/\s+/).filter(Boolean).length
-}
-
 const formatCount = (value: number) => new Intl.NumberFormat('en-US').format(value)
 
-const resolveTranscriptionTokenRateUSD = (modelId: string, usageStats: AppUsageStatsPayload | null) => {
-  if (!usageStats) {
-    return null
+const toMonthKey = (timestamp: number) => {
+  const date = new Date(timestamp)
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  return `${year}-${month}`
+}
+
+const formatMonthLabel = (monthKey: string) => {
+  const [yearRaw, monthRaw] = monthKey.split('-')
+  const year = Number(yearRaw)
+  const month = Number(monthRaw)
+  if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) {
+    return monthKey
   }
 
-  const inputById = usageStats.modelInputCostPerTokenById ?? {}
-  const directRate = inputById[modelId]
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'long',
+    year: 'numeric',
+  }).format(new Date(year, month - 1, 1))
+}
+
+const resolveTokenRateFromMap = (
+  modelId: string,
+  rateByModelId: Record<string, number | null>,
+): number | null => {
+  const directRate = rateByModelId[modelId]
   if (typeof directRate === 'number' && Number.isFinite(directRate)) {
     return directRate
   }
 
   const normalizedModelId = modelId.trim().toLowerCase()
-  for (const [candidateModelId, rate] of Object.entries(inputById)) {
+  for (const [candidateModelId, rate] of Object.entries(rateByModelId)) {
     if (typeof rate !== 'number' || !Number.isFinite(rate)) {
       continue
     }
@@ -248,6 +283,49 @@ const resolveTranscriptionTokenRateUSD = (modelId: string, usageStats: AppUsageS
     if (normalizedCandidate.includes(normalizedModelId) || normalizedModelId.includes(normalizedCandidate)) {
       return rate
     }
+  }
+
+  return null
+}
+
+const resolveModelTokenRates = (modelId: string, usageStats: AppUsageStatsPayload | null) => {
+  if (!usageStats) {
+    return {
+      input: null,
+      output: null,
+    }
+  }
+
+  const input = resolveTokenRateFromMap(modelId, usageStats.modelInputCostPerTokenById ?? {})
+  const output = resolveTokenRateFromMap(modelId, usageStats.modelOutputCostPerTokenById ?? {})
+
+  return {
+    input,
+    output,
+  }
+}
+
+const resolveModelTokenRatesWithFallback = (
+  scopedModelId: string,
+  bareModelId: string,
+  usageStats: AppUsageStatsPayload | null,
+) => {
+  const scopedRates = resolveModelTokenRates(scopedModelId, usageStats)
+  if (scopedRates.input !== null || scopedRates.output !== null) {
+    return scopedRates
+  }
+
+  return resolveModelTokenRates(bareModelId, usageStats)
+}
+
+const resolveTranscriptionTokenRateUSD = (modelId: string, usageStats: AppUsageStatsPayload | null) => {
+  if (!usageStats) {
+    return null
+  }
+
+  const directRate = resolveTokenRateFromMap(modelId, usageStats.modelInputCostPerTokenById ?? {})
+  if (directRate !== null) {
+    return directRate
   }
 
   if (usageStats.estimatedTranscriptionTokens > 0 && usageStats.estimatedTranscriptionCostUSD > 0) {
@@ -268,6 +346,10 @@ const normalizeKey = (key: string) => {
 
   if (key.startsWith('Arrow')) {
     return key.replace('Arrow', '')
+  }
+
+  if (key === 'Pause' || key === 'Pause/Break') {
+    return 'Pause'
   }
 
   if (key.length === 1) {
@@ -461,16 +543,47 @@ const HistorySection = ({
       ) : (
         entries.map((entry) => {
           const expanded = Boolean(expandedEntries[entry.id])
-          const wordCount = estimateWordsFromText(entry.text)
-          const tokenEstimate = estimateTokensFromText(entry.text)
+          const rawDictationText = entry.rawText?.trim() || entry.text
+          const enhancedDictationText = entry.enhancedText?.trim() || entry.text
+          const postProcessingApplied = Boolean(entry.postProcessingApplied)
+          const hasEnhancedDictation = postProcessingApplied && rawDictationText.length > 0 && enhancedDictationText.length > 0
+          const rawWordCount = estimateWordsFromText(rawDictationText)
+          const enhancedWordCount = estimateWordsFromText(enhancedDictationText)
+          const rawTokenEstimate = estimateTokensFromText(rawDictationText)
+          const enhancedTokenEstimate = estimateTokensFromText(enhancedDictationText)
           const recordedDurationSeconds =
             typeof entry.durationSeconds === 'number' && Number.isFinite(entry.durationSeconds) && entry.durationSeconds > 0
               ? entry.durationSeconds
               : null
           const recordedTimeLabel = recordedDurationSeconds !== null ? `${formatDurationCompact(recordedDurationSeconds)} time` : 'N/A time'
-          const tokenRateUSD = resolveTranscriptionTokenRateUSD(entry.model, usageStats)
-          const entryCostEstimateUSD =
-            tokenRateUSD !== null ? Number((Math.max(1, tokenEstimate) * tokenRateUSD).toFixed(6)) : null
+          const transcriptionScopedModelId = `${entry.provider}/${entry.model}`
+          const tokenRateUSD =
+            resolveTranscriptionTokenRateUSD(transcriptionScopedModelId, usageStats) ??
+            resolveTranscriptionTokenRateUSD(entry.model, usageStats)
+          const transcriptionCostEstimateUSD =
+            tokenRateUSD !== null ? Number((Math.max(1, rawTokenEstimate) * tokenRateUSD).toFixed(6)) : null
+          const postProcessingProviderId = entry.postProcessingProvider?.trim() || 'unknown-post-provider'
+          const postProcessingModelId = entry.postProcessingModel?.trim() || ''
+          const postProcessingScopedModelId = `${postProcessingProviderId}/${postProcessingModelId || 'unknown-model'}`
+          const postProcessingRates = resolveModelTokenRatesWithFallback(postProcessingScopedModelId, postProcessingModelId, usageStats)
+          const postProcessingCostEstimateUSD =
+            hasEnhancedDictation && (postProcessingRates.input !== null || postProcessingRates.output !== null)
+              ? Number(
+                  (
+                    rawTokenEstimate * (postProcessingRates.input ?? 0) +
+                    enhancedTokenEstimate * (postProcessingRates.output ?? 0)
+                  ).toFixed(6),
+                )
+              : null
+          const lengthSummary = hasEnhancedDictation
+            ? `${formatCount(rawWordCount)}/${formatCount(enhancedWordCount)} words · ~${formatCount(rawTokenEstimate)}/~${formatCount(enhancedTokenEstimate)} tokens`
+            : `${formatCount(rawWordCount)} words · ~${formatCount(rawTokenEstimate)} tokens`
+          const costSummary = hasEnhancedDictation
+            ? `STT ~${formatCurrency(transcriptionCostEstimateUSD)} · ENH ~${formatCurrency(postProcessingCostEstimateUSD)}`
+            : `~${formatCurrency(transcriptionCostEstimateUSD)}`
+          const postProcessingLabel = hasEnhancedDictation
+            ? ` | post: ${postProcessingProviderId}/${postProcessingModelId || 'unknown-model'}`
+            : ''
 
           return (
             <Card key={entry.id}>
@@ -480,8 +593,8 @@ const HistorySection = ({
                     <CardTitle className="text-xs">{formatTimestamp(entry.timestamp)}</CardTitle>
                     <div className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
                       <CardDescription className="text-xs">
-                        {entry.language} | {entry.provider}/{entry.model} | {recordedTimeLabel} · {formatCount(wordCount)} words · ~
-                        {formatCount(tokenEstimate)} tokens · ~{formatCurrency(entryCostEstimateUSD)}
+                        {entry.language} | {entry.provider}/{entry.model} | {recordedTimeLabel} · {lengthSummary} · {costSummary}
+                        {postProcessingLabel}
                       </CardDescription>
                       <button
                         type="button"
@@ -490,7 +603,9 @@ const HistorySection = ({
                         onClick={() => {
                           pushToast({
                             title: 'Estimated dictation cost',
-                            description: `${entry.provider}/${entry.model}: ~${formatCount(tokenEstimate)} tokens, estimated ${formatCurrency(entryCostEstimateUSD)}.`,
+                            description: hasEnhancedDictation
+                              ? `${entry.provider}/${entry.model}: STT ${formatCurrency(transcriptionCostEstimateUSD)} + post-processing ${formatCurrency(postProcessingCostEstimateUSD)}.`
+                              : `${entry.provider}/${entry.model}: ~${formatCount(rawTokenEstimate)} tokens, estimated ${formatCurrency(transcriptionCostEstimateUSD)}.`,
                           })
                         }}
                       >
@@ -617,6 +732,7 @@ interface NotesSectionProps {
   activeNoteId: string | null
   dictationStatus: 'IDLE' | 'RECORDING' | 'PROCESSING'
   transcribingNoteId: string | null
+  recordingElapsedSeconds: number
   postProcessingNoteId: string | null
   onSelectFolder: (folderId: string | null) => void
   onCreateFolder: (name: string) => void
@@ -633,6 +749,7 @@ interface NotesSectionProps {
   onCreateNoteAction: (name: string, description: string, instructions: string, actionId?: string | null) => void
   onDeleteNoteAction: (actionId: string) => void
   onForceSaveNote: (noteId: string) => void
+  onTrackRawNoteCaret: (noteId: string, caretPosition: number) => void
 }
 
 const stripNotePreview = (value: string) =>
@@ -743,6 +860,7 @@ const NotesSection = ({
   activeNoteId,
   dictationStatus,
   transcribingNoteId,
+  recordingElapsedSeconds,
   postProcessingNoteId,
   onSelectFolder,
   onCreateFolder,
@@ -756,6 +874,7 @@ const NotesSection = ({
   onCreateNoteAction,
   onDeleteNoteAction,
   onForceSaveNote,
+  onTrackRawNoteCaret,
 }: NotesSectionProps) => {
   const { pushToast } = useToast()
   const [isCreatingFolder, setIsCreatingFolder] = useState(false)
@@ -917,6 +1036,18 @@ const NotesSection = ({
 
   const activeEditorValue = viewMode === 'processed' ? activeNote?.processedText ?? '' : activeNote?.rawText ?? ''
 
+  const reportActiveRawCaret = useCallback(
+    (textarea: HTMLTextAreaElement | null) => {
+      if (!textarea || !activeNote || viewMode !== 'raw') {
+        return
+      }
+
+      const nextCaret = Number.isFinite(textarea.selectionStart) ? textarea.selectionStart : 0
+      onTrackRawNoteCaret(activeNote.id, Math.max(0, nextCaret))
+    },
+    [activeNote, onTrackRawNoteCaret, viewMode],
+  )
+
   const updateActiveEditorValue = useCallback(
     (nextValue: string) => {
       if (!activeNote) {
@@ -1056,6 +1187,7 @@ const NotesSection = ({
   )
 
   const canRunActions = Boolean(activeNote?.rawText.trim())
+  const postProcessingEnabled = settings.postProcessingEnabled
   const activeAction = useMemo(() => actions.find((action) => action.id === lastUsedActionId) ?? actions[0] ?? null, [actions, lastUsedActionId])
   const postProcessingModelForEstimate =
     usageStats?.activeEnhancementModel ||
@@ -1128,7 +1260,7 @@ const NotesSection = ({
         description: action.description || undefined,
         icon: <Sparkles className="h-3.5 w-3.5" />,
         selected: activeAction?.id === action.id,
-        disabled: !activeNote || !canRunActions || postProcessingNoteId === activeNote.id,
+        disabled: !activeNote || !canRunActions || postProcessingNoteId === activeNote.id || !postProcessingEnabled,
         onSelect: () => {
           setLastUsedActionId(action.id)
         },
@@ -1152,7 +1284,7 @@ const NotesSection = ({
         },
       },
     ]
-  }, [actions, activeAction?.id, activeNote, canRunActions, postProcessingNoteId])
+  }, [actions, activeAction?.id, activeNote, canRunActions, postProcessingEnabled, postProcessingNoteId])
 
   const markdownCommandsDisabled = viewMode === 'preview' || !activeNote
 
@@ -1987,6 +2119,19 @@ const NotesSection = ({
                     value={activeEditorValue}
                     onChange={(event) => {
                       updateActiveEditorValue(event.target.value)
+                      reportActiveRawCaret(event.currentTarget)
+                    }}
+                    onClick={(event) => {
+                      reportActiveRawCaret(event.currentTarget)
+                    }}
+                    onSelect={(event) => {
+                      reportActiveRawCaret(event.currentTarget)
+                    }}
+                    onKeyUp={(event) => {
+                      reportActiveRawCaret(event.currentTarget)
+                    }}
+                    onFocus={(event) => {
+                      reportActiveRawCaret(event.currentTarget)
                     }}
                     onKeyDown={(event) => {
                       const isSaveShortcut = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's'
@@ -2020,7 +2165,11 @@ const NotesSection = ({
                   }
                 >
                   <Mic className="mr-1.5 h-3.5 w-3.5" />
-                  {isRecordingActiveNote ? 'Stop' : isTranscribingActiveNote ? 'Transcribing...' : 'Transcribe'}
+                  {isRecordingActiveNote
+                    ? `Stop (${formatDurationCompact(recordingElapsedSeconds)})`
+                    : isTranscribingActiveNote
+                      ? 'Transcribing...'
+                      : 'Transcribe'}
                 </Button>
 
                 <div className="relative inline-flex">
@@ -2035,11 +2184,15 @@ const NotesSection = ({
 
                       handleRunAction(activeAction)
                     }}
-                    disabled={postProcessingNoteId === activeNote.id || !activeNote.rawText.trim() || !activeAction}
+                    disabled={!postProcessingEnabled || postProcessingNoteId === activeNote.id || !activeNote.rawText.trim() || !activeAction}
                   >
                     <Sparkles className="h-3.5 w-3.5" />
                     <span className="truncate">
-                      {postProcessingNoteId === activeNote.id ? 'Processing...' : activeAction?.name ?? 'Clean Up Notes'}
+                      {!postProcessingEnabled
+                        ? 'Post-processing disabled'
+                        : postProcessingNoteId === activeNote.id
+                          ? 'Processing...'
+                          : activeAction?.name ?? 'Clean Up Notes'}
                     </span>
                   </button>
 
@@ -2061,7 +2214,7 @@ const NotesSection = ({
 
                       openActionsMenu(event.currentTarget)
                     }}
-                    disabled={postProcessingNoteId === activeNote.id || !activeNote.rawText.trim()}
+                    disabled={!postProcessingEnabled || postProcessingNoteId === activeNote.id || !activeNote.rawText.trim()}
                   >
                     <ChevronDown className="h-3.5 w-3.5 opacity-70" />
                   </button>
@@ -2696,11 +2849,16 @@ const PreferencesSettingsPanel = ({
         </div>
 
         <div className="flex items-center justify-between rounded-md border border-border-subtle bg-surface-0 px-3 py-2.5">
-          <p className="text-sm">Start Whispy on KDE/desktop login</p>
+          <div>
+            <p className="text-sm">Enable post-processing</p>
+            <p className="text-xs text-muted-foreground">
+              Disable to keep raw dictation output without LLM cleanup or enhancement costs.
+            </p>
+          </div>
           <Switch
-            checked={settings.launchAtLogin}
+            checked={settings.postProcessingEnabled}
             onCheckedChange={(checked) => {
-              onChange({ launchAtLogin: checked })
+              onChange({ postProcessingEnabled: checked })
             }}
           />
         </div>
@@ -2995,6 +3153,292 @@ const SpendingLimitsSection = ({ settings, onChange }: SpendingLimitsSectionProp
   )
 }
 
+interface DetailedStatsLoggingSectionProps {
+  settings: AppSettings
+  dictationRows: DetailedStatsCallRow[]
+  noteRows: DetailedStatsCallRow[]
+  onChange: (next: Partial<AppSettings>) => void
+  onClearLogs: () => void
+}
+
+const DetailedStatsLoggingSection = ({
+  settings,
+  dictationRows,
+  noteRows,
+  onChange,
+  onClearLogs,
+}: DetailedStatsLoggingSectionProps) => {
+  const [activeStatsTab, setActiveStatsTab] = useState<DetailedStatsCategory>('dictations')
+  const [selectedMonth, setSelectedMonth] = useState<string>('all')
+
+  const combinedRows = useMemo(
+    () => [...dictationRows, ...noteRows].sort((left, right) => right.timestamp - left.timestamp),
+    [dictationRows, noteRows],
+  )
+
+  const activeRows =
+    activeStatsTab === 'dictations' ? dictationRows : activeStatsTab === 'notes' ? noteRows : combinedRows
+
+  const monthOptions = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const row of combinedRows) {
+      const monthKey = toMonthKey(row.timestamp)
+      counts.set(monthKey, (counts.get(monthKey) ?? 0) + 1)
+    }
+
+    return [...counts.entries()]
+      .sort((left, right) => right[0].localeCompare(left[0]))
+      .map(([monthKey, count]) => ({
+        monthKey,
+        label: `${formatMonthLabel(monthKey)} (${formatCount(count)})`,
+      }))
+  }, [combinedRows])
+
+  useEffect(() => {
+    if (selectedMonth === 'all') {
+      return
+    }
+
+    if (!monthOptions.some((option) => option.monthKey === selectedMonth)) {
+      setSelectedMonth('all')
+    }
+  }, [monthOptions, selectedMonth])
+
+  const filteredRows = useMemo(() => {
+    if (selectedMonth === 'all') {
+      return activeRows
+    }
+
+    return activeRows.filter((row) => toMonthKey(row.timestamp) === selectedMonth)
+  }, [activeRows, selectedMonth])
+
+  const filteredTotals = useMemo(() => {
+    return filteredRows.reduce(
+      (accumulator, row) => {
+        accumulator.durationSeconds += row.durationSeconds
+        accumulator.words += row.words
+        accumulator.tokens += row.tokens
+        accumulator.transcriptionCostUSD += row.transcriptionCostUSD
+        accumulator.postProcessingCostUSD += row.postProcessingCostUSD
+        accumulator.totalCostUSD += row.totalCostUSD
+        return accumulator
+      },
+      {
+        durationSeconds: 0,
+        words: 0,
+        tokens: 0,
+        transcriptionCostUSD: 0,
+        postProcessingCostUSD: 0,
+        totalCostUSD: 0,
+      },
+    )
+  }, [filteredRows])
+
+  const exportFilteredRows = () => {
+    if (filteredRows.length === 0) {
+      return
+    }
+
+    const csvHeader = [
+      'timestamp',
+      'source',
+      'title',
+      'provider',
+      'model',
+      'duration_seconds',
+      'words',
+      'tokens',
+      'stt_cost_usd',
+      'post_cost_usd',
+      'total_cost_usd',
+      'post_processing_applied',
+      'post_provider',
+      'post_model',
+      'action_name',
+      'estimated',
+    ]
+
+    const escapeCsv = (value: string | number | boolean) => {
+      const stringified = String(value)
+      if (stringified.includes('"') || stringified.includes(',') || stringified.includes('\n')) {
+        return `"${stringified.replace(/"/g, '""')}"`
+      }
+      return stringified
+    }
+
+    const csvRows = filteredRows.map((row) => {
+      return [
+        new Date(row.timestamp).toISOString(),
+        row.source,
+        row.title,
+        row.provider,
+        row.model,
+        row.durationSeconds.toFixed(2),
+        row.words,
+        row.tokens,
+        row.transcriptionCostUSD.toFixed(6),
+        row.postProcessingCostUSD.toFixed(6),
+        row.totalCostUSD.toFixed(6),
+        row.postProcessingApplied,
+        row.postProcessingProvider,
+        row.postProcessingModel,
+        row.actionName ?? '',
+        row.estimated,
+      ]
+        .map((value) => escapeCsv(value))
+        .join(',')
+    })
+
+    const csvPayload = [csvHeader.join(','), ...csvRows].join('\n')
+    const blob = new Blob([csvPayload], { type: 'text/csv;charset=utf-8' })
+    const downloadUrl = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    const monthSuffix = selectedMonth === 'all' ? 'all-months' : selectedMonth
+    link.href = downloadUrl
+    link.download = `whispy-stats-${activeStatsTab}-${monthSuffix}.csv`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(downloadUrl)
+  }
+
+  return (
+    <div className="space-y-3">
+      <Card id="settings-node-stats-logs" className="scroll-mt-6">
+        <CardHeader>
+          <CardTitle>Detailed call stats</CardTitle>
+          <CardDescription>
+            Per-call logs for Dictations and Notes with month filters, compact rows, and export.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2 rounded-md border border-border-subtle bg-surface-0 px-3 py-2">
+            <p className="text-sm">Detailed logs</p>
+            <Switch
+              checked={settings.detailedStatsLoggingEnabled}
+              onCheckedChange={(checked) => {
+                onChange({ detailedStatsLoggingEnabled: checked })
+              }}
+            />
+
+            <Tabs
+              value={activeStatsTab}
+              onValueChange={(value) => {
+                setActiveStatsTab(value as DetailedStatsCategory)
+              }}
+            >
+              <TabsList className="grid h-8 grid-cols-3">
+                <TabsTrigger value="dictations" className="text-xs">Dictations</TabsTrigger>
+                <TabsTrigger value="notes" className="text-xs">Notes</TabsTrigger>
+                <TabsTrigger value="combined" className="text-xs">Combined</TabsTrigger>
+              </TabsList>
+            </Tabs>
+
+            <select
+              className="app-no-drag h-8 rounded-md border border-border-subtle bg-surface-0 px-2 text-xs"
+              value={selectedMonth}
+              onChange={(event) => {
+                setSelectedMonth(event.target.value)
+              }}
+            >
+              <option value="all">All months ({formatCount(activeRows.length)})</option>
+              {monthOptions.map((option) => (
+                <option key={option.monthKey} value={option.monthKey}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+
+            {filteredRows.length > 0 ? (
+              <Button size="sm" variant="outline" onClick={exportFilteredRows}>
+                <Download className="h-3.5 w-3.5" /> Export CSV
+              </Button>
+            ) : null}
+
+            <Button variant="outline" size="sm" onClick={onClearLogs}>
+              Clear note logs
+            </Button>
+          </div>
+
+          <div className="rounded-md border border-border-subtle bg-surface-0 px-3 py-2 text-xs">
+            <span className="font-semibold">Rows:</span> {formatCount(filteredRows.length)}{' '}
+            <span className="font-semibold">| Duration:</span> {formatDurationCompact(filteredTotals.durationSeconds)}{' '}
+            <span className="font-semibold">| Words:</span> {formatCount(filteredTotals.words)}{' '}
+            <span className="font-semibold">| Tokens:</span> {formatCount(filteredTotals.tokens)}{' '}
+            <span className="font-semibold">| STT:</span> {formatCurrency(filteredTotals.transcriptionCostUSD)}{' '}
+            <span className="font-semibold">| Post:</span> {formatCurrency(filteredTotals.postProcessingCostUSD)}{' '}
+            <span className="font-semibold">| Total:</span> {formatCurrency(filteredTotals.totalCostUSD)}
+          </div>
+
+          <div className="overflow-x-auto rounded-md border border-border-subtle bg-surface-0">
+            <table className="w-full min-w-[1200px] text-left text-xs">
+              <thead className="border-b border-border-subtle text-muted-foreground">
+                <tr>
+                  <th className="px-2 py-1.5 font-medium">Time</th>
+                  <th className="px-2 py-1.5 font-medium">Type</th>
+                  <th className="px-2 py-1.5 font-medium">Title/Action</th>
+                  <th className="px-2 py-1.5 font-medium">Provider / Model</th>
+                  <th className="px-2 py-1.5 font-medium">Duration</th>
+                  <th className="px-2 py-1.5 font-medium">Words</th>
+                  <th className="px-2 py-1.5 font-medium">Tokens</th>
+                  <th className="px-2 py-1.5 font-medium">STT $</th>
+                  <th className="px-2 py-1.5 font-medium">Post $</th>
+                  <th className="px-2 py-1.5 font-medium">Total $</th>
+                  <th className="px-2 py-1.5 font-medium">Post</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredRows.length === 0 ? (
+                  <tr>
+                    <td className="px-2 py-2 text-muted-foreground" colSpan={11}>
+                      No rows for this filter.
+                    </td>
+                  </tr>
+                ) : (
+                  filteredRows.map((row) => (
+                    <tr key={row.id} className="border-b border-border-subtle/80 last:border-b-0">
+                      <td className="px-2 py-1.5 text-muted-foreground">{formatTimestamp(row.timestamp)}</td>
+                      <td className="px-2 py-1.5">{row.source === 'dictation' ? 'Dictation' : 'Note'}</td>
+                      <td className="px-2 py-1.5">
+                        <span className="block truncate max-w-[220px]" title={row.title}>
+                          {row.title || 'Untitled'}
+                        </span>
+                        {row.actionName ? (
+                          <span className="block text-[10px] text-muted-foreground">{row.actionName}</span>
+                        ) : null}
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <span className="block truncate max-w-[260px]" title={`${row.provider}/${row.model}`}>
+                          {row.provider}/{row.model}
+                        </span>
+                        {row.postProcessingApplied ? (
+                          <span className="block text-[10px] text-muted-foreground" title={`${row.postProcessingProvider}/${row.postProcessingModel}`}>
+                            post: {row.postProcessingProvider}/{row.postProcessingModel}
+                          </span>
+                        ) : null}
+                      </td>
+                      <td className="px-2 py-1.5 tabular-nums">{formatDurationCompact(row.durationSeconds)}</td>
+                      <td className="px-2 py-1.5 tabular-nums">{formatCount(row.words)}</td>
+                      <td className="px-2 py-1.5 tabular-nums">{formatCount(row.tokens)}</td>
+                      <td className="px-2 py-1.5 tabular-nums">{formatCurrency(row.transcriptionCostUSD)}</td>
+                      <td className="px-2 py-1.5 tabular-nums">{formatCurrency(row.postProcessingCostUSD)}</td>
+                      <td className="px-2 py-1.5 tabular-nums font-semibold">{formatCurrency(row.totalCostUSD)}</td>
+                      <td className="px-2 py-1.5 text-muted-foreground">
+                        {row.postProcessingApplied ? 'yes' : 'no'}
+                        {row.estimated ? ' (est)' : ''}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
 const FaqSection = () => {
   const entries = [
     {
@@ -3023,14 +3467,24 @@ const FaqSection = () => {
         'Words are human-readable transcript length. Tokens are model-oriented units used for pricing estimates. The line format is: language | provider/model | time | words | tokens | estimated cost.',
     },
     {
-      question: 'How should I read raw/enhanced stats in Notes?',
+      question: 'How should I read Notes stats?',
       answer:
-        'Raw means your original note text. Enhanced means processed output after running note actions. Compare fields (words/tokens/read time) help you see how processing changed the content.',
+        'Notes stats are focused on Enhanced output: how many notes are processed, how many enhanced words/tokens were produced, and how many notes are still draft-only.',
     },
     {
       question: 'Why does Notes estimate ignore draft-only notes?',
       answer:
         'To avoid misleading totals, draft notes are not counted as spent usage. Only notes with Enhanced output are included in notes spend and overall spend.',
+    },
+    {
+      question: 'Can I disable post-processing completely?',
+      answer:
+        'Yes. In Settings > Models > Post-processing toggle, switch it off. Dictations will return raw transcript text, and note enhancement actions are bypassed until you enable it again.',
+    },
+    {
+      question: 'Why do I see N/A in Notes stats when post-processing is disabled?',
+      answer:
+        'When post-processing is disabled, new enhancement spend is marked as N/A by design. Historical enhanced spend is still shown separately so your budget history remains visible.',
     },
     {
       question: 'What does Overall $ used include?',
@@ -3056,6 +3510,11 @@ const FaqSection = () => {
       question: 'Which paste shortcut should I use?',
       answer:
         'Use Ctrl+V for standard editors. Use Ctrl+Shift+V for terminals and apps that expect plain-text paste. You can switch this in Preferences at any time.',
+    },
+    {
+      question: 'How do I set up ydotool if auto-paste fails?',
+      answer:
+        'Whispy tries to start ydotoold automatically. If permissions are blocked, run ydotoold with a user-owned socket and set YDOTOOL_SOCKET before launching Whispy. Example: ydotoold --socket-path="$XDG_RUNTIME_DIR/.ydotool_socket" --socket-perm=0600 & then export YDOTOOL_SOCKET="$XDG_RUNTIME_DIR/.ydotool_socket".',
     },
     {
       question: 'When are local models loaded?',
@@ -3797,7 +4256,7 @@ const ModelsSection = ({
 
   const providerButtonClass = (active: boolean) =>
     cn(
-      'app-no-drag inline-flex h-10 w-full items-center justify-center gap-2 rounded-[var(--radius-premium)] px-3 text-sm font-medium transition-colors whitespace-nowrap',
+      'app-no-drag inline-flex min-h-10 h-auto w-full items-center justify-center gap-2 rounded-[var(--radius-premium)] px-3 py-2 text-center text-sm font-medium leading-tight transition-colors whitespace-normal break-words',
       active
         ? 'border border-primary/35 bg-primary/12 text-foreground'
         : 'border border-border-subtle bg-surface-1/60 text-muted-foreground hover:bg-surface-2/70 hover:text-foreground',
@@ -3813,10 +4272,37 @@ const ModelsSection = ({
 
   return (
     <div className="space-y-5">
+      {scope === 'post' ? (
+        <Card id="settings-node-models.post.toggle" className="scroll-mt-6">
+          <CardHeader>
+            <CardTitle>Post-processing toggle</CardTitle>
+            <CardDescription>Enable or disable post-processing for dictations and note enhancements.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center justify-between gap-3 rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 p-3">
+              <div>
+                <p className="text-sm font-medium">Post-processing</p>
+                <p className="text-xs text-muted-foreground">
+                  {settings.postProcessingEnabled
+                    ? 'Enabled: dictations and note actions can use LLM cleanup and prompts.'
+                    : 'Disabled: dictations return raw transcript only and note enhancements are bypassed.'}
+                </p>
+              </div>
+              <Switch
+                checked={settings.postProcessingEnabled}
+                onCheckedChange={(checked) => {
+                  onSettingsChange({ postProcessingEnabled: checked })
+                }}
+              />
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
+
       {scope === 'transcriptions' && mode === 'cloud' ? (
         <Card id="settings-node-models.transcriptions.cloud" className="scroll-mt-6">
         <CardHeader>
-          <CardTitle>Transcriptions | Cloud</CardTitle>
+          <CardTitle>Dictations | Cloud</CardTitle>
           <CardDescription>
             Providers stay visible and wrap responsively based on available width.
           </CardDescription>
@@ -4095,7 +4581,7 @@ const ModelsSection = ({
       {scope === 'transcriptions' && mode === 'local' ? (
       <Card id="settings-node-models.transcriptions.local" className="scroll-mt-6">
         <CardHeader>
-          <CardTitle>Transcriptions | Local</CardTitle>
+          <CardTitle>Dictations | Local</CardTitle>
           <CardDescription>
             {downloadedModels} downloaded models | stored in app data directory
           </CardDescription>
@@ -5040,6 +5526,7 @@ const InfoSection = ({
   const [debugLogStatus, setDebugLogStatus] = useState<DebugLogStatusPayload | null>(null)
   const [debugLogStatusLoading, setDebugLogStatusLoading] = useState(false)
   const [debugLogFileOpening, setDebugLogFileOpening] = useState(false)
+  const [debugLogDirectoryOpening, setDebugLogDirectoryOpening] = useState(false)
   const [showSecretStorage, setShowSecretStorage] = useState(false)
   const [secretStorageStatus, setSecretStorageStatus] = useState<SecretStorageStatusPayload | null>(null)
   const [secretStorageStatusLoading, setSecretStorageStatusLoading] = useState(false)
@@ -5187,23 +5674,31 @@ const InfoSection = ({
           </Button>
           {showBugLogs ? (
             <div className="rounded-md border border-border-subtle bg-surface-0 p-3 text-sm text-muted-foreground">
-              <p>Renderer logs: ~/.config/whispy/logs/renderer.log</p>
-              <p>Main logs: ~/.config/whispy/logs/main.log</p>
-              <p>Crash dumps: ~/.config/whispy/logs/crash/</p>
-              {settings.debugModeEnabled ? (
-                <>
-                  <p className="mt-2">Current debug log file:</p>
-                  <p className="text-xs">
-                    {debugLogStatusLoading
-                      ? 'Loading...'
-                      : debugLogStatus?.currentLogFile ?? 'Unavailable (check debug runtime status)'}
-                  </p>
-                </>
+              <p>
+                Logs directory:{' '}
+                {debugLogStatusLoading
+                  ? 'Loading...'
+                  : debugLogStatus?.logsDirectory ?? 'Unavailable (check debug runtime status)'}
+              </p>
+              <p>
+                Current debug log file:{' '}
+                {debugLogStatusLoading
+                  ? 'Loading...'
+                  : debugLogStatus?.currentLogFile ?? 'Unavailable (check debug runtime status)'}
+              </p>
+              <p>
+                Effective log level:{' '}
+                {debugLogStatusLoading
+                  ? 'Loading...'
+                  : (debugLogStatus?.logLevel ?? 'info').toUpperCase()}
+              </p>
+              {!settings.debugModeEnabled ? (
+                <p className="mt-1 text-xs">Debug mode is disabled, so logs are printed to console only.</p>
               ) : null}
             </div>
           ) : null}
 
-          {showBugLogs && settings.debugModeEnabled ? (
+          {showBugLogs ? (
             <div className="flex flex-wrap items-center gap-2">
               <Button
                 variant="outline"
@@ -5214,6 +5709,32 @@ const InfoSection = ({
                 }}
               >
                 {debugLogStatusLoading ? 'Refreshing...' : 'Refresh debug log status'}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={debugLogDirectoryOpening}
+                onClick={() => {
+                  setDebugLogDirectoryOpening(true)
+
+                  void runWithTimeout(
+                    electronAPI.openDebugLogsDirectory(),
+                    INFO_SECTION_REQUEST_TIMEOUT_MS,
+                    'Opening debug logs directory timed out.',
+                  )
+                    .catch((error: unknown) => {
+                      pushToast({
+                        title: 'Unable to open logs directory',
+                        description: error instanceof Error ? error.message : 'Unknown runtime error.',
+                        variant: 'destructive',
+                      })
+                    })
+                    .finally(() => {
+                      setDebugLogDirectoryOpening(false)
+                    })
+                }}
+              >
+                {debugLogDirectoryOpening ? 'Opening...' : 'Open logs folder'}
               </Button>
               <Button
                 variant="outline"
@@ -5397,6 +5918,7 @@ type SettingsNodeId =
   | 'prompts'
   | 'agent.name'
   | 'spending-limits'
+  | 'stats-logs'
   | 'privacy'
   | 'developer'
   | 'shortcuts'
@@ -5438,6 +5960,7 @@ const SETTINGS_MENU_GROUPS: SettingsMenuGroup[] = [
     label: 'System',
     items: [
       { id: 'spending-limits', label: 'Spending Limits', icon: Wallet },
+      { id: 'stats-logs', label: 'Stats Logs', icon: FileText },
       { id: 'privacy', label: 'Privacy', icon: Lock },
       { id: 'developer', label: 'Developer', icon: Wrench },
       { id: 'shortcuts', label: 'Shortcuts', icon: Settings },
@@ -5450,11 +5973,14 @@ interface SettingsWorkspaceProps {
   settings: AppSettings
   models: ModelState[]
   postModels: ModelState[]
+  dictationStatsRows: DetailedStatsCallRow[]
+  noteStatsRows: DetailedStatsCallRow[]
   displayServer: DisplayServer
   autoPasteSupport: AutoPasteBackendSupportPayload | null
   autoPasteSupportLoading: boolean
   requestedNode: SettingsNodeId | null
   onRefreshAutoPasteSupport: () => void
+  onClearDetailedStatsLogs: () => void
   onSettingsChange: (next: Partial<AppSettings>) => void
   onModelsChange: Dispatch<SetStateAction<ModelState[]>>
   onPostModelsChange: Dispatch<SetStateAction<ModelState[]>>
@@ -5464,11 +5990,14 @@ const SettingsWorkspace = ({
   settings,
   models,
   postModels,
+  dictationStatsRows,
+  noteStatsRows,
   displayServer,
   autoPasteSupport,
   autoPasteSupportLoading,
   requestedNode,
   onRefreshAutoPasteSupport,
+  onClearDetailedStatsLogs,
   onSettingsChange,
   onModelsChange,
   onPostModelsChange,
@@ -5611,6 +6140,18 @@ const SettingsWorkspace = ({
 
     if (activeNode === 'spending-limits') {
       return <SpendingLimitsSection settings={settings} onChange={onSettingsChange} />
+    }
+
+    if (activeNode === 'stats-logs') {
+      return (
+        <DetailedStatsLoggingSection
+          settings={settings}
+          dictationRows={dictationStatsRows}
+          noteRows={noteStatsRows}
+          onChange={onSettingsChange}
+          onClearLogs={onClearDetailedStatsLogs}
+        />
+      )
     }
 
     if (activeNode === 'privacy') {
@@ -5985,6 +6526,11 @@ const ControlPanelScene = () => {
   const [usageStats, setUsageStats] = useState<AppUsageStatsPayload | null>(null)
   const [usageStatsLoading, setUsageStatsLoading] = useState(false)
   const secretFallbackToastShownRef = useRef(false)
+  const rawNoteCaretByIdRef = useRef<Record<string, number>>({})
+  const [noteRecordingStartedAt, setNoteRecordingStartedAt] = useState<number | null>(null)
+  const [noteRecordingElapsedSeconds, setNoteRecordingElapsedSeconds] = useState(0)
+  const [noteProcessingEvents, setNoteProcessingEvents] = useState<NoteProcessingEvent[]>(loadNoteProcessingEvents)
+  const noteEventBackfillDoneRef = useRef(false)
 
   const historyLazyLoadingEnabled = HISTORY_LAZY_LOAD_LIMITS.has(settings.historyRetentionLimit)
 
@@ -6294,6 +6840,35 @@ const ControlPanelScene = () => {
   }, [])
 
   useEffect(() => {
+    if (dictationStatus === 'RECORDING' && transcribingNoteId !== null && noteRecordingStartedAt === null) {
+      setNoteRecordingStartedAt(Date.now())
+      return
+    }
+
+    if (dictationStatus !== 'RECORDING' && noteRecordingStartedAt !== null) {
+      setNoteRecordingStartedAt(null)
+    }
+  }, [dictationStatus, noteRecordingStartedAt, transcribingNoteId])
+
+  useEffect(() => {
+    if (dictationStatus !== 'RECORDING' || transcribingNoteId === null || noteRecordingStartedAt === null) {
+      setNoteRecordingElapsedSeconds(0)
+      return
+    }
+
+    const updateElapsed = () => {
+      setNoteRecordingElapsedSeconds(Math.max(0, Math.floor((Date.now() - noteRecordingStartedAt) / 1000)))
+    }
+
+    updateElapsed()
+    const intervalId = window.setInterval(updateElapsed, 1000)
+
+    return () => {
+      window.clearInterval(intervalId)
+    }
+  }, [dictationStatus, noteRecordingStartedAt, transcribingNoteId])
+
+  useEffect(() => {
     saveSettings(settings)
     document.documentElement.classList.toggle('dark', settings.theme === 'dark')
   }, [settings])
@@ -6547,10 +7122,13 @@ const ControlPanelScene = () => {
     }
     if (transcribingNoteId === noteId) {
       setTranscribingNoteId(null)
+      setNoteRecordingStartedAt(null)
     }
     if (postProcessingNoteId === noteId) {
       setPostProcessingNoteId(null)
     }
+
+    delete rawNoteCaretByIdRef.current[noteId]
 
     emitNotesLog('Note deleted', {
       noteId,
@@ -6674,6 +7252,7 @@ const ControlPanelScene = () => {
       if (!response.accepted) {
         if (!(response.reason === 'processing' && wasRecordingThisNote)) {
           setTranscribingNoteId(null)
+          setNoteRecordingStartedAt(null)
         }
 
         emitNotesLog('Transcribe rejected by runtime', {
@@ -6698,6 +7277,12 @@ const ControlPanelScene = () => {
         return
       }
 
+      if (wasRecordingThisNote) {
+        setNoteRecordingStartedAt(null)
+      } else {
+        setNoteRecordingStartedAt(Date.now())
+      }
+
       pushToast({
         title: wasRecordingThisNote ? 'Recording stopped' : 'Dictation started',
         description: wasRecordingThisNote
@@ -6713,6 +7298,7 @@ const ControlPanelScene = () => {
       })
     } catch {
       setTranscribingNoteId(null)
+      setNoteRecordingStartedAt(null)
 
       emitNotesLog('Transcribe failed with runtime exception', {
         noteId,
@@ -6730,6 +7316,14 @@ const ControlPanelScene = () => {
   }
 
   const handlePostProcessNote = async (noteId: string, actionId: string | null = null) => {
+    if (!settings.postProcessingEnabled) {
+      pushToast({
+        title: 'Post-processing is disabled',
+        description: 'Enable post-processing in Settings > Models > Post-processing toggle.',
+      })
+      return
+    }
+
     const targetNote = notes.find((entry) => entry.id === noteId)
     if (!targetNote || !targetNote.rawText.trim()) {
       emitNotesLog('Post-process skipped: note has no raw text', {
@@ -6782,6 +7376,48 @@ const ControlPanelScene = () => {
           : {}),
       })
 
+      if (settings.detailedStatsLoggingEnabled) {
+        const rawMeta = resolvePostProcessingMetadata(settings)
+        const providerModel = {
+          provider: rawMeta.provider.trim() || 'unknown-post-provider',
+          model: rawMeta.model.trim() || 'unknown-model',
+        }
+
+        const inputText = targetNote.rawText.trim()
+        const outputText = output.trim()
+        const inputWords = estimateWordsFromText(inputText)
+        const outputWords = estimateWordsFromText(outputText)
+        const inputTokens = estimateTokensFromText(inputText)
+        const outputTokens = estimateTokensFromText(outputText)
+        const scopedModelId = `${providerModel.provider}/${providerModel.model}`
+        const modelRates = resolveModelTokenRatesWithFallback(scopedModelId, providerModel.model, usageStats)
+        const costUSD = Number((inputTokens * (modelRates.input ?? 0) + outputTokens * (modelRates.output ?? 0)).toFixed(6))
+
+        setNoteProcessingEvents((current) =>
+          [
+            {
+              id: crypto.randomUUID(),
+              timestamp: Date.now(),
+              noteId,
+              noteTitle: shouldGenerateTitle ? generatedTitle : targetNote.title,
+              actionId: selectedAction?.id ?? null,
+              actionName: selectedAction?.name ?? 'Clean Up Notes',
+              provider: providerModel.provider,
+              model: providerModel.model,
+              inputWords,
+              inputTokens,
+              outputWords,
+              outputTokens,
+              durationSeconds: estimateDurationFromWords(outputWords, ESTIMATED_READING_WPM),
+              postProcessingApplied: true,
+              estimated: false,
+              costUSD,
+            },
+            ...current,
+          ].slice(0, 20000),
+        )
+      }
+
       emitNotesLog('Post-process completed', {
         noteId,
         action: actionLabel,
@@ -6811,6 +7447,33 @@ const ControlPanelScene = () => {
             }
           : {}),
       })
+
+      if (settings.detailedStatsLoggingEnabled) {
+        const outputWords = estimateWordsFromText(fallbackOutput)
+        setNoteProcessingEvents((current) =>
+          [
+            {
+              id: crypto.randomUUID(),
+              timestamp: Date.now(),
+              noteId,
+              noteTitle: targetNote.title,
+              actionId: selectedAction?.id ?? null,
+              actionName: `${selectedAction?.name ?? 'Clean Up Notes'} (fallback)`,
+              provider: 'fallback-cleanup',
+              model: 'local-normalizer',
+              inputWords: estimateWordsFromText(targetNote.rawText),
+              inputTokens: estimateTokensFromText(targetNote.rawText),
+              outputWords,
+              outputTokens: estimateTokensFromText(fallbackOutput),
+              durationSeconds: estimateDurationFromWords(outputWords, ESTIMATED_READING_WPM),
+              postProcessingApplied: false,
+              estimated: true,
+              costUSD: 0,
+            },
+            ...current,
+          ].slice(0, 20000),
+        )
+      }
 
       emitNotesLog('Post-process failed: fallback cleanup applied', {
         noteId,
@@ -6922,13 +7585,31 @@ const ControlPanelScene = () => {
           return currentNoteId
         }
 
+        setNoteRecordingStartedAt(null)
+
         setNotes((current) =>
           current.map((entry) => {
             if (entry.id !== currentNoteId) {
               return entry
             }
 
-            const nextRawText = entry.rawText.trim().length > 0 ? `${entry.rawText.trim()}\n${payload.text}` : payload.text
+            const sourceRawText = entry.rawText ?? ''
+            const insertionPoint = rawNoteCaretByIdRef.current[currentNoteId]
+            const hasTrackedInsertionPoint =
+              typeof insertionPoint === 'number' &&
+              Number.isFinite(insertionPoint) &&
+              insertionPoint >= 0 &&
+              insertionPoint <= sourceRawText.length
+
+            const nextRawText = hasTrackedInsertionPoint
+              ? `${sourceRawText.slice(0, insertionPoint)}${payload.text}${sourceRawText.slice(insertionPoint)}`
+              : sourceRawText.trim().length > 0
+                ? `${sourceRawText.trimEnd()}\n${payload.text}`
+                : payload.text
+
+            if (hasTrackedInsertionPoint) {
+              rawNoteCaretByIdRef.current[currentNoteId] = insertionPoint + payload.text.length
+            }
 
             return {
               ...entry,
@@ -6968,6 +7649,8 @@ const ControlPanelScene = () => {
           return currentNoteId
         }
 
+        setNoteRecordingStartedAt(null)
+
         pushToast({
           title: 'Transcription failed',
           description: message,
@@ -6988,6 +7671,14 @@ const ControlPanelScene = () => {
       offError()
     }
   }, [emitNotesLog, historyVisibleCount, loadHistoryForSection, pushToast])
+
+  const handleTrackRawNoteCaret = useCallback((noteId: string, caretPosition: number) => {
+    if (!Number.isFinite(caretPosition) || caretPosition < 0) {
+      return
+    }
+
+    rawNoteCaretByIdRef.current[noteId] = Math.max(0, Math.floor(caretPosition))
+  }, [])
 
   const renderSection = () => {
     if (section === 'conversations') {
@@ -7043,6 +7734,8 @@ const ControlPanelScene = () => {
           settings={settings}
           models={models}
           postModels={postModels}
+          dictationStatsRows={dictationStatsRows}
+          noteStatsRows={noteStatsRows}
           displayServer={displayServer}
           autoPasteSupport={autoPasteSupport}
           autoPasteSupportLoading={autoPasteSupportLoading}
@@ -7050,6 +7743,7 @@ const ControlPanelScene = () => {
           onRefreshAutoPasteSupport={() => {
             void refreshAutoPasteSupport(true)
           }}
+          onClearDetailedStatsLogs={handleClearDetailedStatsLogs}
           onSettingsChange={handleSettingsChange}
           onModelsChange={setModels}
           onPostModelsChange={setPostModels}
@@ -7069,6 +7763,7 @@ const ControlPanelScene = () => {
           activeNoteId={activeNoteId}
           dictationStatus={dictationStatus}
           transcribingNoteId={transcribingNoteId}
+          recordingElapsedSeconds={noteRecordingElapsedSeconds}
           postProcessingNoteId={postProcessingNoteId}
           onSelectFolder={setActiveFolderId}
           onCreateFolder={handleCreateFolder}
@@ -7086,6 +7781,7 @@ const ControlPanelScene = () => {
           onCreateNoteAction={handleCreateNoteAction}
           onDeleteNoteAction={handleDeleteNoteAction}
           onForceSaveNote={handleForceSaveNote}
+          onTrackRawNoteCaret={handleTrackRawNoteCaret}
         />
       )
     }
@@ -7232,8 +7928,12 @@ const ControlPanelScene = () => {
 
     let totalCost = 0
     for (const entry of historyForEstimates) {
-      const tokenEstimate = estimateTokensFromText(entry.text)
-      const unitRate = resolveTranscriptionTokenRateUSD(entry.model, usageStats) ?? fallbackRate
+      const tokenEstimate = estimateTokensFromText(entry.rawText?.trim() || entry.text)
+      const scopedModelId = `${entry.provider}/${entry.model}`
+      const unitRate =
+        resolveTranscriptionTokenRateUSD(scopedModelId, usageStats) ??
+        resolveTranscriptionTokenRateUSD(entry.model, usageStats) ??
+        fallbackRate
       if (unitRate === null) {
         continue
       }
@@ -7257,65 +7957,260 @@ const ControlPanelScene = () => {
 
   const transcriptionEstimate = transcriptionEstimateFromState
   const notesEstimate = notesEstimateFromState
-  const overallUsedCost = Number((transcriptionEstimate + notesEstimate).toFixed(6))
   const dictationAggregate = useMemo(() => {
     let wordsTotal = 0
     let tokensTotal = 0
     let durationSecondsTotal = 0
+    let enhancedCount = 0
+    let enhancedWordsTotal = 0
+    let enhancedTokensTotal = 0
+    let postProcessingCostTotal = 0
 
     for (const entry of historyForEstimates) {
-      const words = estimateWordsFromText(entry.text)
-      const tokens = estimateTokensFromText(entry.text)
+      const rawText = entry.rawText?.trim() || entry.text
+      const words = estimateWordsFromText(rawText)
+      const tokens = estimateTokensFromText(rawText)
       const explicitDuration =
         typeof entry.durationSeconds === 'number' && Number.isFinite(entry.durationSeconds) && entry.durationSeconds > 0
           ? entry.durationSeconds
           : null
+      const postProcessingApplied = Boolean(entry.postProcessingApplied)
+      const enhancedText = entry.enhancedText?.trim() || entry.text
 
       wordsTotal += words
       tokensTotal += tokens
-      durationSecondsTotal += explicitDuration ?? (words > 0 ? (words / 150) * 60 : 0)
+      durationSecondsTotal += explicitDuration ?? estimateDurationFromWords(words, ESTIMATED_SPEAKING_WPM)
+
+      if (postProcessingApplied && rawText && enhancedText) {
+        enhancedCount += 1
+        const enhancedWords = estimateWordsFromText(enhancedText)
+        const enhancedTokens = estimateTokensFromText(enhancedText)
+        enhancedWordsTotal += enhancedWords
+        enhancedTokensTotal += enhancedTokens
+
+        const postProviderId = entry.postProcessingProvider?.trim() || 'unknown-post-provider'
+        const postModelId = entry.postProcessingModel?.trim() || 'unknown-model'
+        const postScopedModelId = `${postProviderId}/${postModelId}`
+        const postRates = resolveModelTokenRatesWithFallback(postScopedModelId, postModelId, usageStats)
+        if (postRates.input !== null || postRates.output !== null) {
+          postProcessingCostTotal += tokens * (postRates.input ?? 0) + enhancedTokens * (postRates.output ?? 0)
+        }
+      }
     }
 
     return {
       wordsTotal,
       tokensTotal,
+      enhancedCount,
+      enhancedWordsTotal,
+      enhancedTokensTotal,
+      postProcessingCostTotal: Number(postProcessingCostTotal.toFixed(6)),
       durationSecondsTotal: Number(durationSecondsTotal.toFixed(2)),
       durationMinutesTotal: Number((durationSecondsTotal / 60).toFixed(2)),
       durationHoursTotal: Number((durationSecondsTotal / 3600).toFixed(2)),
     }
-  }, [historyForEstimates])
+  }, [historyForEstimates, usageStats])
+
+  const dictationEnhancementEstimate = dictationAggregate.postProcessingCostTotal
+  const overallUsedCost = Number((transcriptionEstimate + dictationEnhancementEstimate + notesEstimate).toFixed(6))
 
   const notesAggregate = useMemo(() => {
-    let rawWordsTotal = 0
+    let enhancedNotesCount = 0
     let enhancedWordsTotal = 0
-    let rawTokensTotal = 0
     let enhancedTokensTotal = 0
+    let draftNotesCount = 0
 
     for (const note of notes) {
-      const rawText = note.rawText.trim()
       const enhancedText = note.processedText.trim()
-      if (!rawText || !enhancedText) {
+      if (!enhancedText) {
+        draftNotesCount += 1
         continue
       }
 
-      rawWordsTotal += estimateWordsFromText(rawText)
+      enhancedNotesCount += 1
       enhancedWordsTotal += estimateWordsFromText(enhancedText)
-      rawTokensTotal += estimateTokensFromText(rawText)
       enhancedTokensTotal += estimateTokensFromText(enhancedText)
     }
 
-    const rawReadSeconds = (rawWordsTotal / 180) * 60
-    const enhancedReadSeconds = (enhancedWordsTotal / 180) * 60
-
     return {
-      rawWordsTotal,
+      enhancedNotesCount,
+      draftNotesCount,
       enhancedWordsTotal,
-      rawTokensTotal,
       enhancedTokensTotal,
-      rawReadSeconds: Number(rawReadSeconds.toFixed(2)),
-      enhancedReadSeconds: Number(enhancedReadSeconds.toFixed(2)),
     }
   }, [notes])
+
+  const resolveCurrentPostProcessingModelMeta = useCallback(() => {
+    const meta = resolvePostProcessingMetadata(settings)
+    return {
+      provider: meta.provider.trim() || 'unknown-post-provider',
+      model: meta.model.trim() || 'unknown-model',
+    }
+  }, [
+    settings.postProcessingCloudModelId,
+    settings.postProcessingCloudProvider,
+    settings.postProcessingCustomModel,
+    settings.postProcessingLocalModelId,
+    settings.postProcessingRuntime,
+  ])
+
+  const dictationStatsRows = useMemo<DetailedStatsCallRow[]>(() => {
+    return historyForEstimates
+      .map((entry) => {
+        const rawText = entry.rawText?.trim() || entry.text
+        const enhancedText = entry.enhancedText?.trim() || entry.text
+        const words = estimateWordsFromText(rawText)
+        const tokens = estimateTokensFromText(rawText)
+        const durationSeconds =
+          typeof entry.durationSeconds === 'number' && Number.isFinite(entry.durationSeconds) && entry.durationSeconds > 0
+            ? entry.durationSeconds
+            : estimateDurationFromWords(words, ESTIMATED_SPEAKING_WPM)
+
+        const scopedModelId = `${entry.provider}/${entry.model}`
+        const transcriptionRate =
+          resolveTranscriptionTokenRateUSD(scopedModelId, usageStats) ??
+          resolveTranscriptionTokenRateUSD(entry.model, usageStats) ??
+          0
+        const transcriptionCostUSD = Number((tokens * transcriptionRate).toFixed(6))
+
+        const postProcessingApplied = Boolean(entry.postProcessingApplied)
+        const postProcessingProvider = entry.postProcessingProvider?.trim() || 'unknown-post-provider'
+        const postProcessingModel = entry.postProcessingModel?.trim() || 'unknown-model'
+        const enhancedTokens = estimateTokensFromText(enhancedText)
+        const postScopedModelId = `${postProcessingProvider}/${postProcessingModel}`
+        const postRates = resolveModelTokenRatesWithFallback(postScopedModelId, postProcessingModel, usageStats)
+        const postProcessingCostUSD =
+          postProcessingApplied && (postRates.input !== null || postRates.output !== null)
+            ? Number((tokens * (postRates.input ?? 0) + enhancedTokens * (postRates.output ?? 0)).toFixed(6))
+            : 0
+
+        const firstLine = rawText.split('\n')[0]?.trim() || 'Dictation'
+        const rowTitle = firstLine.length > 120 ? `${firstLine.slice(0, 117)}...` : firstLine
+
+        return {
+          id: `dictation:${entry.id}`,
+          timestamp: entry.timestamp,
+          source: 'dictation' as const,
+          title: rowTitle,
+          provider: entry.provider,
+          model: entry.model,
+          durationSeconds,
+          words,
+          tokens,
+          transcriptionCostUSD,
+          postProcessingCostUSD,
+          totalCostUSD: Number((transcriptionCostUSD + postProcessingCostUSD).toFixed(6)),
+          postProcessingApplied,
+          postProcessingProvider,
+          postProcessingModel,
+          estimated:
+            typeof entry.durationSeconds !== 'number' ||
+            !Number.isFinite(entry.durationSeconds) ||
+            entry.durationSeconds <= 0,
+        }
+      })
+      .sort((left, right) => right.timestamp - left.timestamp)
+  }, [historyForEstimates, usageStats])
+
+  const noteStatsRows = useMemo<DetailedStatsCallRow[]>(() => {
+    return [...noteProcessingEvents]
+      .sort((left, right) => right.timestamp - left.timestamp)
+      .map((event) => ({
+        id: `note:${event.id}`,
+        timestamp: event.timestamp,
+        source: 'note' as const,
+        title: event.noteTitle,
+        provider: event.provider,
+        model: event.model,
+        durationSeconds: event.durationSeconds,
+        words: event.outputWords,
+        tokens: event.outputTokens,
+        transcriptionCostUSD: 0,
+        postProcessingCostUSD: event.costUSD,
+        totalCostUSD: event.costUSD,
+        postProcessingApplied: event.postProcessingApplied,
+        postProcessingProvider: event.provider,
+        postProcessingModel: event.model,
+        actionName: event.actionName,
+        estimated: event.estimated,
+      }))
+  }, [noteProcessingEvents])
+
+  const handleClearDetailedStatsLogs = useCallback(() => {
+    setNoteProcessingEvents([])
+  }, [])
+
+  useEffect(() => {
+    saveNoteProcessingEvents(noteProcessingEvents)
+  }, [noteProcessingEvents])
+
+  useEffect(() => {
+    if (!settings.detailedStatsLoggingEnabled) {
+      return
+    }
+
+    if (noteEventBackfillDoneRef.current) {
+      return
+    }
+
+    noteEventBackfillDoneRef.current = true
+
+    setNoteProcessingEvents((current) => {
+      const existingIds = new Set(current.map((entry) => entry.id))
+      const additions: NoteProcessingEvent[] = []
+      const meta = resolveCurrentPostProcessingModelMeta()
+      const scopedModelId = `${meta.provider}/${meta.model}`
+      const modelRates = resolveModelTokenRatesWithFallback(scopedModelId, meta.model, usageStats)
+
+      for (const note of notes) {
+        const rawText = note.rawText.trim()
+        const processedText = note.processedText.trim()
+        if (!rawText || !processedText) {
+          continue
+        }
+
+        const legacyEventId = `legacy:${note.id}:${note.updatedAt}`
+        if (existingIds.has(legacyEventId)) {
+          continue
+        }
+
+        const inputWords = estimateWordsFromText(rawText)
+        const inputTokens = estimateTokensFromText(rawText)
+        const outputWords = estimateWordsFromText(processedText)
+        const outputTokens = estimateTokensFromText(processedText)
+        const durationSeconds = estimateDurationFromWords(outputWords, ESTIMATED_READING_WPM)
+        const costUSD = Number(
+          (inputTokens * (modelRates.input ?? 0) + outputTokens * (modelRates.output ?? 0)).toFixed(6),
+        )
+
+        additions.push({
+          id: legacyEventId,
+          timestamp: note.updatedAt,
+          noteId: note.id,
+          noteTitle: note.title,
+          actionId: null,
+          actionName: 'Backfilled note entry',
+          provider: meta.provider,
+          model: meta.model,
+          inputWords,
+          inputTokens,
+          outputWords,
+          outputTokens,
+          durationSeconds,
+          postProcessingApplied: true,
+          estimated: true,
+          costUSD,
+        })
+      }
+
+      if (additions.length === 0) {
+        return current
+      }
+
+      return [...additions, ...current].sort((left, right) => right.timestamp - left.timestamp)
+    })
+  }, [notes, resolveCurrentPostProcessingModelMeta, settings.detailedStatsLoggingEnabled, usageStats])
+
   const sourceStatusLabel = usageStats?.litellmSource === 'unavailable' ? 'LiteLLM | Unavailable' : 'LiteLLM'
   const sourceStatusClass =
     usageStats?.litellmSource === 'live'
@@ -7333,21 +8228,21 @@ const ControlPanelScene = () => {
 
   const sidebarButtonClass = (active: boolean) =>
     cn(
-      'app-no-drag flex h-10 w-full items-center gap-3 rounded-xl px-3 text-left text-sm transition-colors',
+      'app-no-drag flex h-8 w-full items-center gap-2.5 rounded-md border border-transparent px-2.5 text-left text-[13px] leading-none transition-colors',
       active
-        ? 'bg-primary/20 text-foreground shadow-[0_0_0_1px_rgba(59,130,246,0.35)]'
+        ? 'border-primary/40 bg-surface-2 text-foreground'
         : 'text-foreground/70 hover:bg-surface-2/70 hover:text-foreground',
     )
 
   return (
     <div
       className={cn(
-        'flex h-screen flex-col overflow-hidden bg-[radial-gradient(circle_at_top_right,rgba(99,102,241,0.16),transparent_42%),radial-gradient(circle_at_bottom_left,rgba(37,99,235,0.14),transparent_38%)] text-foreground transition-[border-radius] duration-150',
+        'flex h-screen flex-col overflow-hidden bg-surface-0 text-foreground transition-[border-radius] duration-150',
         useCustomWindowChrome ? 'border border-border-subtle' : 'border-0',
         useCustomWindowChrome && !windowMaximized ? 'rounded-[12px]' : 'rounded-none',
       )}
     >
-      <header className={cn('relative flex h-12 shrink-0 items-center border-b border-border-subtle bg-surface-1/90 px-4', useCustomWindowChrome ? 'app-drag' : '')}>
+      <header className={cn('relative flex h-10 shrink-0 items-center border-b border-border-subtle bg-surface-1 px-3', useCustomWindowChrome ? 'app-drag' : '')}>
         {useCustomWindowChrome ? (
         <div className="app-no-drag group z-10 flex items-center gap-1.5 pl-1">
             {([
@@ -7413,7 +8308,7 @@ const ControlPanelScene = () => {
       </header>
 
       {!onboardingDone ? (
-        <main className="min-h-0 flex-1 overflow-y-auto p-6">
+        <main className="min-h-0 flex-1 overflow-y-auto p-4">
           <OnboardingWizard
             settings={settings}
             models={models}
@@ -7431,8 +8326,8 @@ const ControlPanelScene = () => {
         </main>
       ) : (
         <main className="min-h-0 flex-1 overflow-hidden p-3">
-          <div className="grid h-full min-h-0 grid-cols-[244px_minmax(0,1fr)] gap-3">
-            <aside className="flex min-h-0 flex-col overflow-y-auto rounded-[16px] border border-border-subtle bg-[#040a15]/95 p-3">
+          <div className="grid h-full min-h-0 grid-cols-[220px_minmax(0,1fr)] gap-2">
+            <aside className="flex min-h-0 flex-col overflow-y-auto rounded-[10px] border border-border-subtle bg-surface-1 p-2.5 pr-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
               <div className="mb-3 inline-flex items-center gap-2 px-2 text-xs font-semibold uppercase tracking-[0.14em] text-foreground/50">
                 <Sparkles className="h-3.5 w-3.5 text-primary" />
                 Workspace
@@ -7468,9 +8363,9 @@ const ControlPanelScene = () => {
               <div className="my-3 h-px bg-border-subtle/80" />
 
               <div className="space-y-2.5">
-                <div className="rounded-xl border border-border-subtle bg-surface-0/45 px-3 py-2.5 shadow-[0_1px_0_rgba(255,255,255,0.03)_inset]">
+                <div className="rounded-md border border-border-subtle bg-surface-0 px-2.5 py-2">
                   <div className="mb-2 flex items-center justify-between gap-2">
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-foreground/55">Transcriptions</p>
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-foreground/55">Dictations</p>
                     <button
                       type="button"
                       className="app-no-drag text-[10px] text-primary/90 hover:text-primary disabled:cursor-not-allowed disabled:opacity-45"
@@ -7506,14 +8401,28 @@ const ControlPanelScene = () => {
                       <span className="font-medium tabular-nums whitespace-nowrap">~{formatCount(dictationAggregate.tokensTotal)}</span>
                     </div>
                     <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                      <span className="text-foreground/55">Estimate</span>
+                      <span className="text-foreground/55">Enhanced dictations</span>
+                      <span className="font-medium tabular-nums whitespace-nowrap">{formatCount(dictationAggregate.enhancedCount)}</span>
+                    </div>
+                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
+                      <span className="text-foreground/55">Enhanced words/tokens</span>
+                      <span className="font-medium tabular-nums whitespace-nowrap">
+                        {formatCount(dictationAggregate.enhancedWordsTotal)} / ~{formatCount(dictationAggregate.enhancedTokensTotal)}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
+                      <span className="text-foreground/55">Dictation estimate</span>
                       <span className="font-semibold tabular-nums whitespace-nowrap">{formatCurrency(transcriptionEstimate)}</span>
+                    </div>
+                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
+                      <span className="text-foreground/55">Post-processing enhance spent</span>
+                      <span className="font-semibold tabular-nums whitespace-nowrap">{formatCurrency(dictationEnhancementEstimate)}</span>
                     </div>
                   </div>
                   <p className="mt-2 text-[10px] text-muted-foreground">Duration prefers measured recording time; fallback is words-per-minute estimation.</p>
                 </div>
 
-                <div className="rounded-xl border border-border-subtle bg-surface-0/45 px-3 py-2.5 shadow-[0_1px_0_rgba(255,255,255,0.03)_inset]">
+                <div className="rounded-md border border-border-subtle bg-surface-0 px-2.5 py-2">
                   <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-foreground/55">Notes</p>
                   <div className="space-y-1.5 text-[11px] text-foreground/80">
                     <div className="grid grid-cols-[1fr_auto] items-center gap-2">
@@ -7521,32 +8430,49 @@ const ControlPanelScene = () => {
                       <span className="font-medium tabular-nums whitespace-nowrap">{notesTotalLabel}</span>
                     </div>
                     <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                      <span className="text-foreground/55">Words raw/enh</span>
-                      <span className="font-medium tabular-nums whitespace-nowrap">
-                        {formatCount(notesAggregate.rawWordsTotal)} / {formatCount(notesAggregate.enhancedWordsTotal)}
+                      <span className="text-foreground/55">Post-processing</span>
+                      <span
+                        className={cn(
+                          'font-medium whitespace-nowrap',
+                          settings.postProcessingEnabled ? 'text-emerald-300' : 'text-amber-300',
+                        )}
+                      >
+                        {settings.postProcessingEnabled ? 'Enabled' : 'Disabled (N/A new runs)'}
                       </span>
                     </div>
                     <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                      <span className="text-foreground/55">Tokens raw/enh</span>
-                      <span className="font-medium tabular-nums whitespace-nowrap">
-                        ~{formatCount(notesAggregate.rawTokensTotal)} / ~{formatCount(notesAggregate.enhancedTokensTotal)}
-                      </span>
+                      <span className="text-foreground/55">Enhanced notes (post-process)</span>
+                      <span className="font-medium tabular-nums whitespace-nowrap">{formatCount(notesAggregate.enhancedNotesCount)}</span>
                     </div>
                     <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                      <span className="text-foreground/55">Read raw/enh</span>
-                      <span className="font-medium tabular-nums whitespace-nowrap">
-                        {formatDurationCompact(notesAggregate.rawReadSeconds)} / {formatDurationCompact(notesAggregate.enhancedReadSeconds)}
-                      </span>
+                      <span className="text-foreground/55">Enhanced words</span>
+                      <span className="font-medium tabular-nums whitespace-nowrap">{formatCount(notesAggregate.enhancedWordsTotal)}</span>
                     </div>
                     <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                      <span className="text-foreground/55">Enhanced spent</span>
-                      <span className="font-semibold tabular-nums whitespace-nowrap">{formatCurrency(notesEstimate)}</span>
+                      <span className="text-foreground/55">Enhanced tokens</span>
+                      <span className="font-medium tabular-nums whitespace-nowrap">~{formatCount(notesAggregate.enhancedTokensTotal)}</span>
                     </div>
+                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
+                      <span className="text-foreground/55">Draft-only notes</span>
+                      <span className="font-medium tabular-nums whitespace-nowrap">{formatCount(notesAggregate.draftNotesCount)}</span>
+                    </div>
+                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
+                      <span className="text-foreground/55">Post-processing enhance spent</span>
+                      <span className="font-semibold tabular-nums whitespace-nowrap">
+                        {settings.postProcessingEnabled ? formatCurrency(notesEstimate) : 'N/A'}
+                      </span>
+                    </div>
+                    {!settings.postProcessingEnabled ? (
+                      <div className="grid grid-cols-[1fr_auto] items-center gap-2">
+                        <span className="text-foreground/55">Historical enhanced spent</span>
+                        <span className="font-semibold tabular-nums whitespace-nowrap">{formatCurrency(notesEstimate)}</span>
+                      </div>
+                    ) : null}
                   </div>
                   <p className="mt-2 text-[10px] text-muted-foreground">Spend counts only notes with Enhanced output, not drafts.</p>
                 </div>
 
-                <div className="rounded-xl border border-border-subtle bg-surface-0/45 px-3 py-2.5 shadow-[0_1px_0_rgba(255,255,255,0.03)_inset]">
+                <div className="rounded-md border border-border-subtle bg-surface-0 px-2.5 py-2">
                   <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-foreground/55">Cost source</p>
                   <div className="space-y-1.5 text-[11px] text-foreground/80">
                     <div className="grid grid-cols-[1fr_auto] items-center gap-2">
@@ -7589,19 +8515,21 @@ const ControlPanelScene = () => {
 
             <section
               className={cn(
-                'min-h-0 overflow-hidden rounded-[16px] border border-border-subtle bg-surface-1/80',
-                section === 'notes' ? 'p-3' : 'p-5',
+                'min-h-0 overflow-hidden rounded-[10px] border border-border-subtle bg-surface-1',
+                section === 'notes' ? 'p-2.5' : 'p-4',
               )}
             >
               <div
                 className={cn(
                   'flex h-full min-h-0 flex-col',
-                  section === 'conversations' ? 'overflow-y-auto' : undefined,
+                  section === 'conversations'
+                    ? 'overflow-y-auto pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden'
+                    : undefined,
                 )}
               >
-                <div className={cn('flex items-center gap-2', section === 'notes' ? 'pl-2.5' : undefined)}>
+                <div className={cn('flex items-center gap-2', section === 'notes' ? 'pl-2' : undefined)}>
                   <div className="flex items-center gap-2">
-                    <h1 className="text-lg font-semibold">{sectionTitle}</h1>
+                    <h1 className="text-base font-semibold">{sectionTitle}</h1>
                     {section === 'conversations' ? (
                       <span className="inline-flex min-w-6 items-center justify-center rounded-full border border-primary/30 bg-primary/15 px-1.5 text-[11px] font-semibold text-primary">
                         {conversationsCountLabel}
@@ -7650,7 +8578,7 @@ const ControlPanelScene = () => {
 
                 <div
                   className={cn(
-                    'mt-4 min-h-0',
+                    'mt-3 min-h-0',
                     section === 'settings' ? 'flex-1 overflow-hidden' : undefined,
                     section === 'notes' ? 'flex-1 overflow-hidden' : undefined,
                   )}
@@ -7659,6 +8587,7 @@ const ControlPanelScene = () => {
                 </div>
               </div>
             </section>
+
           </div>
         </main>
       )}

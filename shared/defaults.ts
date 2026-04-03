@@ -31,6 +31,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   transcriptionLocalModelId: 'small',
   whisperCppRuntimeVariant: 'cpu',
   postProcessingRuntime: 'cloud',
+  postProcessingEnabled: true,
   postProcessingCloudProvider: 'openai',
   postProcessingCloudModelId: 'gpt-4.1-mini',
   postProcessingOpenAIApiKey: '',
@@ -62,6 +63,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   historyRetentionLimit: 100,
   keytarEnabled: true,
   debugModeEnabled: false,
+  detailedStatsLoggingEnabled: false,
 }
 
 export const MODEL_PRESETS: ModelDescriptor[] = [
@@ -180,6 +182,10 @@ export const normalizeSettings = (value: Partial<AppSettings>): AppSettings => {
     mergedSettings.debugModeEnabled = DEFAULT_SETTINGS.debugModeEnabled
   }
 
+  if (typeof mergedSettings.detailedStatsLoggingEnabled !== 'boolean') {
+    mergedSettings.detailedStatsLoggingEnabled = DEFAULT_SETTINGS.detailedStatsLoggingEnabled
+  }
+
   mergedSettings.keytarEnabled = true
 
   if (typeof mergedSettings.overlayRuntimeBadgeEnabled !== 'boolean') {
@@ -188,6 +194,10 @@ export const normalizeSettings = (value: Partial<AppSettings>): AppSettings => {
 
   if (typeof mergedSettings.overlayRuntimeBadgeOnlyOnUse !== 'boolean') {
     mergedSettings.overlayRuntimeBadgeOnlyOnUse = DEFAULT_SETTINGS.overlayRuntimeBadgeOnlyOnUse
+  }
+
+  if (typeof mergedSettings.postProcessingEnabled !== 'boolean') {
+    mergedSettings.postProcessingEnabled = DEFAULT_SETTINGS.postProcessingEnabled
   }
 
   if (!mergedSettings.agentName || mergedSettings.agentName === 'ActionAgent') {

@@ -4,6 +4,7 @@ export type OverlaySizeKey = 'BASE' | 'WITH_MENU' | 'WITH_TOAST' | 'EXPANDED'
 export type DisplayServer = 'wayland' | 'x11' | 'unknown'
 export type AutoPasteBackendId = 'wtype' | 'xdotools' | 'ydotools'
 export type LocalModelScope = 'transcription' | 'post'
+export type LogLevelPayload = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal'
 
 export interface DictationToggleResponse {
   accepted: boolean
@@ -63,6 +64,15 @@ export interface DebugLogStatusPayload {
   enabled: boolean
   logsDirectory: string
   currentLogFile: string
+  logLevel: LogLevelPayload
+}
+
+export interface RendererLogEntryPayload {
+  level: LogLevelPayload
+  message: string
+  meta?: unknown
+  scope?: string
+  source?: string
 }
 
 export interface WhisperRuntimeStatusPayload {
@@ -217,6 +227,9 @@ export const IPCChannels = {
   migrateSecretsToKeyring: 'ui:migrate-secrets-to-keyring',
   getDebugLogStatus: 'ui:get-debug-log-status',
   openDebugLogFile: 'ui:open-debug-log-file',
+  openDebugLogsDirectory: 'ui:open-debug-logs-directory',
+  getLogLevel: 'ui:get-log-level',
+  appLog: 'ui:app-log',
   resizeMainWindow: 'ui:resize-main-window',
   setMainWindowInteractivity: 'ui:set-main-window-interactivity',
   openControlPanel: 'ui:open-control-panel',

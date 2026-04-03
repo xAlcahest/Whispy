@@ -31,14 +31,14 @@ interface TabsProps extends PropsWithChildren {
 
 export const Tabs = ({ value, onValueChange, className, children }: TabsProps) => (
   <TabsContext.Provider value={{ value, onValueChange }}>
-    <div className={cn('space-y-3', className)}>{children}</div>
+    <div className={cn('space-y-2', className)}>{children}</div>
   </TabsContext.Provider>
 )
 
 export const TabsList = ({ className, ...props }: HTMLAttributes<HTMLDivElement>) => (
   <div
     className={cn(
-      'inline-flex h-9 items-center rounded-[var(--radius-premium)] border border-border-subtle bg-surface-2 p-1',
+      'inline-flex h-8 items-center rounded-[var(--radius-premium)] border border-border-subtle bg-surface-2/80 p-0.5',
       className,
     )}
     {...props}
@@ -62,8 +62,8 @@ export const TabsTrigger = ({ value, className, children }: TabsTriggerProps) =>
         context.onValueChange(value)
       }}
       className={cn(
-        'app-no-drag inline-flex h-7 min-w-[108px] items-center justify-center rounded-[6px] px-3 text-xs font-medium transition-colors',
-        active ? 'bg-surface-0 text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
+        'app-no-drag inline-flex h-6 min-w-[96px] items-center justify-center rounded-[6px] px-2.5 text-[11px] font-medium transition-colors',
+        active ? 'bg-surface-0 text-foreground' : 'text-muted-foreground hover:text-foreground',
         className,
       )}
     >

@@ -24,8 +24,9 @@ import {
   type NotesLogEventPayload,
   type NotesSnapshotPayload,
   type AppUsageStatsPayload,
+  type RendererLogEntryPayload,
 } from '../shared/ipc'
-import type { AppSettings, HistoryEntry, ModelState } from '../shared/app'
+import type { AppSettings, AutoPasteMode, AutoPasteShortcut, HistoryEntry, ModelState } from '../shared/app'
 
 const listen = <T>(channel: string, callback: (payload: T) => void) => {
   const wrapped = (_event: Electron.IpcRendererEvent, payload: T) => {
@@ -84,8 +85,14 @@ const electronAPI: ElectronAPI = {
   toggleDictationTranscriptionOnly: () =>
     ipcRenderer.invoke(IPCChannels.toggleDictationTranscriptionOnly) as Promise<DictationToggleResponse>,
   cancelDictation: () => ipcRenderer.invoke(IPCChannels.cancelDictation) as Promise<boolean>,
-  performAutoPaste: (text: string, backend: AutoPasteBackendPayload) =>
-    ipcRenderer.invoke(IPCChannels.performAutoPaste, text, backend) as Promise<AutoPasteExecutionResult>,
+  performAutoPaste: (
+    text: string,
+    backend: AutoPasteBackendPayload,
+    options?: {
+      mode?: AutoPasteMode
+      shortcut?: AutoPasteShortcut
+    },
+  ) => ipcRenderer.invoke(IPCChannels.performAutoPaste, text, backend, options) as Promise<AutoPasteExecutionResult>,
   showDictationPanel: () => ipcRenderer.invoke(IPCChannels.showDictationPanel),
   hideWindow: () => ipcRenderer.invoke(IPCChannels.hideWindow),
   closeWindow: () => ipcRenderer.invoke(IPCChannels.closeWindow),
@@ -99,7 +106,10 @@ const electronAPI: ElectronAPI = {
   migrateSecretsToKeyring: () =>
     ipcRenderer.invoke(IPCChannels.migrateSecretsToKeyring) as Promise<SecretStorageMigrationPayload>,
   getDebugLogStatus: () => ipcRenderer.invoke(IPCChannels.getDebugLogStatus) as Promise<DebugLogStatusPayload>,
+  getLogLevel: () => ipcRenderer.invoke(IPCChannels.getLogLevel) as Promise<DebugLogStatusPayload['logLevel']>,
+  log: (entry: RendererLogEntryPayload) => ipcRenderer.invoke(IPCChannels.appLog, entry),
   openDebugLogFile: () => ipcRenderer.invoke(IPCChannels.openDebugLogFile),
+  openDebugLogsDirectory: () => ipcRenderer.invoke(IPCChannels.openDebugLogsDirectory),
   resizeMainWindow: (sizeKey: OverlaySizeKey) => ipcRenderer.invoke(IPCChannels.resizeMainWindow, sizeKey),
   setMainWindowInteractivity: (shouldCapture: boolean) =>
     ipcRenderer.invoke(IPCChannels.setMainWindowInteractivity, shouldCapture),

@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import OpenAI from 'openai'
-import type { AppSettings, DictationResult } from '../../shared/app'
+import { resolvePostProcessingMetadata, type AppSettings, type DictationResult } from '../../shared/app'
 import type { LocalModelScope } from '../../shared/ipc'
 import {
   CUSTOM_MODEL_FETCH_ERROR,
@@ -76,6 +76,8 @@ const resolveTranscriptionCloudModel = (providerId: string, modelId: string) => 
 
   return requestedModel
 }
+
+const durationMsSince = (startedAt: number) => Math.max(0, Date.now() - startedAt)
 
 const normalizeOpenAIBaseURL = (baseUrl: string) => {
   let parsedUrl: URL
@@ -561,12 +563,63 @@ export class DictationPipeline {
   constructor(private readonly deps: DictationPipelineDependencies) {}
 
   async processAudioFile(audioFilePath: string): Promise<DictationResult> {
+    const pipelineStartedAt = Date.now()
     const settings = await this.deps.loadSettings()
 
+    const transcriptionStartedAt = Date.now()
     const transcription = await this.transcribe(settings, audioFilePath)
+    const transcriptionProcessingDurationMs = durationMsSince(transcriptionStartedAt)
+
+    if (!settings.postProcessingEnabled) {
+      const targetApp = await this.deps.detectActiveApp()
+      const pipelineDurationMs = durationMsSince(pipelineStartedAt)
+      const timings = {
+        transcriptionProcessingDurationMs,
+        postProcessingDurationMs: 0,
+        pipelineDurationMs,
+      }
+      this.deps.log?.('transcript-pipeline', 'Dictation stage timings', {
+        transcriptionProcessingDurationMs,
+        postProcessingDurationMs: 0,
+        pipelineDurationMs,
+        provider: transcription.provider,
+        model: transcription.model,
+      })
+
+      return {
+        text: transcription.text,
+        language: settings.preferredLanguage === 'Auto-detect' ? transcription.language : settings.preferredLanguage,
+        provider: transcription.provider,
+        model: transcription.model,
+        targetApp,
+        rawText: transcription.text,
+        enhancedText: transcription.text,
+        postProcessingApplied: false,
+        timings,
+      }
+    }
+
     const route = resolvePromptRoute(settings, transcription.text)
+    const postProcessingStartedAt = Date.now()
     const processedText = await this.runPostProcessing(settings, route.input, route.prompt)
+    const postProcessingDurationMs = durationMsSince(postProcessingStartedAt)
     const targetApp = await this.deps.detectActiveApp()
+    const postProcessingMeta = resolvePostProcessingMetadata(settings)
+    const pipelineDurationMs = durationMsSince(pipelineStartedAt)
+    const timings = {
+      transcriptionProcessingDurationMs,
+      postProcessingDurationMs,
+      pipelineDurationMs,
+    }
+    this.deps.log?.('transcript-pipeline', 'Dictation stage timings', {
+      transcriptionProcessingDurationMs,
+      postProcessingDurationMs,
+      pipelineDurationMs,
+      provider: transcription.provider,
+      model: transcription.model,
+      postProcessingProvider: postProcessingMeta.provider,
+      postProcessingModel: postProcessingMeta.model,
+    })
 
     return {
       text: processedText,
@@ -574,13 +627,37 @@ export class DictationPipeline {
       provider: transcription.provider,
       model: transcription.model,
       targetApp,
+      rawText: route.input,
+      enhancedText: processedText,
+      postProcessingApplied: true,
+      postProcessingProvider: postProcessingMeta.provider,
+      postProcessingModel: postProcessingMeta.model,
+      timings,
     }
   }
 
   async processAudioFileTranscriptionOnly(audioFilePath: string): Promise<DictationResult> {
+    const pipelineStartedAt = Date.now()
     const settings = await this.deps.loadSettings()
+    const transcriptionStartedAt = Date.now()
     const transcription = await this.transcribe(settings, audioFilePath)
+    const transcriptionProcessingDurationMs = durationMsSince(transcriptionStartedAt)
     const targetApp = await this.deps.detectActiveApp()
+    const pipelineDurationMs = durationMsSince(pipelineStartedAt)
+    const timings = {
+      transcriptionProcessingDurationMs,
+      postProcessingDurationMs: 0,
+      pipelineDurationMs,
+    }
+
+    this.deps.log?.('transcript-pipeline', 'Dictation stage timings', {
+      transcriptionProcessingDurationMs,
+      postProcessingDurationMs: 0,
+      pipelineDurationMs,
+      provider: transcription.provider,
+      model: transcription.model,
+      mode: 'transcription-only',
+    })
 
     return {
       text: transcription.text,
@@ -588,13 +665,17 @@ export class DictationPipeline {
       provider: transcription.provider,
       model: transcription.model,
       targetApp,
+      rawText: transcription.text,
+      enhancedText: transcription.text,
+      postProcessingApplied: false,
+      timings,
     }
   }
 
   async runPromptTest(input: string): Promise<PromptTestResult> {
     const settings = await this.deps.loadSettings()
     const route = resolvePromptRoute(settings, input)
-    const output = await this.runPostProcessing(settings, route.input, route.prompt)
+    const output = settings.postProcessingEnabled ? await this.runPostProcessing(settings, route.input, route.prompt) : route.input
 
     return {
       route: route.route,
@@ -608,6 +689,10 @@ export class DictationPipeline {
 
     if (!normalizedInput) {
       return ''
+    }
+
+    if (!settings.postProcessingEnabled) {
+      return normalizedInput
     }
 
     const normalizedInstructions = customInstructions?.trim() ?? ''
@@ -836,9 +921,7 @@ export class DictationPipeline {
     const compiledPrompt = buildPromptWithDictionaryRules(settings, prompt)
 
     if (compiledPrompt !== prompt) {
-      this.deps.log?.('transcript-pipeline', 'Appended dictionary rules to post-processing prompt', {
-        rules: normalizeDictionaryRules(settings.postProcessingDictionaryRules).length,
-      })
+      this.deps.log?.('transcript-pipeline', 'Appended dictionary rules to post-processing prompt')
     }
 
     if (settings.postProcessingRuntime === 'cloud') {

@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
-import type { AppSettings, HistoryEntry } from '../../shared/app'
+import { estimateTokensFromText, type AppSettings, type HistoryEntry } from '../../shared/app'
 import type { AppUsageModelBreakdownPayload, AppUsageStatsPayload, NoteEntryPayload, NoteFolderPayload } from '../../shared/ipc'
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000
@@ -83,15 +83,6 @@ const normalizeNumeric = (value: unknown): number | null => {
   }
 
   return null
-}
-
-const estimateTokens = (text: string) => {
-  const normalized = text.trim()
-  if (!normalized) {
-    return 0
-  }
-
-  return Math.max(1, Math.ceil(normalized.length / 4))
 }
 
 const sumBy = <T>(entries: T[], iteratee: (entry: T) => number) => entries.reduce((sum, entry) => sum + iteratee(entry), 0)
@@ -215,6 +206,16 @@ const createModelLookupCandidates = (modelId: string) => {
   return candidates
 }
 
+const extractModelIdFromScopedLabel = (value: string) => {
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return trimmed
+  }
+
+  const slashToken = trimmed.split('/').at(-1)?.trim()
+  return slashToken && slashToken.length > 0 ? slashToken : trimmed
+}
+
 const resolvePricingForModel = (
   modelId: string,
   pricingMap: Map<string, LiteLLMModelPricing>,
@@ -328,11 +329,17 @@ export class UsageStatsService {
 
     const topModels = Array.from(modelUsage.values())
       .map<AppUsageModelBreakdownPayload>((usage) => {
-        const pricing = resolvePricingForModel(usage.model, pricingCatalog.models, pricingCatalog.modelsLower)
+        const scopedModelId = usage.model
+        const baseModelId = extractModelIdFromScopedLabel(scopedModelId)
+        const pricing =
+          resolvePricingForModel(baseModelId, pricingCatalog.models, pricingCatalog.modelsLower) ??
+          resolvePricingForModel(scopedModelId, pricingCatalog.models, pricingCatalog.modelsLower)
         const costUSD = pricing ? calculateCostFromPricing(pricing, usage.inputTokens, usage.outputTokens) : 0
 
-        modelInputCostPerTokenById[usage.model] = pricing?.input_cost_per_token ?? null
-        modelOutputCostPerTokenById[usage.model] = pricing?.output_cost_per_token ?? null
+        modelInputCostPerTokenById[scopedModelId] = pricing?.input_cost_per_token ?? null
+        modelOutputCostPerTokenById[scopedModelId] = pricing?.output_cost_per_token ?? null
+        modelInputCostPerTokenById[baseModelId] = pricing?.input_cost_per_token ?? null
+        modelOutputCostPerTokenById[baseModelId] = pricing?.output_cost_per_token ?? null
 
         if (!pricing) {
           unresolvedModels += 1
@@ -355,12 +362,10 @@ export class UsageStatsService {
       .sort((left, right) => right.costUSD - left.costUSD || right.tokens - left.tokens)
       .slice(0, 8)
 
-    const enhancedNotes = notes.filter(
-      (note) => note.rawText.trim().length > 0 && note.processedText.trim().length > 0,
-    )
-    const enhancementInputTokens = sumBy(enhancedNotes, (note) => estimateTokens(note.rawText))
-    const enhancementOutputTokens = sumBy(enhancedNotes, (note) => estimateTokens(note.processedText))
-    const transcriptionTokens = sumBy(history, (entry) => estimateTokens(entry.text))
+    const llmUsageEntries = Array.from(modelUsage.values()).filter((entry) => entry.scope === 'llm')
+    const enhancementInputTokens = sumBy(llmUsageEntries, (entry) => entry.inputTokens)
+    const enhancementOutputTokens = sumBy(llmUsageEntries, (entry) => entry.outputTokens)
+    const transcriptionTokens = sumBy(history, (entry) => estimateTokensFromText(entry.rawText?.trim() || entry.text))
 
     const pricingUnavailable = pricingCatalog.source === 'unavailable'
     const litellmError =
@@ -395,8 +400,30 @@ export class UsageStatsService {
     const usageMap = new Map<string, ModelUsageAccumulator>()
 
     for (const entry of history) {
-      const modelId = entry.model.trim() || 'unknown-model'
-      this.accumulateModelUsage(usageMap, modelId, 'transcription', estimateTokens(entry.text), 0)
+      const transcriptionProvider = entry.provider.trim() || 'unknown-provider'
+      const transcriptionModel = entry.model.trim() || 'unknown-model'
+      const transcriptionScopedModel = `${transcriptionProvider}/${transcriptionModel}`
+      const dictationRawText = entry.rawText?.trim() || entry.text
+      this.accumulateModelUsage(usageMap, transcriptionScopedModel, 'transcription', estimateTokensFromText(dictationRawText), 0)
+
+      const postProcessingApplied = Boolean(entry.postProcessingApplied)
+      const dictationEnhancedText = entry.enhancedText?.trim() || entry.text
+      const dictationInputTokens = estimateTokensFromText(dictationRawText)
+      const dictationOutputTokens = estimateTokensFromText(dictationEnhancedText)
+
+      if (postProcessingApplied && dictationInputTokens > 0 && dictationOutputTokens > 0) {
+        const postProcessingProvider = entry.postProcessingProvider?.trim() || 'unknown-post-provider'
+        const postProcessingModelId = entry.postProcessingModel?.trim() || 'unknown-model'
+        const postProcessingScopedModel = `${postProcessingProvider}/${postProcessingModelId}`
+
+        this.accumulateModelUsage(
+          usageMap,
+          postProcessingScopedModel,
+          'llm',
+          dictationInputTokens,
+          dictationOutputTokens,
+        )
+      }
     }
 
     const enhancementModelId =
@@ -408,8 +435,8 @@ export class UsageStatsService {
         continue
       }
 
-      const inputTokens = estimateTokens(note.rawText)
-      const outputTokens = estimateTokens(note.processedText)
+      const inputTokens = estimateTokensFromText(note.rawText)
+      const outputTokens = estimateTokensFromText(note.processedText)
 
       if (inputTokens <= 0 || outputTokens <= 0) {
         continue

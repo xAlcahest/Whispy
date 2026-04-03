@@ -8,6 +8,7 @@ import { electronAPI } from '../lib/electron-api'
 import { appendHistoryEntry, loadSettings, refreshSettingsFromBackend } from '../lib/storage'
 import { fakeTranscriptionService } from '../services/fakeTranscriptionService'
 import type { AppSettings, DictationStatus } from '../types/app'
+import { estimateDurationFromTranscript } from '../../../shared/app'
 import type {
   DictationResultPayload,
   OverlaySizeKey,
@@ -115,25 +116,37 @@ const OverlayScene = () => {
     const nextSettings = loadSettings()
     const resolvedLanguage =
       nextSettings.preferredLanguage === 'Auto-detect' ? result.language : nextSettings.preferredLanguage
+    const transcriptionProvider = result.provider || resolveTranscriptionProviderLabel(nextSettings)
+    const transcriptionModel = result.model || resolveTranscriptionModelLabel(nextSettings)
+    const postProcessingProvider = result.postProcessingProvider?.trim() || undefined
+    const postProcessingModel = result.postProcessingModel?.trim() || undefined
     const historyEntry = {
       id: crypto.randomUUID(),
       timestamp: Date.now(),
       language: resolvedLanguage,
-      provider: resolveTranscriptionProviderLabel(nextSettings),
-      model: resolveTranscriptionModelLabel(nextSettings),
+      provider: transcriptionProvider,
+      model: transcriptionModel,
       targetApp: result.targetApp,
       text: result.text,
       durationSeconds:
         typeof result.durationSeconds === 'number' && Number.isFinite(result.durationSeconds)
           ? result.durationSeconds
-          : undefined,
+          : estimateDurationFromTranscript(result.text),
+      rawText: result.rawText?.trim() || result.text,
+      enhancedText: result.enhancedText?.trim() || result.text,
+      postProcessingApplied: Boolean(result.postProcessingApplied),
+      postProcessingProvider,
+      postProcessingModel,
     }
 
     appendHistoryEntry(historyEntry)
 
     if (nextSettings.autoPaste) {
       if (typeof window.electronAPI !== 'undefined') {
-        const autoPasteResult = await electronAPI.performAutoPaste(result.text, nextSettings.autoPasteBackend)
+        const autoPasteResult = await electronAPI.performAutoPaste(result.text, nextSettings.autoPasteBackend, {
+          mode: nextSettings.autoPasteMode,
+          shortcut: nextSettings.autoPasteShortcut,
+        })
 
         if (autoPasteResult.success) {
           emitAppNotification({
@@ -141,33 +154,29 @@ const OverlayScene = () => {
             description: autoPasteResult.details,
             variant: 'success',
           })
-          return
+        } else {
+          emitAppNotification({
+            title: 'Auto-paste failed',
+            description: `${autoPasteResult.details} Transcription saved to history.`,
+            variant: 'destructive',
+          })
         }
-
-        emitAppNotification({
-          title: 'Auto-paste failed',
-          description: `${autoPasteResult.details} Transcription saved to history.`,
-          variant: 'destructive',
-        })
-        return
+      } else {
+        try {
+          await navigator.clipboard.writeText(result.text)
+          emitAppNotification({
+            title: 'Text copied and ready to paste',
+            description: 'Ready to paste in the focused input field.',
+            variant: 'success',
+          })
+        } catch {
+          emitAppNotification({
+            title: 'Clipboard unavailable',
+            description: 'Transcription saved to local history.',
+            variant: 'destructive',
+          })
+        }
       }
-
-      try {
-        await navigator.clipboard.writeText(result.text)
-      } catch {
-        emitAppNotification({
-          title: 'Clipboard unavailable',
-          description: 'Transcription saved to local history.',
-          variant: 'destructive',
-        })
-        return
-      }
-
-      emitAppNotification({
-        title: 'Text copied and ready to paste',
-        description: 'Ready to paste in the focused input field.',
-        variant: 'success',
-      })
     } else {
       emitAppNotification({
         title: 'Transcription completed',

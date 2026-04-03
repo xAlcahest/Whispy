@@ -15,18 +15,18 @@ export const Switch = ({ checked, onCheckedChange, className, ...props }: Switch
       onCheckedChange(!checked)
     }}
     className={cn(
-      'app-no-drag relative inline-flex h-6 w-11 items-center rounded-full border transition-colors duration-200',
+      'app-no-drag relative inline-flex h-5 w-9 items-center rounded-full border transition-colors duration-200',
       checked
-        ? 'border-primary/50 bg-primary shadow-[0_0_0_3px_rgba(37,99,235,0.12)]'
-        : 'border-border-subtle bg-surface-3',
+        ? 'border-primary/50 bg-primary/85'
+        : 'border-border-subtle bg-surface-3/80',
       className,
     )}
     {...props}
   >
     <span
       className={cn(
-        'inline-block h-5 w-5 transform rounded-full bg-white shadow-sm transition-transform duration-200',
-        checked ? 'translate-x-5' : 'translate-x-0.5',
+        'inline-block h-4 w-4 transform rounded-full bg-surface-0 transition-transform duration-200',
+        checked ? 'translate-x-4' : 'translate-x-0.5',
       )}
     />
   </button>

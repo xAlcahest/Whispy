@@ -63,11 +63,13 @@ const NON_SECRET_ENV_KEY_BY_SETTING = {
   whisperCppRuntimeVariant: 'WHISPY_WHISPER_RUNTIME_VARIANT',
   transcriptionRuntime: 'WHISPY_TRANSCRIPTION_RUNTIME',
   postProcessingRuntime: 'WHISPY_POST_RUNTIME',
+  postProcessingEnabled: 'WHISPY_POST_PROCESSING_ENABLED',
   translationModeEnabled: 'WHISPY_TRANSLATION_MODE_ENABLED',
   translationHotkeyMode: 'WHISPY_TRANSLATION_HOTKEY_MODE',
   translationCustomHotkey: 'WHISPY_TRANSLATION_CUSTOM_HOTKEY',
   historyRetentionLimit: 'WHISPY_HISTORY_RETENTION_LIMIT',
   debugModeEnabled: 'WHISPY_DEBUG_MODE',
+  detailedStatsLoggingEnabled: 'WHISPY_DETAILED_STATS_LOGGING',
 } as const satisfies Partial<Record<keyof AppSettings, string>>
 
 type NonSecretSettingKey = keyof typeof NON_SECRET_ENV_KEY_BY_SETTING
@@ -77,8 +79,10 @@ const BOOLEAN_NON_SECRET_SETTING_KEYS = new Set<NonSecretSettingKey>([
   'overlayRuntimeBadgeEnabled',
   'overlayRuntimeBadgeOnlyOnUse',
   'launchAtLogin',
+  'postProcessingEnabled',
   'translationModeEnabled',
   'debugModeEnabled',
+  'detailedStatsLoggingEnabled',
 ])
 
 const NUMBER_NON_SECRET_SETTING_KEYS = new Set<NonSecretSettingKey>(['historyRetentionLimit'])

@@ -47,6 +47,7 @@ export interface AppSettings {
   transcriptionLocalModelId: string
   whisperCppRuntimeVariant: WhisperRuntimeVariant
   postProcessingRuntime: RuntimeMode
+  postProcessingEnabled: boolean
   postProcessingCloudProvider: string
   postProcessingCloudModelId: string
   postProcessingOpenAIApiKey: string
@@ -75,6 +76,7 @@ export interface AppSettings {
   historyRetentionLimit: number
   keytarEnabled: boolean
   debugModeEnabled: boolean
+  detailedStatsLoggingEnabled: boolean
 }
 
 export interface HistoryEntry {
@@ -86,6 +88,11 @@ export interface HistoryEntry {
   targetApp: string
   text: string
   durationSeconds?: number
+  rawText?: string
+  enhancedText?: string
+  postProcessingApplied?: boolean
+  postProcessingProvider?: string
+  postProcessingModel?: string
 }
 
 export interface ModelDescriptor {
@@ -102,6 +109,12 @@ export interface ModelState extends ModelDescriptor {
   downloading: boolean
 }
 
+export interface DictationTimings {
+  transcriptionProcessingDurationMs?: number
+  postProcessingDurationMs?: number
+  pipelineDurationMs?: number
+}
+
 export interface DictationResult {
   text: string
   language: string
@@ -109,6 +122,12 @@ export interface DictationResult {
   model: string
   targetApp: string
   durationSeconds?: number
+  rawText?: string
+  enhancedText?: string
+  postProcessingApplied?: boolean
+  postProcessingProvider?: string
+  postProcessingModel?: string
+  timings?: DictationTimings
 }
 
 export type FakeTranscriptionResult = DictationResult
@@ -119,4 +138,61 @@ export interface AppStateSnapshot {
   models: ModelState[]
   postModels: ModelState[]
   onboardingCompleted: boolean
+}
+
+export const ESTIMATED_SPEAKING_WPM = 150
+export const ESTIMATED_READING_WPM = 180
+
+export const estimateWordsFromText = (text: string) => {
+  const normalized = text.trim()
+  if (!normalized) {
+    return 0
+  }
+
+  return normalized.split(/\s+/).filter(Boolean).length
+}
+
+export const estimateTokensFromText = (text: string) => {
+  const normalized = text.trim()
+  if (!normalized) {
+    return 0
+  }
+
+  return Math.max(1, Math.ceil(normalized.length / 4))
+}
+
+export const estimateDurationFromWords = (words: number, wpm: number) => {
+  if (words <= 0) {
+    return 0
+  }
+
+  return Number(((words / wpm) * 60).toFixed(2))
+}
+
+export const estimateDurationFromTranscript = (text: string) => {
+  const words = estimateWordsFromText(text)
+  if (words <= 0) {
+    return undefined
+  }
+
+  return estimateDurationFromWords(words, ESTIMATED_SPEAKING_WPM)
+}
+
+export const resolvePostProcessingMetadata = (settings: AppSettings) => {
+  if (settings.postProcessingRuntime === 'cloud') {
+    const modelId =
+      settings.postProcessingCloudProvider === 'custom'
+        ? settings.postProcessingCustomModel.trim() || settings.postProcessingCloudModelId
+        : settings.postProcessingCloudModelId
+
+    return {
+      provider: settings.postProcessingCloudProvider,
+      model: modelId,
+    }
+  }
+
+  return {
+    provider: 'local',
+    model: settings.postProcessingLocalModelId,
+  }
 }

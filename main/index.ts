@@ -2,7 +2,7 @@ import { app, BrowserWindow, Menu, Tray, globalShortcut, ipcMain, nativeImage, s
 import { spawnSync } from 'node:child_process'
 import { accessSync, constants as fsConstants, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import type { AppSettings, DictationResult, HistoryEntry, ModelState } from '../shared/app'
+import { estimateDurationFromTranscript, type AppSettings, type DictationResult, type HistoryEntry, type ModelState } from '../shared/app'
 import { normalizeSettings } from '../shared/defaults'
 import { CUSTOM_MODEL_FETCH_ERROR } from '../shared/model-discovery'
 import {
@@ -29,10 +29,11 @@ import {
   type NotesLogEventPayload,
   type NotesSnapshotPayload,
   type AppUsageStatsPayload,
+  type RendererLogEntryPayload,
   type WhisperRuntimeDiagnosticsPayload,
 } from '../shared/ipc'
 import { detectActiveApp } from './backend/active-app'
-import { performAutoPaste } from './backend/auto-paste'
+import { performAutoPaste, cleanupYdotoolDaemon } from './backend/auto-paste'
 import { DebugLogger } from './backend/debug-logger'
 import { DictationPipeline } from './backend/dictation-pipeline'
 import { DictationRuntime } from './backend/dictation-runtime'
@@ -50,7 +51,7 @@ const linuxWaylandSession = linuxSessionType === 'wayland' || Boolean(process.en
 const linuxForceX11 =
   process.platform === 'linux' && linuxWaylandSession && (linuxDesktopIdentity.includes('kde') || linuxDesktopIdentity.includes('plasma'))
 const linuxRunningInDev = Boolean(process.env.ELECTRON_RENDERER_URL)
-const linuxDisableSandbox = process.platform === 'linux' && linuxRunningInDev
+const linuxDisableSandbox = process.platform === 'linux' && linuxRunningInDev && !app.isPackaged
 const linuxForceTmpSharedMemory = process.env.WHISPY_FORCE_TMP_SHM?.trim() === '1'
 const linuxDisableTmpSharedMemory = process.env.WHISPY_DISABLE_TMP_SHM?.trim() === '1'
 
@@ -1250,7 +1251,12 @@ const appendHistoryEntryFromDictationResult = async (payload: DictationResult) =
       durationSeconds:
         typeof payload.durationSeconds === 'number' && Number.isFinite(payload.durationSeconds)
           ? payload.durationSeconds
-          : undefined,
+          : estimateDurationFromTranscript(payload.text),
+      rawText: payload.rawText?.trim() || payload.text,
+      enhancedText: payload.enhancedText?.trim() || payload.text,
+      postProcessingApplied: Boolean(payload.postProcessingApplied),
+      postProcessingProvider: payload.postProcessingProvider?.trim() || undefined,
+      postProcessingModel: payload.postProcessingModel?.trim() || undefined,
     },
     ...snapshot.history,
   ]
@@ -1328,6 +1334,11 @@ interface HotkeyRegistrationResult {
   accelerator: string | null
 }
 
+interface HotkeyRegisterAttemptResult {
+  registered: boolean
+  errorMessage: string | null
+}
+
 const normalizeHotkeyToken = (token: string) => {
   const normalized = token.trim().toLowerCase()
 
@@ -1353,6 +1364,10 @@ const normalizeHotkeyToken = (token: string) => {
 
   if (normalized === 'space') {
     return 'Space'
+  }
+
+  if (normalized === 'pause' || normalized === 'pausebreak' || normalized === 'pause/break' || normalized === 'break') {
+    return 'MediaPlayPause'
   }
 
   if (normalized === 'enter' || normalized === 'return') {
@@ -1388,6 +1403,21 @@ const unregisterGlobalHotkey = () => {
   registeredHotkey = null
 }
 
+const tryRegisterGlobalShortcut = (accelerator: string): HotkeyRegisterAttemptResult => {
+  try {
+    const registered = globalShortcut.register(accelerator, handleGlobalDictationHotkey)
+    return {
+      registered,
+      errorMessage: null,
+    }
+  } catch (error: unknown) {
+    return {
+      registered: false,
+      errorMessage: error instanceof Error ? error.message : String(error),
+    }
+  }
+}
+
 const handleGlobalDictationHotkey = () => {
   void (async () => {
     logDebug('system-diagnostics', 'Global dictation hotkey pressed', {
@@ -1405,9 +1435,11 @@ const handleGlobalDictationHotkey = () => {
       }
     }
 
-    overlayWindow?.show()
-    overlayWindow?.focus()
-    const response = ensureDictationRuntime().toggleDictation()
+    if (overlayWindow && !overlayWindow.isDestroyed()) {
+      overlayWindow.showInactive()
+    }
+
+    const response = ensureDictationRuntime().toggleDictation('full')
     if (!response.accepted) {
       logDebug('system-diagnostics', 'Dictation toggle rejected from hotkey', {
         reason: response.reason ?? 'unknown',
@@ -1420,7 +1452,11 @@ const registerGlobalDictationHotkey = (requestedHotkey: string): HotkeyRegistrat
   unregisterGlobalHotkey()
 
   const requestedAccelerator = toElectronAccelerator(requestedHotkey)
-  if (requestedAccelerator && globalShortcut.register(requestedAccelerator, handleGlobalDictationHotkey)) {
+  const requestedRegistrationAttempt = requestedAccelerator
+    ? tryRegisterGlobalShortcut(requestedAccelerator)
+    : { registered: false, errorMessage: null }
+
+  if (requestedAccelerator && requestedRegistrationAttempt.registered) {
     registeredHotkey = requestedAccelerator
     logDebug('system-diagnostics', 'Global hotkey registered', {
       requestedHotkey,
@@ -1434,9 +1470,10 @@ const registerGlobalDictationHotkey = (requestedHotkey: string): HotkeyRegistrat
   }
 
   const fallbackAccelerator = toElectronAccelerator(DEFAULT_FALLBACK_HOTKEY)
-  if (globalShortcut.register(fallbackAccelerator, handleGlobalDictationHotkey)) {
+  const fallbackRegistrationAttempt = tryRegisterGlobalShortcut(fallbackAccelerator)
+  if (fallbackRegistrationAttempt.registered) {
     const fallbackReason = requestedAccelerator
-      ? `Unable to register ${requestedHotkey}. Shortcut is already in use or unsupported on this system.`
+      ? `Unable to register ${requestedHotkey}. Shortcut is already in use or unsupported on this system.${requestedRegistrationAttempt.errorMessage ? ` (${requestedRegistrationAttempt.errorMessage})` : ''}`
       : `Unable to parse ${requestedHotkey}. Invalid hotkey format.`
 
     registeredHotkey = fallbackAccelerator
@@ -1462,7 +1499,10 @@ const registerGlobalDictationHotkey = (requestedHotkey: string): HotkeyRegistrat
 
   const failedPayload: HotkeyRegistrationFailedPayload = {
     requestedHotkey,
-    reason: 'System shortcut already in use',
+    reason:
+      requestedRegistrationAttempt.errorMessage ??
+      fallbackRegistrationAttempt.errorMessage ??
+      'System shortcut already in use',
   }
   logDebug('error-details', 'Unable to register global hotkey', failedPayload, 'Hotkey')
   broadcast(IPCChannels.hotkeyRegistrationFailed, failedPayload)
@@ -1846,11 +1886,11 @@ const registerIPC = () => {
     return ensureDictationRuntime().getStatus()
   })
 
-  ipcMain.handle(IPCChannels.toggleDictation, () => {
-    return ensureDictationRuntime().toggleDictation()
+  ipcMain.handle(IPCChannels.toggleDictation, async () => {
+    return ensureDictationRuntime().toggleDictation('full')
   })
 
-  ipcMain.handle(IPCChannels.toggleDictationTranscriptionOnly, () => {
+  ipcMain.handle(IPCChannels.toggleDictationTranscriptionOnly, async () => {
     if (overlayWindow && overlayWindow.isVisible()) {
       overlayWindow.hide()
       logDebug('system-diagnostics', 'Overlay hidden for notes transcription-only mode', undefined, 'Window')
@@ -1865,16 +1905,31 @@ const registerIPC = () => {
 
   ipcMain.handle(
     IPCChannels.performAutoPaste,
-    async (_event, text: string, backend: AppSettings['autoPasteBackend']): Promise<AutoPasteExecutionResult> => {
+    async (
+      _event,
+      text: string,
+      backend: AppSettings['autoPasteBackend'],
+      options?: {
+        mode?: AppSettings['autoPasteMode']
+        shortcut?: AppSettings['autoPasteShortcut']
+      },
+    ): Promise<AutoPasteExecutionResult> => {
+      if (typeof text !== 'string') {
+        return { success: false, details: 'Invalid text parameter' }
+      }
+
+      const sanitizedText = text.slice(0, 100_000)
       const settings = await loadCurrentSettings()
-      const result = performAutoPaste(text, backend, {
-        mode: settings.autoPasteMode,
-        shortcut: settings.autoPasteShortcut,
+      const selectedMode = options?.mode === 'instant' ? 'instant' : settings.autoPasteMode
+      const selectedShortcut = options?.shortcut === 'ctrl-shift-v' ? 'ctrl-shift-v' : settings.autoPasteShortcut
+      const result = performAutoPaste(sanitizedText, backend, {
+        mode: selectedMode,
+        shortcut: selectedShortcut,
       })
       logDebug('system-diagnostics', 'Auto-paste execution result', {
         backend,
-        mode: settings.autoPasteMode,
-        shortcut: settings.autoPasteShortcut,
+        mode: selectedMode,
+        shortcut: selectedShortcut,
         success: result.success,
         details: result.details,
       })
@@ -1987,9 +2042,25 @@ const registerIPC = () => {
     return ensureDebugLogger().getStatus()
   })
 
+  ipcMain.handle(IPCChannels.getLogLevel, () => {
+    return ensureDebugLogger().getLevel()
+  })
+
+  ipcMain.handle(IPCChannels.appLog, (_event, entry: RendererLogEntryPayload) => {
+    ensureDebugLogger().logEntry(entry)
+  })
+
   ipcMain.handle(IPCChannels.openDebugLogFile, async () => {
     const logFilePath = ensureDebugLogger().ensureCurrentLogFile()
     const openResult = await shell.openPath(logFilePath)
+    if (openResult) {
+      throw new Error(openResult)
+    }
+  })
+
+  ipcMain.handle(IPCChannels.openDebugLogsDirectory, async () => {
+    const logsDirectoryPath = ensureDebugLogger().getStatus().logsDirectory
+    const openResult = await shell.openPath(logsDirectoryPath)
     if (openResult) {
       throw new Error(openResult)
     }
@@ -2133,5 +2204,6 @@ app.on('will-quit', () => {
   trayInstance?.destroy()
   trayInstance = null
   void whisperServerManager?.stop()
+  cleanupYdotoolDaemon()
   globalShortcut.unregisterAll()
 })

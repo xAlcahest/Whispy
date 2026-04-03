@@ -20,8 +20,9 @@ import type {
   NotesLogEventPayload,
   NotesSnapshotPayload,
   AppUsageStatsPayload,
+  RendererLogEntryPayload,
 } from './ipc'
-import type { AppSettings, AutoPasteBackend, HistoryEntry, ModelState } from './app'
+import type { AppSettings, AutoPasteBackend, AutoPasteMode, AutoPasteShortcut, HistoryEntry, ModelState } from './app'
 
 export interface ElectronAPI {
   getBackendState: () => Promise<BackendStateSnapshot | null>
@@ -52,7 +53,14 @@ export interface ElectronAPI {
   toggleDictation: () => Promise<DictationToggleResponse>
   toggleDictationTranscriptionOnly: () => Promise<DictationToggleResponse>
   cancelDictation: () => Promise<boolean>
-  performAutoPaste: (text: string, backend: AutoPasteBackend) => Promise<AutoPasteExecutionResult>
+  performAutoPaste: (
+    text: string,
+    backend: AutoPasteBackend,
+    options?: {
+      mode?: AutoPasteMode
+      shortcut?: AutoPasteShortcut
+    },
+  ) => Promise<AutoPasteExecutionResult>
   showDictationPanel: () => Promise<void>
   hideWindow: () => Promise<void>
   closeWindow: () => Promise<void>
@@ -63,7 +71,10 @@ export interface ElectronAPI {
   getSecretStorageStatus: () => Promise<SecretStorageStatusPayload>
   migrateSecretsToKeyring: () => Promise<SecretStorageMigrationPayload>
   getDebugLogStatus: () => Promise<DebugLogStatusPayload>
+  getLogLevel: () => Promise<DebugLogStatusPayload['logLevel']>
+  log: (entry: RendererLogEntryPayload) => Promise<void>
   openDebugLogFile: () => Promise<void>
+  openDebugLogsDirectory: () => Promise<void>
   resizeMainWindow: (sizeKey: OverlaySizeKey) => Promise<void>
   setMainWindowInteractivity: (shouldCapture: boolean) => Promise<void>
   openControlPanel: () => Promise<void>

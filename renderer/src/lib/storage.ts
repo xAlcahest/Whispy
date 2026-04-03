@@ -38,6 +38,61 @@ export interface NoteAction {
   updatedAt: number
 }
 
+export interface NoteProcessingEvent {
+  id: string
+  timestamp: number
+  noteId: string
+  noteTitle: string
+  actionId: string | null
+  actionName: string
+  provider: string
+  model: string
+  inputWords: number
+  inputTokens: number
+  outputWords: number
+  outputTokens: number
+  durationSeconds: number
+  postProcessingApplied: boolean
+  estimated: boolean
+  costUSD: number
+}
+
+export interface DictationStatsLogPayload {
+  count: number
+  enhancedCount: number
+  durationSeconds: number
+  words: number
+  tokens: number
+  transcriptionCostUSD: number
+  enhancementCostUSD: number
+  totalCostUSD: number
+}
+
+export interface NotesStatsLogPayload {
+  count: number
+  enhancedCount: number
+  draftCount: number
+  estimatedReadDurationSeconds: number
+  words: number
+  tokens: number
+  costUSD: number
+}
+
+export interface CombinedStatsLogPayload {
+  durationSeconds: number
+  words: number
+  tokens: number
+  costUSD: number
+}
+
+export interface DetailedStatsLogEntry {
+  id: string
+  timestamp: number
+  dictations: DictationStatsLogPayload
+  notes: NotesStatsLogPayload
+  combined: CombinedStatsLogPayload
+}
+
 export const DEFAULT_NOTE_ACTION_ID = 'builtin-cleanup-notes'
 
 const DEFAULT_NOTE_ACTION: NoteAction = {
@@ -68,15 +123,7 @@ const isElectronRuntime = () => typeof window !== 'undefined' && typeof window.e
 let runtimeSettingsCache: AppSettings | null = null
 
 const persistSettingsLocally = (settings: AppSettings) => {
-  if (isElectronRuntime()) {
-    const serialized = JSON.stringify(stripSecretsFromSettings(settings))
-    if (localStorage.getItem(STORAGE_KEYS.settings) !== serialized) {
-      localStorage.setItem(STORAGE_KEYS.settings, serialized)
-    }
-    return
-  }
-
-  const serialized = JSON.stringify(settings)
+  const serialized = JSON.stringify(stripSecretsFromSettings(settings))
   if (localStorage.getItem(STORAGE_KEYS.settings) !== serialized) {
     localStorage.setItem(STORAGE_KEYS.settings, serialized)
   }
@@ -125,6 +172,92 @@ const sortNoteActions = (actions: NoteAction[]) => {
 
     return left.name.localeCompare(right.name, undefined, { sensitivity: 'base' })
   })
+}
+
+const sortNoteProcessingEvents = (events: NoteProcessingEvent[]) => {
+  return [...events].sort((left, right) => right.timestamp - left.timestamp)
+}
+
+const sortDetailedStatsLogs = (entries: DetailedStatsLogEntry[]) => {
+  return [...entries].sort((left, right) => right.timestamp - left.timestamp)
+}
+
+const normalizeFiniteNumber = (value: unknown, fallback = 0) =>
+  typeof value === 'number' && Number.isFinite(value) ? value : fallback
+
+const normalizeNonNegativeInt = (value: unknown, fallback = 0) => {
+  const numeric = normalizeFiniteNumber(value, fallback)
+  return Math.max(0, Math.floor(numeric))
+}
+
+const normalizeNoteProcessingEvent = (value: Partial<NoteProcessingEvent>): NoteProcessingEvent | null => {
+  const id = typeof value.id === 'string' ? value.id.trim() : ''
+  const noteId = typeof value.noteId === 'string' ? value.noteId.trim() : ''
+  const timestamp = normalizeFiniteNumber(value.timestamp, 0)
+  if (!id || !noteId || timestamp <= 0) {
+    return null
+  }
+
+  return {
+    id,
+    timestamp,
+    noteId,
+    noteTitle: typeof value.noteTitle === 'string' ? value.noteTitle.trim() : '',
+    actionId: typeof value.actionId === 'string' ? value.actionId.trim() : null,
+    actionName: typeof value.actionName === 'string' && value.actionName.trim().length > 0 ? value.actionName.trim() : 'Cleanup',
+    provider: typeof value.provider === 'string' && value.provider.trim().length > 0 ? value.provider.trim() : 'unknown-provider',
+    model: typeof value.model === 'string' && value.model.trim().length > 0 ? value.model.trim() : 'unknown-model',
+    inputWords: normalizeNonNegativeInt(value.inputWords),
+    inputTokens: normalizeNonNegativeInt(value.inputTokens),
+    outputWords: normalizeNonNegativeInt(value.outputWords),
+    outputTokens: normalizeNonNegativeInt(value.outputTokens),
+    durationSeconds: Math.max(0, normalizeFiniteNumber(value.durationSeconds)),
+    postProcessingApplied: Boolean(value.postProcessingApplied),
+    estimated: Boolean(value.estimated),
+    costUSD: Math.max(0, normalizeFiniteNumber(value.costUSD)),
+  }
+}
+
+const normalizeDetailedStatsLogEntry = (value: Partial<DetailedStatsLogEntry>): DetailedStatsLogEntry | null => {
+  const id = typeof value.id === 'string' ? value.id.trim() : ''
+  const timestamp = normalizeFiniteNumber(value.timestamp, 0)
+  if (!id || timestamp <= 0) {
+    return null
+  }
+
+  const dictations = value.dictations ?? ({} as DictationStatsLogPayload)
+  const notes = value.notes ?? ({} as NotesStatsLogPayload)
+  const combined = value.combined ?? ({} as CombinedStatsLogPayload)
+
+  return {
+    id,
+    timestamp,
+    dictations: {
+      count: normalizeFiniteNumber(dictations.count),
+      enhancedCount: normalizeFiniteNumber(dictations.enhancedCount),
+      durationSeconds: normalizeFiniteNumber(dictations.durationSeconds),
+      words: normalizeFiniteNumber(dictations.words),
+      tokens: normalizeFiniteNumber(dictations.tokens),
+      transcriptionCostUSD: normalizeFiniteNumber(dictations.transcriptionCostUSD),
+      enhancementCostUSD: normalizeFiniteNumber(dictations.enhancementCostUSD),
+      totalCostUSD: normalizeFiniteNumber(dictations.totalCostUSD),
+    },
+    notes: {
+      count: normalizeFiniteNumber(notes.count),
+      enhancedCount: normalizeFiniteNumber(notes.enhancedCount),
+      draftCount: normalizeFiniteNumber(notes.draftCount),
+      estimatedReadDurationSeconds: normalizeFiniteNumber(notes.estimatedReadDurationSeconds),
+      words: normalizeFiniteNumber(notes.words),
+      tokens: normalizeFiniteNumber(notes.tokens),
+      costUSD: normalizeFiniteNumber(notes.costUSD),
+    },
+    combined: {
+      durationSeconds: normalizeFiniteNumber(combined.durationSeconds),
+      words: normalizeFiniteNumber(combined.words),
+      tokens: normalizeFiniteNumber(combined.tokens),
+      costUSD: normalizeFiniteNumber(combined.costUSD),
+    },
+  }
 }
 
 const normalizeNoteAction = (action: Partial<NoteAction>): NoteAction | null => {
@@ -313,7 +446,22 @@ export const saveSettings = (settings: AppSettings) => {
 
 export const loadHistory = (): HistoryEntry[] => {
   const entries = parseStorage<HistoryEntry[]>(localStorage.getItem(STORAGE_KEYS.history), [])
-  return sortHistory(entries)
+  return sortHistory(
+    entries.map((entry) => ({
+      ...entry,
+      durationSeconds:
+        typeof entry.durationSeconds === 'number' && Number.isFinite(entry.durationSeconds)
+          ? entry.durationSeconds
+          : undefined,
+      rawText: typeof entry.rawText === 'string' ? entry.rawText : undefined,
+      enhancedText: typeof entry.enhancedText === 'string' ? entry.enhancedText : undefined,
+      postProcessingApplied:
+        typeof entry.postProcessingApplied === 'boolean' ? entry.postProcessingApplied : undefined,
+      postProcessingProvider:
+        typeof entry.postProcessingProvider === 'string' ? entry.postProcessingProvider : undefined,
+      postProcessingModel: typeof entry.postProcessingModel === 'string' ? entry.postProcessingModel : undefined,
+    })),
+  )
 }
 
 export const saveHistory = (entries: HistoryEntry[]) => {
@@ -369,6 +517,27 @@ export const saveNoteActions = (actions: NoteAction[]) => {
   syncNotesSnapshotToBackend()
 }
 
+export const loadNoteProcessingEvents = (): NoteProcessingEvent[] => {
+  const events = parseStorage<Partial<NoteProcessingEvent>[]>(localStorage.getItem(STORAGE_KEYS.noteProcessingEvents), [])
+  const normalized = events
+    .map((entry) => normalizeNoteProcessingEvent(entry))
+    .filter((entry): entry is NoteProcessingEvent => entry !== null)
+
+  return sortNoteProcessingEvents(normalized)
+}
+
+export const saveNoteProcessingEvents = (events: NoteProcessingEvent[]) => {
+  const normalized = events
+    .map((entry) => normalizeNoteProcessingEvent(entry))
+    .filter((entry): entry is NoteProcessingEvent => entry !== null)
+
+  try {
+    localStorage.setItem(STORAGE_KEYS.noteProcessingEvents, JSON.stringify(sortNoteProcessingEvents(normalized).slice(0, 5000)))
+  } catch {
+    localStorage.setItem(STORAGE_KEYS.noteProcessingEvents, JSON.stringify(sortNoteProcessingEvents(normalized).slice(0, 1000)))
+  }
+}
+
 export const isOnboardingCompleted = () =>
   localStorage.getItem(STORAGE_KEYS.onboardingCompleted) === 'true'
 
@@ -399,4 +568,21 @@ export const loadPostModelState = (): ModelState[] => {
 export const savePostModelState = (models: ModelState[]) => {
   localStorage.setItem(STORAGE_KEYS.postModels, JSON.stringify(models))
   syncToBackend(() => electronAPI.setBackendPostModels(models))
+}
+
+export const loadDetailedStatsLogs = (): DetailedStatsLogEntry[] => {
+  const entries = parseStorage<Partial<DetailedStatsLogEntry>[]>(localStorage.getItem(STORAGE_KEYS.detailedStatsLogs), [])
+  const normalized = entries
+    .map((entry) => normalizeDetailedStatsLogEntry(entry))
+    .filter((entry): entry is DetailedStatsLogEntry => entry !== null)
+
+  return sortDetailedStatsLogs(normalized)
+}
+
+export const saveDetailedStatsLogs = (entries: DetailedStatsLogEntry[]) => {
+  const normalized = entries
+    .map((entry) => normalizeDetailedStatsLogEntry(entry))
+    .filter((entry): entry is DetailedStatsLogEntry => entry !== null)
+
+  localStorage.setItem(STORAGE_KEYS.detailedStatsLogs, JSON.stringify(sortDetailedStatsLogs(normalized).slice(0, 500)))
 }

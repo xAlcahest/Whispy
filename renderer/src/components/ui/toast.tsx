@@ -52,8 +52,8 @@ const variantIcon = {
 
 const variantClasses: Record<ToastVariant, string> = {
   default: 'border-border-subtle/80',
-  success: 'border-emerald-500/40',
-  destructive: 'border-destructive/50',
+  success: 'border-emerald-400/40',
+  destructive: 'border-destructive/40',
 }
 
 export const ToastProvider = ({
@@ -110,22 +110,22 @@ export const ToastProvider = ({
             <div
               key={toast.id}
               className={cn(
-                'overflow-hidden rounded-[var(--radius-premium)] border bg-black/80 p-3 text-white shadow-[0_10px_38px_-16px_rgba(0,0,0,0.85)] backdrop-blur-xl animate-toast-in',
+                'overflow-hidden rounded-[var(--radius-premium)] border bg-surface-1 p-2.5 text-foreground animate-toast-in',
                 variantClasses[toast.variant],
               )}
             >
               <div className="flex items-start gap-2">
-                <Icon className="mt-0.5 h-4 w-4 shrink-0 text-white/90" />
+                <Icon className="mt-0.5 h-4 w-4 shrink-0 text-foreground/85" />
                 <div className="min-w-0">
-                  <p className="text-sm font-medium">{toast.title}</p>
+                  <p className="text-xs font-medium">{toast.title}</p>
                   {toast.description ? (
-                    <p className="mt-0.5 text-xs text-white/70">{toast.description}</p>
+                    <p className="mt-0.5 text-[11px] text-muted-foreground">{toast.description}</p>
                   ) : null}
                 </div>
               </div>
-              <div className="mt-2 h-1 overflow-hidden rounded-full bg-white/15">
+              <div className="mt-2 h-1 overflow-hidden rounded-full bg-surface-3/70">
                 <div
-                  className="h-full bg-white/80"
+                  className="h-full bg-primary/90"
                   style={{
                     animation: `toast-progress ${toast.duration}ms linear forwards`,
                   }}

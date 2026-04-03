@@ -26,7 +26,14 @@ interface DictationRuntimeHandlers {
 
 export type DictationProcessingMode = 'full' | 'transcription-only'
 
+export interface DictationToggleOptions {
+  maxRecordingDurationSeconds?: number
+  limitReachedMessage?: string
+}
+
 const STOP_RECORDING_GRACE_PERIOD_MS = 1_800
+const DEFAULT_RECORDING_LIMIT_REACHED_MESSAGE =
+  'Maximum recording duration reached for the selected provider. Recording stopped automatically.'
 
 const loadRecorderModule = (): NodeRecordModule => {
   return require('node-record-lpcm16') as NodeRecordModule
@@ -69,6 +76,7 @@ export class DictationRuntime {
   private recordingWriteStream: NodeJS.WritableStream | null = null
   private recordingFilePath: string | null = null
   private recordingStartedAtMs: number | null = null
+  private recordingLimitTimer: NodeJS.Timeout | null = null
   private recordingMode: DictationProcessingMode = 'full'
   private stoppingRecording = false
   private processingRunId = 0
@@ -84,10 +92,10 @@ export class DictationRuntime {
     return this.status
   }
 
-  toggleDictation(mode: DictationProcessingMode = 'full'): DictationToggleResponse {
+  toggleDictation(mode: DictationProcessingMode = 'full', options?: DictationToggleOptions): DictationToggleResponse {
     if (this.status === 'IDLE') {
       try {
-        this.startRecording(mode)
+        this.startRecording(mode, options)
       } catch {
         return {
           accepted: false,
@@ -118,6 +126,7 @@ export class DictationRuntime {
       this.stopActiveRecording()
       this.recordingMode = 'full'
       this.recordingStartedAtMs = null
+      this.clearRecordingLimitTimer()
       this.updateStatus('IDLE')
       return true
     }
@@ -132,7 +141,7 @@ export class DictationRuntime {
     return true
   }
 
-  private startRecording(mode: DictationProcessingMode) {
+  private startRecording(mode: DictationProcessingMode, options?: DictationToggleOptions) {
     const recorder = loadRecorderModule()
     const recorderCommand = resolveRecorderCommand()
     const requestedAudioInputDevice = process.env.WHISPY_AUDIO_INPUT_DEVICE?.trim()
@@ -179,10 +188,28 @@ export class DictationRuntime {
     this.recordingFilePath = recordingFilePath
     this.recordingStartedAtMs = Date.now()
     this.recordingMode = mode
+
+    this.clearRecordingLimitTimer()
+    const requestedLimit = options?.maxRecordingDurationSeconds
+    if (typeof requestedLimit === 'number' && Number.isFinite(requestedLimit) && requestedLimit > 0) {
+      const timeoutMs = Math.max(1_000, Math.floor(requestedLimit * 1_000))
+      const limitMessage = options?.limitReachedMessage?.trim() || DEFAULT_RECORDING_LIMIT_REACHED_MESSAGE
+
+      this.recordingLimitTimer = setTimeout(() => {
+        if (this.status !== 'RECORDING') {
+          return
+        }
+
+        this.handlers.onError(limitMessage)
+        this.stopRecordingAndProcess()
+      }, timeoutMs)
+    }
+
     this.updateStatus('RECORDING')
   }
 
   private stopRecordingAndProcess() {
+    this.clearRecordingLimitTimer()
     const activeRecordingPath = this.recordingFilePath
     const measuredDurationSeconds =
       this.recordingStartedAtMs !== null
@@ -229,6 +256,7 @@ export class DictationRuntime {
   }
 
   private stopActiveRecording() {
+    this.clearRecordingLimitTimer()
     const activeWriteStream = this.recordingWriteStream
     this.stoppingRecording = true
 
@@ -286,6 +314,15 @@ export class DictationRuntime {
       activeWriteStream.on('finish', handleStreamDone)
       activeWriteStream.on('error', handleStreamDone)
     })
+  }
+
+  private clearRecordingLimitTimer() {
+    if (!this.recordingLimitTimer) {
+      return
+    }
+
+    clearTimeout(this.recordingLimitTimer)
+    this.recordingLimitTimer = null
   }
 
   private updateStatus(nextStatus: DictationStatus) {

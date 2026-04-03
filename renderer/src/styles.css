@@ -1,9 +1,9 @@
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Noto Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "IBM Plex Sans", "Noto Sans", ui-sans-serif, system-ui, sans-serif;
 
-  --radius-premium: 8px;
+  --radius-premium: 6px;
 
   --color-background: var(--surface-0);
   --color-foreground: var(--text-primary);
@@ -47,26 +47,26 @@
 }
 
 .dark {
-  --primary: #3b82f6;
-  --accent: #818cf8;
+  --primary: #8b7dff;
+  --accent: #a78bfa;
   --destructive: #ef4444;
 
-  --scrollbar-track: #1a2232;
-  --scrollbar-thumb: #4a72c8;
-  --scrollbar-thumb-hover: #5b86e2;
-  --scrollbar-thumb-active: #6a95ef;
+  --scrollbar-track: #14161d;
+  --scrollbar-thumb: #2f3340;
+  --scrollbar-thumb-hover: #3c4252;
+  --scrollbar-thumb-active: #4a5266;
 
-  --surface-0: #0d1117;
-  --surface-1: #121722;
-  --surface-2: #1a2232;
-  --surface-3: #233047;
+  --surface-0: #101116;
+  --surface-1: #15171e;
+  --surface-2: #1b1e27;
+  --surface-3: #242936;
 
-  --text-primary: #e8edf7;
-  --text-muted: #9ca8bd;
+  --text-primary: #d7dce4;
+  --text-muted: #98a0ad;
 
-  --border-subtle: #26324a;
-  --border-hover: #32415f;
-  --border-active: #5985e2;
+  --border-subtle: rgba(255, 255, 255, 0.08);
+  --border-hover: rgba(255, 255, 255, 0.14);
+  --border-active: #8b7dff;
 }
 
 html,
@@ -81,6 +81,7 @@ body,
 body {
   background: var(--surface-0);
   color: var(--text-primary);
+  line-height: 1.45;
 }
 
 body[data-view='overlay'],
@@ -99,8 +100,8 @@ body[data-view='control'] * {
 }
 
 body[data-view='control'] *::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
 }
 
 body[data-view='control'] *::-webkit-scrollbar-track {
@@ -173,4 +174,20 @@ body[data-view='control'] *::-webkit-scrollbar-corner {
 
 .animate-toast-in {
   animation: toast-in 0.2s ease-out;
+}
+
+body[data-view='control'] h1 {
+  font-size: 1rem;
+  line-height: 1.35;
+  font-weight: 600;
+}
+
+body[data-view='control'] h2,
+body[data-view='control'] h3 {
+  font-weight: 600;
+}
+
+body[data-view='control'] a {
+  color: var(--primary);
+  text-underline-offset: 2px;
 }

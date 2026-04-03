@@ -5,9 +5,9 @@ export type ThemeMode = 'light' | 'dark'
 export type Provider = 'whisper' | 'parakeet'
 export type RuntimeMode = 'cloud' | 'local'
 export type TranslationHotkeyMode = 'combo' | 'custom'
-export type AutoPasteBackend = 'wtype' | 'xdotools' | 'ydotools'
+export type AutoPasteBackend = 'wtype' | 'xdotool' | 'ydotool'
 export type AutoPasteMode = 'instant' | 'stream'
-export type AutoPasteShortcut = 'ctrl-v' | 'ctrl-shift-v'
+export type AutoPasteShortcut = 'ctrl-v' | 'ctrl-shift-v' | 'auto'
 export type WhisperRuntimeVariant = 'cpu' | 'cuda'
 
 export interface DictionaryRule {

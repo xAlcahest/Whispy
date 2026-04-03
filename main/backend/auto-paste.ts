@@ -1,4 +1,7 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { clipboard } from 'electron'
 import type { AutoPasteBackend, AutoPasteMode, AutoPasteShortcut } from '../../shared/app'
 
@@ -7,6 +10,7 @@ let trackedYdotooldProcess: ChildProcess | null = null
 export interface AutoPasteExecutionResult {
   success: boolean
   details: string
+  elapsedMs?: number
 }
 
 export interface AutoPasteOptions {
@@ -29,10 +33,90 @@ const commandExists = (command: string) => {
   return probe.status === 0
 }
 
+const TERMINAL_HINTS = [
+  'konsole', 'terminal', 'terminator', 'alacritty', 'kitty', 'wezterm',
+  'foot', 'urxvt', 'xterm', 'sakura', 'guake', 'yakuake', 'tilda',
+  'tilix', 'hyper', 'tabby', 'contour', 'rio', 'ghostty', 'st-256color',
+]
+
+let kwinScriptPath: string | null = null
+let kwinScriptId: string | null = null
+
+const getKwinActiveWindowClass = (): string | null => {
+  try {
+    if (!kwinScriptPath) {
+      const dir = join(tmpdir(), 'whispy-kwin')
+      mkdirSync(dir, { recursive: true })
+      kwinScriptPath = join(dir, 'active-window.js')
+      writeFileSync(kwinScriptPath, 'console.info("WHISPY_ACTIVE:" + (workspace.activeWindow ? workspace.activeWindow.resourceClass : "unknown"))')
+    }
+
+    if (!kwinScriptId) {
+      const load = spawnSync('gdbus', [
+        'call', '--session', '--dest', 'org.kde.KWin',
+        '--object-path', '/Scripting',
+        '--method', 'org.kde.kwin.Scripting.loadScript', kwinScriptPath,
+      ], { encoding: 'utf8', timeout: 200, windowsHide: true })
+      const match = load.stdout?.match(/\((\d+),\)/)
+      if (!match) return null
+      kwinScriptId = match[1]
+    }
+
+    const marker = `WHISPY_${Date.now()}`
+    writeFileSync(kwinScriptPath, `console.info("${marker}:" + (workspace.activeWindow ? workspace.activeWindow.resourceClass : "unknown"))`)
+    kwinScriptId = null
+
+    const load = spawnSync('gdbus', [
+      'call', '--session', '--dest', 'org.kde.KWin',
+      '--object-path', '/Scripting',
+      '--method', 'org.kde.kwin.Scripting.loadScript', kwinScriptPath,
+    ], { encoding: 'utf8', timeout: 200, windowsHide: true })
+    const loadMatch = load.stdout?.match(/\((\d+),\)/)
+    if (!loadMatch) return null
+    kwinScriptId = loadMatch[1]
+
+    spawnSync('gdbus', [
+      'call', '--session', '--dest', 'org.kde.KWin',
+      '--object-path', `/Scripting/Script${kwinScriptId}`,
+      '--method', 'org.kde.kwin.Script.run',
+    ], { encoding: 'utf8', timeout: 200, windowsHide: true })
+
+    sleepBlocking(50)
+
+    const journal = spawnSync('journalctl', [
+      '--user', '-t', 'kwin_wayland', '-n', '5', '--no-pager', '-o', 'cat',
+    ], { encoding: 'utf8', timeout: 200, windowsHide: true })
+
+    const line = journal.stdout?.split('\n').reverse().find((l) => l.includes(marker + ':'))
+    return line?.split(marker + ':')[1]?.trim().toLowerCase() ?? null
+  } catch {
+    return null
+  }
+}
+
+const detectActiveWindowIsTerminal = (): boolean => {
+  if (process.platform !== 'linux') return false
+
+  const windowClass = getKwinActiveWindowClass()
+  if (windowClass) {
+    return TERMINAL_HINTS.some((hint) => windowClass.includes(hint))
+  }
+
+  return false
+}
+
+const resolveShortcut = (shortcut: AutoPasteShortcut): 'ctrl-v' | 'ctrl-shift-v' => {
+  if (shortcut === 'auto') {
+    return detectActiveWindowIsTerminal() ? 'ctrl-shift-v' : 'ctrl-v'
+  }
+  return shortcut === 'ctrl-shift-v' ? 'ctrl-shift-v' : 'ctrl-v'
+}
+
 const normalizeAutoPasteOptions = (options?: AutoPasteOptions) => {
+  const rawShortcut = options?.shortcut ?? 'ctrl-v'
   return {
-    mode: options?.mode === 'instant' ? 'instant' : 'stream',
-    shortcut: options?.shortcut === 'ctrl-shift-v' ? 'ctrl-shift-v' : 'ctrl-v',
+    mode: options?.mode === 'instant' ? 'instant' : 'instant',
+    shortcut: resolveShortcut(rawShortcut),
   } as const
 }
 
@@ -48,11 +132,6 @@ interface LinuxPastePlan {
   setupError: string | null
 }
 
-const STREAM_CLIPBOARD_CHUNK_SIZE = 72
-const STREAM_CLIPBOARD_STEP_DELAY_MS = 8
-const STREAM_CLIPBOARD_YIELD_INTERVAL = 24
-const STREAM_CLIPBOARD_YIELD_DELAY_MS = 16
-const STREAM_CLIPBOARD_CHUNK_RETRIES = 2
 const CLIPBOARD_WRITE_VERIFY_ATTEMPTS = 3
 const CLIPBOARD_WRITE_VERIFY_DELAY_MS = 10
 const LINUX_PASTE_SHORTCUT_DELAY_MS = 40
@@ -82,11 +161,21 @@ const clipboardMatches = (expectedText: string) => {
   return normalizeClipboardText(currentClipboard) === normalizeClipboardText(expectedText)
 }
 
+const writeClipboardWayland = (text: string) => {
+  if (process.platform !== 'linux') return
+  try {
+    spawnSync('xclip', ['-selection', 'clipboard'], { input: text, encoding: 'utf8', timeout: 100 })
+  } catch {
+    // xclip not available
+  }
+}
+
 const writeClipboardReliably = (text: string, maxAttempts = CLIPBOARD_WRITE_VERIFY_ATTEMPTS) => {
   const attempts = Math.max(1, maxAttempts)
 
   for (let attemptIndex = 0; attemptIndex < attempts; attemptIndex += 1) {
     clipboard.writeText(text)
+    writeClipboardWayland(text)
     sleepBlocking(CLIPBOARD_WRITE_VERIFY_DELAY_MS)
 
     if (clipboardMatches(text)) {
@@ -203,46 +292,6 @@ const ensureYdotoolDaemonReady = (): YdotoolReadyResult => {
   }
 }
 
-const chunkTextForStreamingPaste = (text: string) => {
-  const tokens = text.split(/(\s+)/)
-  const chunks: string[] = []
-  let currentChunk = ''
-
-  const flushChunk = () => {
-    if (!currentChunk) {
-      return
-    }
-
-    chunks.push(currentChunk)
-    currentChunk = ''
-  }
-
-  for (const token of tokens) {
-    if (!token) {
-      continue
-    }
-
-    if (token.length > STREAM_CLIPBOARD_CHUNK_SIZE) {
-      flushChunk()
-      const characters = Array.from(token)
-      for (let index = 0; index < characters.length; index += STREAM_CLIPBOARD_CHUNK_SIZE) {
-        chunks.push(characters.slice(index, index + STREAM_CLIPBOARD_CHUNK_SIZE).join(''))
-      }
-      continue
-    }
-
-    if (currentChunk.length + token.length > STREAM_CLIPBOARD_CHUNK_SIZE) {
-      flushChunk()
-    }
-
-    currentChunk += token
-  }
-
-  flushChunk()
-
-  return chunks.length > 0 ? chunks : ['']
-}
-
 const runXdotoolPasteShortcut = (shortcut: AutoPasteShortcut) => {
   const keyCombo = shortcut === 'ctrl-shift-v' ? 'ctrl+shift+v' : 'ctrl+v'
   return runCommand('xdotool', ['key', '--clearmodifiers', keyCombo])
@@ -266,7 +315,7 @@ const runYdotoolPasteShortcut = (shortcut: AutoPasteShortcut) => {
 }
 
 const resolveLinuxPasteTool = (backend: AutoPasteBackend): LinuxPasteTool => {
-  if (backend === 'xdotools') {
+  if (backend === 'xdotool') {
     return 'xdotool'
   }
 
@@ -346,104 +395,6 @@ const executeLinuxPasteAttempt = (
   return null
 }
 
-const runLinuxStreamingPasteViaClipboard = (
-  text: string,
-  backend: AutoPasteBackend,
-  shortcut: AutoPasteShortcut,
-): AutoPasteExecutionResult => {
-  const manualPasteShortcut = formatManualPasteShortcut(shortcut, 'linux')
-  const previousClipboardText = clipboard.readText()
-
-  if (!writeClipboardReliably(text)) {
-    clipboard.writeText(text)
-    return {
-      success: false,
-      details: `Unable to verify clipboard write for streaming mode. Text was copied to clipboard; paste manually with ${manualPasteShortcut}.`,
-    }
-  }
-
-  const plan = buildLinuxPasteShortcutAttempts(backend, shortcut)
-  const attempts = plan.attempts
-  if (attempts.length === 0) {
-    return {
-      success: false,
-      details:
-        `${plan.setupError ?? 'Streaming paste unavailable for selected backend.'} ` +
-        `Text was copied to clipboard; paste manually with ${manualPasteShortcut}.`,
-    }
-  }
-
-  let selectedAttempt: LinuxPasteAttempt | null = null
-
-  try {
-    const chunks = chunkTextForStreamingPaste(text)
-
-    for (let index = 0; index < chunks.length; index += 1) {
-      const chunk = chunks[index] ?? ''
-      if (!writeClipboardReliably(chunk)) {
-        writeClipboardReliably(text)
-        return {
-          success: false,
-          details: `Streaming paste failed while preparing chunk ${index + 1}/${chunks.length}. Full text remains copied; paste manually with ${manualPasteShortcut}.`,
-        }
-      }
-
-      if (LINUX_PASTE_SHORTCUT_DELAY_MS > 0) {
-        sleepBlocking(LINUX_PASTE_SHORTCUT_DELAY_MS)
-      }
-
-      let successfulAttempt: LinuxPasteAttempt | null = null
-      for (let retryIndex = 0; retryIndex <= STREAM_CLIPBOARD_CHUNK_RETRIES; retryIndex += 1) {
-        successfulAttempt = executeLinuxPasteAttempt(attempts, selectedAttempt)
-        if (successfulAttempt) {
-          break
-        }
-
-        sleepBlocking(2)
-      }
-
-      if (!successfulAttempt) {
-        writeClipboardReliably(text)
-        return {
-          success: false,
-          details:
-            `Streaming paste failed while sending chunk ${index + 1}/${chunks.length}. ` +
-            `Full text remains copied to clipboard; paste manually with ${manualPasteShortcut}.`,
-        }
-      }
-
-      selectedAttempt = successfulAttempt
-
-      if (index < chunks.length - 1) {
-        if (STREAM_CLIPBOARD_STEP_DELAY_MS > 0) {
-          sleepBlocking(STREAM_CLIPBOARD_STEP_DELAY_MS)
-        } else if ((index + 1) % STREAM_CLIPBOARD_YIELD_INTERVAL === 0) {
-          sleepBlocking(STREAM_CLIPBOARD_YIELD_DELAY_MS)
-        }
-      }
-    }
-
-    if (LINUX_CLIPBOARD_RESTORE_DELAY_MS > 0) {
-      sleepBlocking(LINUX_CLIPBOARD_RESTORE_DELAY_MS)
-    }
-
-    writeClipboardReliably(previousClipboardText, 2)
-
-    return {
-      success: true,
-      details: `Text streamed via clipboard chunks and ${selectedAttempt?.backend ?? 'paste shortcut'} (${shortcut === 'ctrl-shift-v' ? 'Ctrl+Shift+V' : 'Ctrl+V'}).`,
-    }
-  } catch (error: unknown) {
-    writeClipboardReliably(text)
-    const reason = error instanceof Error ? error.message : String(error)
-    return {
-      success: false,
-      details:
-        `Streaming paste raised an unexpected error (${reason}). ` +
-        `Text was copied to clipboard; paste manually with ${manualPasteShortcut}.`,
-    }
-  }
-}
 
 const runLinuxInstantAutoPaste = (
   text: string,
@@ -647,36 +598,30 @@ export const performAutoPaste = (
     }
   }
 
+  const startTime = Date.now()
   const normalizedOptions = normalizeAutoPasteOptions(options)
 
+  let result: AutoPasteExecutionResult
+
   if (process.platform === 'linux') {
-    if (normalizedOptions.mode === 'instant') {
-      return runLinuxInstantAutoPaste(text, backend, normalizedOptions.shortcut)
+    result = runLinuxInstantAutoPaste(text, backend, normalizedOptions.shortcut)
+  } else if (process.platform === 'darwin') {
+    result = normalizedOptions.mode === 'instant'
+      ? runMacInstantAutoPaste(text, normalizedOptions.shortcut)
+      : runMacStreamingAutoPaste(text)
+  } else if (process.platform === 'win32') {
+    result = normalizedOptions.mode === 'instant'
+      ? runWindowsInstantAutoPaste(text, normalizedOptions.shortcut)
+      : runWindowsStreamingAutoPaste(text)
+  } else {
+    return {
+      success: false,
+      details: `Auto-paste not supported on platform: ${process.platform}`,
     }
-
-    return runLinuxStreamingPasteViaClipboard(text, backend, normalizedOptions.shortcut)
   }
 
-  if (process.platform === 'darwin') {
-    if (normalizedOptions.mode === 'instant') {
-      return runMacInstantAutoPaste(text, normalizedOptions.shortcut)
-    }
-
-    return runMacStreamingAutoPaste(text)
-  }
-
-  if (process.platform === 'win32') {
-    if (normalizedOptions.mode === 'instant') {
-      return runWindowsInstantAutoPaste(text, normalizedOptions.shortcut)
-    }
-
-    return runWindowsStreamingAutoPaste(text)
-  }
-
-  return {
-    success: false,
-    details: `Auto-paste not supported on platform: ${process.platform}`,
-  }
+  result.elapsedMs = Date.now() - startTime
+  return result
 }
 
 export const cleanupYdotoolDaemon = () => {

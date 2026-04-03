@@ -7,7 +7,7 @@ import {
 } from './constants'
 import { electronAPI } from './electron-api'
 import type { AppSettings, HistoryEntry, ModelState } from '../types/app'
-import { SECRET_SETTING_KEYS, stripSecretsFromSettings } from '../../../shared/secrets'
+import { SECRET_SETTING_KEYS, extractSecretSettings, stripSecretsFromSettings } from '../../../shared/secrets'
 import type { NotesSnapshotPayload } from '../../../shared/ipc'
 
 export interface NoteFolder {
@@ -432,12 +432,15 @@ export const loadSettings = (): AppSettings => {
 
 export const saveSettings = (settings: AppSettings) => {
   const normalizedSettings = normalizeSettings(settings)
-  const previousComparable = runtimeSettingsCache ? JSON.stringify(stripSecretsFromSettings(runtimeSettingsCache)) : null
-  const nextComparable = JSON.stringify(stripSecretsFromSettings(normalizedSettings))
+  const previousNonSecrets = runtimeSettingsCache ? JSON.stringify(stripSecretsFromSettings(runtimeSettingsCache)) : null
+  const nextNonSecrets = JSON.stringify(stripSecretsFromSettings(normalizedSettings))
+
+  const previousSecrets = runtimeSettingsCache ? JSON.stringify(extractSecretSettings(runtimeSettingsCache)) : null
+  const nextSecrets = JSON.stringify(extractSecretSettings(normalizedSettings))
 
   runtimeSettingsCache = normalizedSettings
   persistSettingsLocally(normalizedSettings)
-  if (previousComparable === nextComparable) {
+  if (previousNonSecrets === nextNonSecrets && previousSecrets === nextSecrets) {
     return
   }
 

@@ -2,7 +2,7 @@ import type { AppStateSnapshot, AutoPasteBackend, DictationResult, DictationStat
 
 export type OverlaySizeKey = 'BASE' | 'WITH_MENU' | 'WITH_TOAST' | 'EXPANDED'
 export type DisplayServer = 'wayland' | 'x11' | 'unknown'
-export type AutoPasteBackendId = 'wtype' | 'xdotools' | 'ydotools'
+export type AutoPasteBackendId = 'wtype' | 'xdotool' | 'ydotool'
 export type LocalModelScope = 'transcription' | 'post'
 export type LogLevelPayload = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal'
 
@@ -246,6 +246,7 @@ export const IPCChannels = {
   floatingIconAutoHideChanged: 'ui:event-floating-icon-auto-hide-changed',
   hotkeyRegistrationFailed: 'ui:event-hotkey-registration-failed',
   hotkeyFallbackUsed: 'ui:event-hotkey-fallback-used',
+  hotkeyEffectiveChanged: 'ui:event-hotkey-effective-changed',
 } as const
 
 export type DictationResultPayload = DictationResult

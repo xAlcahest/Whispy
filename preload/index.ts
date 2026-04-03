@@ -135,6 +135,8 @@ const electronAPI: ElectronAPI = {
     listen<HotkeyRegistrationFailedPayload>(IPCChannels.hotkeyRegistrationFailed, callback),
   onHotkeyFallbackUsed: (callback) =>
     listen<HotkeyFallbackUsedPayload>(IPCChannels.hotkeyFallbackUsed, callback),
+  onHotkeyEffectiveChanged: (callback) =>
+    listen<string>(IPCChannels.hotkeyEffectiveChanged, callback),
 }
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI)

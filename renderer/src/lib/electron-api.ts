@@ -186,6 +186,7 @@ const fallbackElectronAPI: ElectronAPI = {
   onFloatingIconAutoHideChanged: () => noopUnsubscribe,
   onHotkeyRegistrationFailed: () => noopUnsubscribe,
   onHotkeyFallbackUsed: () => noopUnsubscribe,
+  onHotkeyEffectiveChanged: () => noopUnsubscribe,
 }
 
 const getRuntimeElectronAPI = (): ElectronAPI | null => {

@@ -93,4 +93,5 @@ export interface ElectronAPI {
     callback: (payload: HotkeyRegistrationFailedPayload) => void,
   ) => () => void
   onHotkeyFallbackUsed: (callback: (payload: HotkeyFallbackUsedPayload) => void) => () => void
+  onHotkeyEffectiveChanged: (callback: (newHotkey: string) => void) => () => void
 }

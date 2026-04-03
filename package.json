@@ -30,7 +30,7 @@
   },
   "scripts": {
     "predev": "npm run prepare:whisper-runtime",
-    "dev": "electron-vite dev",
+    "dev": "unset ELECTRON_RUN_AS_NODE && electron-vite dev",
     "prebuild": "npm run prepare:whisper-runtime",
     "build": "electron-vite build",
     "prepare:whisper-runtime": "node scripts/prepare-whisper-runtime.mjs --current --variants=cpu,cuda",
@@ -50,6 +50,7 @@
     "@uiw/react-markdown-preview": "^5.1.5",
     "better-sqlite3": "^12.8.0",
     "clsx": "^2.1.1",
+    "dbus-next": "^0.10.2",
     "get-windows": "^9.3.0",
     "lucide-react": "^0.475.0",
     "marked": "^17.0.3",

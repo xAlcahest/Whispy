@@ -6,7 +6,7 @@ export type Provider = 'whisper' | 'parakeet'
 export type RuntimeMode = 'cloud' | 'local'
 export type TranslationHotkeyMode = 'combo' | 'custom'
 export type AutoPasteBackend = 'wtype' | 'xdotool' | 'ydotool'
-export type AutoPasteMode = 'instant' | 'stream'
+export type AutoPasteMode = 'instant'
 export type AutoPasteShortcut = 'ctrl-v' | 'ctrl-shift-v' | 'auto'
 export type WhisperRuntimeVariant = 'cpu' | 'cuda'
 

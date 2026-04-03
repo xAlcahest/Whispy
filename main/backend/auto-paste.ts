@@ -113,10 +113,8 @@ const resolveShortcut = (shortcut: AutoPasteShortcut): 'ctrl-v' | 'ctrl-shift-v'
 }
 
 const normalizeAutoPasteOptions = (options?: AutoPasteOptions) => {
-  const rawShortcut = options?.shortcut ?? 'ctrl-v'
   return {
-    mode: options?.mode === 'instant' ? 'instant' : 'instant',
-    shortcut: resolveShortcut(rawShortcut),
+    shortcut: resolveShortcut(options?.shortcut ?? 'ctrl-v'),
   } as const
 }
 
@@ -447,41 +445,6 @@ const runLinuxInstantAutoPaste = (
   }
 }
 
-const runMacStreamingAutoPaste = (text: string): AutoPasteExecutionResult => {
-  const manualPasteShortcut = formatManualPasteShortcut('ctrl-v', 'darwin')
-  writeClipboardReliably(text)
-
-  const sanitized = Array.from(text)
-    .filter((ch) => {
-      const code = ch.charCodeAt(0)
-      if (code <= 0x08) return false
-      if (code === 0x0B || code === 0x0C) return false
-      if (code >= 0x0E && code <= 0x1F) return false
-      if (code === 0x7F) return false
-      return true
-    })
-    .join('')
-  const escaped = sanitized
-    .replace(/\\/g, '\\\\')
-    .replace(/"/g, '\\"')
-    .replace(/\n/g, '\\n')
-    .replace(/\r/g, '\\r')
-    .replace(/\t/g, '\\t')
-  const script = `tell application "System Events" to keystroke "${escaped}"`
-  const result = runCommand('osascript', ['-e', script])
-
-  if (result.status === 0) {
-    return { success: true, details: 'Text typed via AppleScript (stream mode).' }
-  }
-
-  return {
-    success: false,
-    details:
-      (result.stderr.trim() || 'AppleScript failed to type text.') +
-      ` Text was copied to clipboard; paste manually with ${manualPasteShortcut}.`,
-  }
-}
-
 const runMacInstantAutoPaste = (text: string, shortcut: AutoPasteShortcut): AutoPasteExecutionResult => {
   const manualPasteShortcut = formatManualPasteShortcut(shortcut, 'darwin')
 
@@ -513,39 +476,6 @@ const runMacInstantAutoPaste = (text: string, shortcut: AutoPasteShortcut): Auto
     details:
       (result.stderr.trim() || 'Unable to send paste shortcut via AppleScript.') +
       ` Text remains copied; paste manually with ${manualPasteShortcut}.`,
-  }
-}
-
-const runWindowsStreamingAutoPaste = (text: string): AutoPasteExecutionResult => {
-  const manualPasteShortcut = formatManualPasteShortcut('ctrl-v', 'win32')
-  writeClipboardReliably(text)
-
-  const escaped = text
-    .replace(/`/g, '``')
-    .replace(/\$/g, '`$')
-    .replace(/"/g, '`"')
-    .replace(/\(/g, '`(')
-    .replace(/\)/g, '`)')
-    .replace(/\{/g, '`{')
-    .replace(/\}/g, '`}')
-    .replace(/\r\n/g, '`r`n')
-    .replace(/\n/g, '`n')
-
-  const script =
-    '$ErrorActionPreference="Stop"; Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait("' +
-    escaped +
-    '")'
-
-  const result = runCommand('powershell', ['-NoProfile', '-NonInteractive', '-Command', script])
-  if (result.status === 0) {
-    return { success: true, details: 'Text typed via PowerShell SendKeys (stream mode).' }
-  }
-
-  return {
-    success: false,
-    details:
-      (result.stderr.trim() || 'PowerShell SendKeys failed to type text.') +
-      ` Text was copied to clipboard; paste manually with ${manualPasteShortcut}.`,
   }
 }
 
@@ -606,13 +536,9 @@ export const performAutoPaste = (
   if (process.platform === 'linux') {
     result = runLinuxInstantAutoPaste(text, backend, normalizedOptions.shortcut)
   } else if (process.platform === 'darwin') {
-    result = normalizedOptions.mode === 'instant'
-      ? runMacInstantAutoPaste(text, normalizedOptions.shortcut)
-      : runMacStreamingAutoPaste(text)
+    result = runMacInstantAutoPaste(text, normalizedOptions.shortcut)
   } else if (process.platform === 'win32') {
-    result = normalizedOptions.mode === 'instant'
-      ? runWindowsInstantAutoPaste(text, normalizedOptions.shortcut)
-      : runWindowsStreamingAutoPaste(text)
+    result = runWindowsInstantAutoPaste(text, normalizedOptions.shortcut)
   } else {
     return {
       success: false,

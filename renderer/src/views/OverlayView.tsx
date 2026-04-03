@@ -144,7 +144,6 @@ const OverlayScene = () => {
     if (nextSettings.autoPaste) {
       if (typeof window.electronAPI !== 'undefined') {
         const autoPasteResult = await electronAPI.performAutoPaste(result.text, nextSettings.autoPasteBackend, {
-          mode: nextSettings.autoPasteMode,
           shortcut: nextSettings.autoPasteShortcut,
         })
 

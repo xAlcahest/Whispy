@@ -12,6 +12,7 @@ import {
   chmodSync,
   writeFileSync,
 } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { Readable } from 'node:stream'
@@ -112,7 +113,8 @@ const summarizeOutput = (raw) => {
 const writeFailureLog = ({ command, args, options, stdout, stderr, message }) => {
   ensureDirectory(PREPARE_LOG_ROOT)
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
-  const logPath = join(PREPARE_LOG_ROOT, `prepare-${timestamp}.log`)
+  const nonce = randomBytes(4).toString('hex')
+  const logPath = join(PREPARE_LOG_ROOT, `prepare-${timestamp}-${nonce}.log`)
 
   const lines = [
     `message: ${message}`,

@@ -917,12 +917,13 @@ export class DictationPipeline {
   }
 
   private async runPostProcessing(settings: AppSettings, input: string, prompt: string) {
-    let outputText = input
     const compiledPrompt = buildPromptWithDictionaryRules(settings, prompt)
 
     if (compiledPrompt !== prompt) {
       this.deps.log?.('transcript-pipeline', 'Appended dictionary rules to post-processing prompt')
     }
+
+    let outputText: string
 
     if (settings.postProcessingRuntime === 'cloud') {
       const postConfig = getPostProcessingCloudConfig(settings)

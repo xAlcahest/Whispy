@@ -83,5 +83,8 @@
   },
   "optionalDependencies": {
     "keytar": "^7.9.0"
+  },
+  "overrides": {
+    "tar": "^7.5.13"
   }
 }

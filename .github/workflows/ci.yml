@@ -34,9 +34,14 @@ jobs:
         run: npm test
 
   build-linux:
-    name: Build Linux
+    name: Build Linux (${{ matrix.target }})
     runs-on: ubuntu-latest
     needs: quality
+
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [AppImage, deb, rpm]
 
     steps:
       - name: Checkout
@@ -55,16 +60,16 @@ jobs:
         run: npm run build:linux
 
       - name: Package
-        run: npx electron-builder --linux AppImage tar.gz
+        run: npx electron-builder --linux ${{ matrix.target }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload artifacts
         if: github.event_name == 'pull_request'
         uses: actions/upload-artifact@v4
         with:
-          name: pr-linux-${{ github.event.pull_request.number }}
-          path: |
-            dist/*.AppImage
-            dist/*.tar.gz
+          name: pr-linux-${{ matrix.target }}-${{ github.event.pull_request.number }}
+          path: dist/
           retention-days: 5
 
   build-windows:
@@ -90,6 +95,8 @@ jobs:
 
       - name: Package
         run: npx electron-builder --win nsis
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload artifacts
         if: github.event_name == 'pull_request'

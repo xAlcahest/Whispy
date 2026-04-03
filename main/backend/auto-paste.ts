@@ -133,8 +133,46 @@ interface LinuxPastePlan {
 const CLIPBOARD_WRITE_VERIFY_ATTEMPTS = 3
 const CLIPBOARD_WRITE_VERIFY_DELAY_MS = 10
 const LINUX_PASTE_SHORTCUT_DELAY_MS = 40
-const LINUX_CLIPBOARD_RESTORE_DELAY_MS = 220
 const MAC_PASTE_SHORTCUT_DELAY_MS = 100
+
+const CLIPBOARD_RESTORE_DELAY: Record<string, number> = {
+  linux: 220,
+  darwin: 450,
+  win32: 100,
+}
+
+interface SavedClipboard {
+  type: 'image' | 'html' | 'text'
+  text?: string
+  html?: string
+  image?: Electron.NativeImage
+}
+
+const saveClipboard = (): SavedClipboard => {
+  const formats = clipboard.availableFormats()
+  if (formats.some((f) => f.startsWith('image/'))) {
+    return { type: 'image', image: clipboard.readImage() }
+  }
+  if (formats.includes('text/html')) {
+    return { type: 'html', text: clipboard.readText(), html: clipboard.readHTML() }
+  }
+  return { type: 'text', text: clipboard.readText() }
+}
+
+const restoreClipboard = (saved: SavedClipboard) => {
+  if (saved.type === 'image' && saved.image && !saved.image.isEmpty()) {
+    clipboard.writeImage(saved.image)
+  } else if (saved.type === 'html' && saved.text && saved.html) {
+    clipboard.write({ text: saved.text, html: saved.html })
+  } else if (saved.text) {
+    clipboard.writeText(saved.text)
+  }
+}
+
+const scheduleClipboardRestore = (saved: SavedClipboard) => {
+  const delay = CLIPBOARD_RESTORE_DELAY[process.platform] ?? 200
+  setTimeout(() => restoreClipboard(saved), delay)
+}
 const WINDOWS_PASTE_SHORTCUT_DELAY_MS = 35
 const YDOTOOL_STARTUP_RETRIES = 16
 const YDOTOOL_STARTUP_DELAY_MS = 80
@@ -400,7 +438,8 @@ const runLinuxInstantAutoPaste = (
   shortcut: AutoPasteShortcut,
 ): AutoPasteExecutionResult => {
   const manualPasteShortcut = formatManualPasteShortcut(shortcut, 'linux')
-  const previousClipboardText = clipboard.readText()
+  const saved = saveClipboard()
+
   if (!writeClipboardReliably(text)) {
     clipboard.writeText(text)
     return {
@@ -426,12 +465,7 @@ const runLinuxInstantAutoPaste = (
 
   const successfulAttempt = executeLinuxPasteAttempt(attempts, null)
   if (successfulAttempt) {
-    if (LINUX_CLIPBOARD_RESTORE_DELAY_MS > 0) {
-      sleepBlocking(LINUX_CLIPBOARD_RESTORE_DELAY_MS)
-    }
-
-    writeClipboardReliably(previousClipboardText, 2)
-
+    scheduleClipboardRestore(saved)
     return {
       success: true,
       details: `Clipboard pasted via ${successfulAttempt.backend} (${shortcut === 'ctrl-shift-v' ? 'Ctrl+Shift+V' : 'Ctrl+V'}).`,
@@ -447,6 +481,7 @@ const runLinuxInstantAutoPaste = (
 
 const runMacInstantAutoPaste = (text: string, shortcut: AutoPasteShortcut): AutoPasteExecutionResult => {
   const manualPasteShortcut = formatManualPasteShortcut(shortcut, 'darwin')
+  const saved = saveClipboard()
 
   if (!writeClipboardReliably(text)) {
     clipboard.writeText(text)
@@ -465,6 +500,7 @@ const runMacInstantAutoPaste = (text: string, shortcut: AutoPasteShortcut): Auto
   const result = runCommand('osascript', ['-e', script])
 
   if (result.status === 0) {
+    scheduleClipboardRestore(saved)
     return {
       success: true,
       details: `Clipboard pasted via ${shortcut === 'ctrl-shift-v' ? 'Cmd+Shift+V' : 'Cmd+V'}.`,
@@ -481,6 +517,7 @@ const runMacInstantAutoPaste = (text: string, shortcut: AutoPasteShortcut): Auto
 
 const runWindowsInstantAutoPaste = (text: string, shortcut: AutoPasteShortcut): AutoPasteExecutionResult => {
   const manualPasteShortcut = formatManualPasteShortcut(shortcut, 'win32')
+  const saved = saveClipboard()
 
   if (!writeClipboardReliably(text)) {
     clipboard.writeText(text)
@@ -502,6 +539,7 @@ const runWindowsInstantAutoPaste = (text: string, shortcut: AutoPasteShortcut): 
 
   const result = runCommand('powershell', ['-NoProfile', '-NonInteractive', '-Command', script])
   if (result.status === 0) {
+    scheduleClipboardRestore(saved)
     return {
       success: true,
       details: `Clipboard pasted via ${shortcut === 'ctrl-shift-v' ? 'Ctrl+Shift+V' : 'Ctrl+V'}.`,

@@ -30,10 +30,94 @@ const commandExists = (command: string) => {
   return probe.status === 0
 }
 
+const TERMINAL_HINTS = [
+  'konsole', 'terminal', 'terminator', 'alacritty', 'kitty', 'wezterm',
+  'foot', 'urxvt', 'xterm', 'sakura', 'guake', 'yakuake', 'tilda',
+  'tilix', 'hyper', 'tabby', 'contour', 'rio', 'ghostty', 'st-256color',
+]
+
+let kwinScriptPath: string | null = null
+let kwinScriptId: string | null = null
+
+const getKwinActiveWindowClass = (): string | null => {
+  try {
+    if (!kwinScriptPath) {
+      const { join } = require('node:path') as typeof import('node:path')
+      const { writeFileSync, mkdirSync } = require('node:fs') as typeof import('node:fs')
+      const { tmpdir } = require('node:os') as typeof import('node:os')
+      const dir = join(tmpdir(), 'whispy-kwin')
+      mkdirSync(dir, { recursive: true })
+      kwinScriptPath = join(dir, 'active-window.js')
+      writeFileSync(kwinScriptPath, 'console.info("WHISPY_ACTIVE:" + (workspace.activeWindow ? workspace.activeWindow.resourceClass : "unknown"))')
+    }
+
+    if (!kwinScriptId) {
+      const load = spawnSync('gdbus', [
+        'call', '--session', '--dest', 'org.kde.KWin',
+        '--object-path', '/Scripting',
+        '--method', 'org.kde.kwin.Scripting.loadScript', kwinScriptPath,
+      ], { encoding: 'utf8', timeout: 200, windowsHide: true })
+      const match = load.stdout?.match(/\((\d+),\)/)
+      if (!match) return null
+      kwinScriptId = match[1]
+    }
+
+    const marker = `WHISPY_${Date.now()}`
+    const { writeFileSync } = require('node:fs') as typeof import('node:fs')
+    writeFileSync(kwinScriptPath, `console.info("${marker}:" + (workspace.activeWindow ? workspace.activeWindow.resourceClass : "unknown"))`)
+    kwinScriptId = null
+
+    const load = spawnSync('gdbus', [
+      'call', '--session', '--dest', 'org.kde.KWin',
+      '--object-path', '/Scripting',
+      '--method', 'org.kde.kwin.Scripting.loadScript', kwinScriptPath,
+    ], { encoding: 'utf8', timeout: 200, windowsHide: true })
+    const loadMatch = load.stdout?.match(/\((\d+),\)/)
+    if (!loadMatch) return null
+    kwinScriptId = loadMatch[1]
+
+    spawnSync('gdbus', [
+      'call', '--session', '--dest', 'org.kde.KWin',
+      '--object-path', `/Scripting/Script${kwinScriptId}`,
+      '--method', 'org.kde.kwin.Script.run',
+    ], { encoding: 'utf8', timeout: 200, windowsHide: true })
+
+    sleepBlocking(50)
+
+    const journal = spawnSync('journalctl', [
+      '--user', '-t', 'kwin_wayland', '-n', '5', '--no-pager', '-o', 'cat',
+    ], { encoding: 'utf8', timeout: 200, windowsHide: true })
+
+    const line = journal.stdout?.split('\n').reverse().find((l) => l.includes(marker + ':'))
+    return line?.split(marker + ':')[1]?.trim().toLowerCase() ?? null
+  } catch {
+    return null
+  }
+}
+
+const detectActiveWindowIsTerminal = (): boolean => {
+  if (process.platform !== 'linux') return false
+
+  const windowClass = getKwinActiveWindowClass()
+  if (windowClass) {
+    return TERMINAL_HINTS.some((hint) => windowClass.includes(hint))
+  }
+
+  return false
+}
+
+const resolveShortcut = (shortcut: AutoPasteShortcut): 'ctrl-v' | 'ctrl-shift-v' => {
+  if (shortcut === 'auto') {
+    return detectActiveWindowIsTerminal() ? 'ctrl-shift-v' : 'ctrl-v'
+  }
+  return shortcut === 'ctrl-shift-v' ? 'ctrl-shift-v' : 'ctrl-v'
+}
+
 const normalizeAutoPasteOptions = (options?: AutoPasteOptions) => {
+  const rawShortcut = options?.shortcut ?? 'ctrl-v'
   return {
-    mode: options?.mode === 'instant' ? 'instant' : 'stream',
-    shortcut: options?.shortcut === 'ctrl-shift-v' ? 'ctrl-shift-v' : 'ctrl-v',
+    mode: options?.mode === 'instant' ? 'instant' : 'instant',
+    shortcut: resolveShortcut(rawShortcut),
   } as const
 }
 
@@ -83,11 +167,21 @@ const clipboardMatches = (expectedText: string) => {
   return normalizeClipboardText(currentClipboard) === normalizeClipboardText(expectedText)
 }
 
+const writeClipboardWayland = (text: string) => {
+  if (process.platform !== 'linux') return
+  try {
+    spawnSync('xclip', ['-selection', 'clipboard'], { input: text, encoding: 'utf8', timeout: 100 })
+  } catch {
+    // xclip not available
+  }
+}
+
 const writeClipboardReliably = (text: string, maxAttempts = CLIPBOARD_WRITE_VERIFY_ATTEMPTS) => {
   const attempts = Math.max(1, maxAttempts)
 
   for (let attemptIndex = 0; attemptIndex < attempts; attemptIndex += 1) {
     clipboard.writeText(text)
+    writeClipboardWayland(text)
     sleepBlocking(CLIPBOARD_WRITE_VERIFY_DELAY_MS)
 
     if (clipboardMatches(text)) {
@@ -267,7 +361,7 @@ const runYdotoolPasteShortcut = (shortcut: AutoPasteShortcut) => {
 }
 
 const resolveLinuxPasteTool = (backend: AutoPasteBackend): LinuxPasteTool => {
-  if (backend === 'xdotools') {
+  if (backend === 'xdotool') {
     return 'xdotool'
   }
 
@@ -346,6 +440,7 @@ const executeLinuxPasteAttempt = (
 
   return null
 }
+
 
 const runLinuxStreamingPasteViaClipboard = (
   text: string,
@@ -654,9 +749,7 @@ export const performAutoPaste = (
   let result: AutoPasteExecutionResult
 
   if (process.platform === 'linux') {
-    result = normalizedOptions.mode === 'instant'
-      ? runLinuxInstantAutoPaste(text, backend, normalizedOptions.shortcut)
-      : runLinuxStreamingPasteViaClipboard(text, backend, normalizedOptions.shortcut)
+    result = runLinuxInstantAutoPaste(text, backend, normalizedOptions.shortcut)
   } else if (process.platform === 'darwin') {
     result = normalizedOptions.mode === 'instant'
       ? runMacInstantAutoPaste(text, normalizedOptions.shortcut)

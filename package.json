@@ -46,7 +46,7 @@
     "test": "tsx --test tests/**/*.test.ts"
   },
   "dependencies": {
-    "@lobehub/icons-static-svg": "^1.79.0",
+    "@lobehub/icons-static-svg": "^1.84.0",
     "@uiw/react-markdown-preview": "^5.1.5",
     "better-sqlite3": "^12.6.2",
     "clsx": "^2.1.1",

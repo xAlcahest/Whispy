@@ -34,6 +34,7 @@ import {
 } from '../shared/ipc'
 import { detectActiveApp } from './backend/active-app'
 import { performAutoPaste, cleanupYdotoolDaemon } from './backend/auto-paste'
+import { registerPortalShortcut, cleanupPortalShortcut, isPortalAvailable } from './backend/portal-shortcuts'
 import { DebugLogger } from './backend/debug-logger'
 import { DictationPipeline } from './backend/dictation-pipeline'
 import { DictationRuntime } from './backend/dictation-runtime'
@@ -45,13 +46,11 @@ import { UsageStatsService } from './backend/usage-stats'
 import { WhisperServerManager } from './backend/whisper-server'
 
 const linuxSessionType = process.env.XDG_SESSION_TYPE?.toLowerCase() ?? ''
-const linuxDesktopIdentity =
-  `${process.env.XDG_CURRENT_DESKTOP ?? process.env.XDG_SESSION_DESKTOP ?? process.env.DESKTOP_SESSION ?? ''}`.toLowerCase()
 const linuxWaylandSession = linuxSessionType === 'wayland' || Boolean(process.env.WAYLAND_DISPLAY)
 const linuxForceX11 =
   process.platform === 'linux' && linuxWaylandSession && process.env.WHISPY_FORCE_X11?.trim() === '1'
 const linuxRunningInDev = Boolean(process.env.ELECTRON_RENDERER_URL)
-const linuxDisableSandbox = process.platform === 'linux' && linuxRunningInDev && !app.isPackaged
+const linuxDisableSandbox = process.platform === 'linux' && linuxRunningInDev
 const linuxForceTmpSharedMemory = process.env.WHISPY_FORCE_TMP_SHM?.trim() === '1'
 const linuxDisableTmpSharedMemory = process.env.WHISPY_DISABLE_TMP_SHM?.trim() === '1'
 
@@ -434,7 +433,7 @@ const getCompositorName = () => {
 const WAYLAND_WTYPE_UNSUPPORTED_HINTS = ['gnome', 'kde', 'plasma', 'cinnamon', 'mate', 'unity', 'deepin']
 
 const WAYLAND_WTYPE_COMPATIBILITY_MESSAGE =
-  'wtype is available but may not be supported by this Wayland compositor. Try ydotools for broader compatibility.'
+  'wtype is available but may not be supported by this Wayland compositor. Try ydotool for broader compatibility.'
 
 const compositorLikelyUnsupportedForWtype = (compositorName: string) => {
   const normalized = compositorName.toLowerCase()
@@ -443,14 +442,14 @@ const compositorLikelyUnsupportedForWtype = (compositorName: string) => {
 
 const AUTO_PASTE_BINARY_BY_BACKEND = {
   wtype: 'wtype',
-  xdotools: 'xdotool',
-  ydotools: 'ydotool',
+  xdotool: 'xdotool',
+  ydotool: 'ydotool',
 } as const
 
 const AUTO_PASTE_PROBE_ARGS: Record<keyof typeof AUTO_PASTE_BINARY_BY_BACKEND, string[]> = {
   wtype: ['--help'],
-  xdotools: ['getmouselocation'],
-  ydotools: ['--help'],
+  xdotool: ['getmouselocation'],
+  ydotool: ['--help'],
 }
 
 const resolveCommandPath = (command: string) => {
@@ -1451,8 +1450,85 @@ const handleGlobalDictationHotkey = () => {
   })()
 }
 
-const registerGlobalDictationHotkey = (requestedHotkey: string): HotkeyRegistrationResult => {
+let portalShortcutActive = false
+
+const hotkeyToPortalTrigger = (hotkey: string) => {
+  return hotkey
+    .split('+')
+    .map((part) => part.trim())
+    .join('+')
+}
+
+const handlePortalShortcutChanged = (newTrigger: string) => {
+
+  logDebug('system-diagnostics', 'Portal shortcut changed by user', { newTrigger }, 'Hotkey')
+
+  const stateStore = ensureBackendStateStore()
+  const currentSettings = stateStore.getSnapshot().settings
+  if (currentSettings.hotkey !== newTrigger) {
+    stateStore.setSettings({ ...currentSettings, hotkey: newTrigger })
+    ensureSecretStore().setNonSecretSettings({ ...currentSettings, hotkey: newTrigger })
+    broadcast(IPCChannels.hotkeyEffectiveChanged, newTrigger)
+  }
+}
+
+interface PortalRegistrationResult {
+  registered: boolean
+  effectiveHotkey: string | null
+}
+
+const tryRegisterViaPortal = async (hotkey: string): Promise<PortalRegistrationResult> => {
+  if (!linuxWaylandSession) return { registered: false, effectiveHotkey: null }
+
+  try {
+    const available = await isPortalAvailable()
+    if (!available) return { registered: false, effectiveHotkey: null }
+
+    const trigger = hotkeyToPortalTrigger(hotkey)
+    const result = await registerPortalShortcut(
+      'toggle-dictation',
+      'Toggle Dictation',
+      trigger,
+      handleGlobalDictationHotkey,
+      handlePortalShortcutChanged,
+    )
+
+    if (result.registered) {
+      portalShortcutActive = true
+      logDebug('system-diagnostics', 'Global hotkey registered via XDG portal', {
+        requestedHotkey: hotkey,
+        assignedTrigger: result.assignedTrigger,
+      }, 'Hotkey')
+    }
+
+    return {
+      registered: result.registered,
+      effectiveHotkey: result.assignedTrigger,
+    }
+  } catch (error) {
+    logDebug('error-details', 'XDG portal shortcut registration failed', {
+      message: error instanceof Error ? error.message : String(error),
+    }, 'Hotkey')
+    return { registered: false, effectiveHotkey: null }
+  }
+}
+
+const registerGlobalDictationHotkey = async (requestedHotkey: string): Promise<HotkeyRegistrationResult> => {
   unregisterGlobalHotkey()
+
+  const useWaylandPortal = linuxWaylandSession && !linuxForceX11
+
+  if (useWaylandPortal) {
+    const portalResult = await tryRegisterViaPortal(requestedHotkey)
+    if (portalResult.registered) {
+      return {
+        requestedHotkey,
+        effectiveHotkey: portalResult.effectiveHotkey ?? requestedHotkey,
+        accelerator: portalResult.effectiveHotkey ?? requestedHotkey,
+      }
+    }
+    logDebug('system-diagnostics', 'XDG portal unavailable, falling back to globalShortcut', undefined, 'Hotkey')
+  }
 
   const requestedAccelerator = toElectronAccelerator(requestedHotkey)
   const requestedRegistrationAttempt = requestedAccelerator
@@ -1464,6 +1540,7 @@ const registerGlobalDictationHotkey = (requestedHotkey: string): HotkeyRegistrat
     logDebug('system-diagnostics', 'Global hotkey registered', {
       requestedHotkey,
       accelerator: requestedAccelerator,
+      method: useWaylandPortal ? 'globalShortcut-fallback' : 'globalShortcut',
     }, 'Hotkey')
     return {
       requestedHotkey,
@@ -1539,7 +1616,7 @@ const registerIPC = () => {
     configureLaunchAtLogin(settings)
     ensureDebugLogger().setEnabled(settings.debugModeEnabled)
 
-    const hotkeyRegistration = registerGlobalDictationHotkey(settings.hotkey)
+    const hotkeyRegistration = await registerGlobalDictationHotkey(settings.hotkey)
     if (hotkeyRegistration.effectiveHotkey !== settings.hotkey) {
       nextSettings = {
         ...settings,
@@ -2170,7 +2247,7 @@ app.whenReady().then(async () => {
   logDebug('system-diagnostics', 'Auto-paste backend check', startupDiagnostics.autoPaste, 'Dependencies')
   logDebug('system-diagnostics', 'Runtime snapshot', startupDiagnostics.whisperRuntime, 'Runtime')
 
-  const startupHotkeyRegistration = registerGlobalDictationHotkey(currentSettings.hotkey)
+  const startupHotkeyRegistration = await registerGlobalDictationHotkey(currentSettings.hotkey)
   let startupEffectiveSettings = currentSettings
   if (startupHotkeyRegistration.effectiveHotkey !== currentSettings.hotkey) {
     startupEffectiveSettings = {
@@ -2182,6 +2259,7 @@ app.whenReady().then(async () => {
       ...ensureBackendStateStore().getSnapshot().settings,
       hotkey: startupHotkeyRegistration.effectiveHotkey,
     })
+    broadcast(IPCChannels.hotkeyEffectiveChanged, startupHotkeyRegistration.effectiveHotkey)
   }
 
   ensureSecretStore().setNonSecretSettings(startupEffectiveSettings)
@@ -2211,5 +2289,6 @@ app.on('will-quit', () => {
   trayInstance = null
   void whisperServerManager?.stop()
   cleanupYdotoolDaemon()
+  void cleanupPortalShortcut()
   globalShortcut.unregisterAll()
 })

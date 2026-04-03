@@ -62,6 +62,7 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '../components/ui/dialog'
 import { Dropdown } from '../components/ui/dropdown'
 import { Input } from '../components/ui/input'
+import { ApiKeyInput } from '../components/ui/api-key-input'
 import { Switch } from '../components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 import { Textarea } from '../components/ui/textarea'
@@ -394,8 +395,8 @@ const createDictionaryRule = (): AppSettings['postProcessingDictionaryRules'][nu
 
 const AUTO_PASTE_BACKENDS: Array<{ id: AppSettings['autoPasteBackend']; label: string }> = [
   { id: 'wtype', label: 'wtype' },
-  { id: 'xdotools', label: 'xdotools' },
-  { id: 'ydotools', label: 'ydotools' },
+  { id: 'xdotool', label: 'xdotool' },
+  { id: 'ydotool', label: 'ydotool' },
 ]
 
 const OPENAI_COMPATIBLE_BASE_URL_BY_PROVIDER: Record<string, string> = {
@@ -425,7 +426,7 @@ const isAutoPasteSupportPayload = (value: unknown): value is AutoPasteBackendSup
 
     const parsed = status as { id?: unknown; available?: unknown; details?: unknown }
     return (
-      (parsed.id === 'wtype' || parsed.id === 'xdotools' || parsed.id === 'ydotools') &&
+      (parsed.id === 'wtype' || parsed.id === 'xdotool' || parsed.id === 'ydotool') &&
       typeof parsed.available === 'boolean' &&
       typeof parsed.details === 'string'
     )
@@ -2950,25 +2951,6 @@ const PreferencesSettingsPanel = ({
 
           <div className="grid gap-2 md:grid-cols-2">
             <div className="rounded-md border border-border-subtle bg-surface-1/70 px-2.5 py-2">
-              <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Paste mode</p>
-              <select
-                className="app-no-drag h-8 w-full rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 px-2 text-xs"
-                value={settings.autoPasteMode}
-                onChange={(event) => {
-                  onChange({ autoPasteMode: event.target.value as AppSettings['autoPasteMode'] })
-                }}
-              >
-                <option value="instant">Instant paste</option>
-                <option value="stream">Streaming typing</option>
-              </select>
-              <p className="mt-1 text-[11px] text-muted-foreground">
-                {settings.autoPasteMode === 'instant'
-                  ? 'Clipboard paste hotkey is sent to the focused app.'
-                  : 'Types characters sequentially with a very low key delay.'}
-              </p>
-            </div>
-
-            <div className="rounded-md border border-border-subtle bg-surface-1/70 px-2.5 py-2">
               <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Paste shortcut</p>
               <select
                 className="app-no-drag h-8 w-full rounded-[var(--radius-premium)] border border-border-subtle bg-surface-0 px-2 text-xs"
@@ -2978,12 +2960,11 @@ const PreferencesSettingsPanel = ({
                 }}
               >
                 <option value="ctrl-v">Ctrl+V</option>
-                <option value="ctrl-shift-v">Ctrl+Shift+V</option>
+                <option value="ctrl-shift-v">Ctrl+Shift+V (terminals)</option>
+                <option value="auto">Auto-detect</option>
               </select>
               <p className="mt-1 text-[11px] text-muted-foreground">
-                {settings.autoPasteMode === 'instant'
-                  ? 'Pick standard paste or terminal-safe paste.'
-                  : 'Shortcut selection is used only in Instant mode.'}
+                Auto-detect uses Ctrl+Shift+V for terminals and Ctrl+V for everything else.
               </p>
             </div>
           </div>
@@ -3055,7 +3036,7 @@ const PreferencesSettingsPanel = ({
             return (
             <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-destructive">
               <p className="text-sm font-semibold">ERROR</p>
-              <p className="mt-1 text-xs">Your compositor ({compositorName}) does not support wtype. Use ydotools instead.</p>
+              <p className="mt-1 text-xs">Your compositor ({compositorName}) does not support wtype. Use ydotool instead.</p>
             </div>
             )
           })()}
@@ -4331,6 +4312,7 @@ const ModelsSection = ({
                   >
                     {renderProviderIcon(provider.providerId)}
                     {provider.providerLabel}
+                    {active && <span className="text-xs font-medium text-primary px-1.5 py-0.5 bg-primary/10 rounded-sm">Active</span>}
                   </button>
                 )
               })}
@@ -4491,17 +4473,12 @@ const ModelsSection = ({
             ) : (
               <div className="space-y-3">
                 <div className="max-w-md space-y-1.5">
-                  <div className="space-y-1.5">
-                    <p className="text-sm font-medium">API key</p>
-                    <Input
-                      type="password"
-                      value={getTranscriptionApiKey(selectedTranscriptionProvider.providerId)}
-                      onChange={(event) => {
-                        setTranscriptionApiKey(selectedTranscriptionProvider.providerId, event.target.value)
-                      }}
-                      placeholder={`Enter ${selectedTranscriptionProvider.providerLabel} API key`}
-                    />
-                  </div>
+                  <ApiKeyInput
+                    apiKey={getTranscriptionApiKey(selectedTranscriptionProvider.providerId)}
+                    setApiKey={(value) => setTranscriptionApiKey(selectedTranscriptionProvider.providerId, value)}
+                    placeholder={`Enter ${selectedTranscriptionProvider.providerLabel} API key`}
+                    label="API key"
+                  />
                   {transcriptionApiKeyDocsUrl ? (
                     <p className="text-xs text-muted-foreground">
                       If you want to create and use an API key here, use{' '}
@@ -4820,6 +4797,7 @@ const ModelsSection = ({
                   >
                     {renderProviderIcon(provider.providerId)}
                     {provider.providerLabel}
+                    {active && <span className="text-xs font-medium text-primary px-1.5 py-0.5 bg-primary/10 rounded-sm">Active</span>}
                   </button>
                 )
               })}
@@ -4948,17 +4926,12 @@ const ModelsSection = ({
             ) : (
               <div className="space-y-3">
                 <div className="max-w-md space-y-1.5">
-                  <div className="space-y-1.5">
-                    <p className="text-sm font-medium">API key</p>
-                    <Input
-                      type="password"
-                      value={getPostProcessingApiKey(selectedPostProcessingProvider.providerId)}
-                      onChange={(event) => {
-                        setPostProcessingApiKey(selectedPostProcessingProvider.providerId, event.target.value)
-                      }}
-                      placeholder={`Enter ${selectedPostProcessingProvider.providerLabel} API key`}
-                    />
-                  </div>
+                  <ApiKeyInput
+                    apiKey={getPostProcessingApiKey(selectedPostProcessingProvider.providerId)}
+                    setApiKey={(value) => setPostProcessingApiKey(selectedPostProcessingProvider.providerId, value)}
+                    placeholder={`Enter ${selectedPostProcessingProvider.providerLabel} API key`}
+                    label="API key"
+                  />
                   {postProcessingApiKeyDocsUrl ? (
                     <p className="text-xs text-muted-foreground">
                       If you want to create and use an API key here, use{' '}
@@ -6946,10 +6919,18 @@ const ControlPanelScene = () => {
       })
     })
 
+    const offHotkeyChanged = electronAPI.onHotkeyEffectiveChanged((newHotkey) => {
+      setSettings((current) => ({
+        ...current,
+        hotkey: newHotkey,
+      }))
+    })
+
     return () => {
       offAutoHide()
       offFailure()
       offFallback()
+      offHotkeyChanged()
     }
   }, [pushToast])
 

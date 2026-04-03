@@ -251,6 +251,25 @@ const resolvePricingForModel = (
   return null
 }
 
+const AUDIO_MODEL_FALLBACK_PRICING: Record<string, LiteLLMModelPricing> = {
+  'whisper-large-v3-turbo': { input_cost_per_token: 0.000004, output_cost_per_token: 0 },
+  'whisper-large-v3': { input_cost_per_token: 0.000004, output_cost_per_token: 0 },
+  'whisper-1': { input_cost_per_token: 0.000006, output_cost_per_token: 0 },
+  'distil-whisper-large-v3-en': { input_cost_per_token: 0.000002, output_cost_per_token: 0 },
+}
+
+const resolvePricingWithFallback = (
+  modelId: string,
+  pricingMap: Map<string, LiteLLMModelPricing>,
+  pricingLowerMap: Map<string, LiteLLMModelPricing>,
+): LiteLLMModelPricing | null => {
+  const litellmResult = resolvePricingForModel(modelId, pricingMap, pricingLowerMap)
+  if (litellmResult) return litellmResult
+
+  const baseId = modelId.split('/').at(-1)?.toLowerCase() ?? modelId.toLowerCase()
+  return AUDIO_MODEL_FALLBACK_PRICING[baseId] ?? null
+}
+
 const calculateTieredTokenCost = (
   tokenCount: number,
   basePrice: number | undefined,
@@ -315,7 +334,7 @@ export class UsageStatsService {
     const activeEnhancementModel =
       (settings.postProcessingRuntime === 'cloud' ? settings.postProcessingCloudModelId : settings.postProcessingLocalModelId).trim() ||
       'unknown-model'
-    const activeEnhancementPricing = resolvePricingForModel(
+    const activeEnhancementPricing = resolvePricingWithFallback(
       activeEnhancementModel,
       pricingCatalog.models,
       pricingCatalog.modelsLower,
@@ -332,8 +351,8 @@ export class UsageStatsService {
         const scopedModelId = usage.model
         const baseModelId = extractModelIdFromScopedLabel(scopedModelId)
         const pricing =
-          resolvePricingForModel(baseModelId, pricingCatalog.models, pricingCatalog.modelsLower) ??
-          resolvePricingForModel(scopedModelId, pricingCatalog.models, pricingCatalog.modelsLower)
+          resolvePricingWithFallback(baseModelId, pricingCatalog.models, pricingCatalog.modelsLower) ??
+          resolvePricingWithFallback(scopedModelId, pricingCatalog.models, pricingCatalog.modelsLower)
         const costUSD = pricing ? calculateCostFromPricing(pricing, usage.inputTokens, usage.outputTokens) : 0
 
         modelInputCostPerTokenById[scopedModelId] = pricing?.input_cost_per_token ?? null

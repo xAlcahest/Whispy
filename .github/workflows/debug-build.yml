@@ -1,0 +1,77 @@
+name: Debug Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Platform to build
+        required: true
+        type: choice
+        options:
+          - both
+          - linux
+          - windows
+
+jobs:
+  build-linux:
+    name: Build Linux (debug)
+    if: inputs.platform == 'both' || inputs.platform == 'linux'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Build
+        run: npm run build:linux
+
+      - name: Package
+        run: npx electron-builder --linux AppImage tar.gz
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-linux-${{ github.sha }}
+          path: |
+            dist/*.AppImage
+            dist/*.tar.gz
+          retention-days: 7
+
+  build-windows:
+    name: Build Windows (debug)
+    if: inputs.platform == 'both' || inputs.platform == 'windows'
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Build
+        run: npm run build:win
+
+      - name: Package
+        run: npx electron-builder --win nsis
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-windows-${{ github.sha }}
+          path: |
+            dist/*.exe
+          retention-days: 7

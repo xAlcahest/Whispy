@@ -263,7 +263,7 @@ export class DictationRuntime {
     if (this.recordingSession) {
       try {
         this.recordingSession.stop()
-      } catch {}
+      } catch { /* stop may throw if already stopped */ }
       this.recordingSession = null
     }
 

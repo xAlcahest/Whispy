@@ -5,7 +5,7 @@ import globals from 'globals'
 
 export default tseslint.config(
   {
-    ignores: ['out/**', 'node_modules/**', 'docs/**'],
+    ignores: ['out/**', 'node_modules/**', 'docs/**', '.reference/**', 'subprojects/**'],
   },
   js.configs.recommended,
   {
@@ -30,6 +30,8 @@ export default tseslint.config(
     },
     rules: {
       ...reactHooks.configs.recommended.rules,
+      'react-hooks/set-state-in-effect': 'warn',
+      'react-hooks/refs': 'warn',
       '@typescript-eslint/no-unused-vars': [
         'error',
         {

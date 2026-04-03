@@ -796,7 +796,7 @@ const COLLAPSED_LIST_COUNT = 5
 const generateNoteTitleFromContent = (content: string) => {
   const normalized = content
     .replace(/`{1,3}[^`]*`{1,3}/g, ' ')
-    .replace(/[>#*_~\-]+/g, ' ')
+    .replace(/[>#*_~-]+/g, ' ')
     .replace(/\[[^\]]+\]\([^)]+\)/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()

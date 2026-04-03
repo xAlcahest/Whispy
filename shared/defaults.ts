@@ -118,7 +118,7 @@ export const createDefaultPostModelState = (): ModelState[] => {
 }
 
 const VALID_AUTO_PASTE_BACKENDS = new Set(['wtype', 'xdotool', 'ydotool'])
-const VALID_AUTO_PASTE_MODES = new Set(['instant', 'stream'])
+const VALID_AUTO_PASTE_MODES = new Set(['instant'])
 const VALID_AUTO_PASTE_SHORTCUTS = new Set(['ctrl-v', 'ctrl-shift-v', 'auto'])
 const VALID_WHISPER_RUNTIME_VARIANTS = new Set(['cpu', 'cuda'])
 const VALID_HISTORY_RETENTION_LIMITS = new Set([50, 100, 250, 500, -1])

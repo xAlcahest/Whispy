@@ -1988,7 +1988,6 @@ const registerIPC = () => {
       text: string,
       backend: AppSettings['autoPasteBackend'],
       options?: {
-        mode?: AppSettings['autoPasteMode']
         shortcut?: AppSettings['autoPasteShortcut']
       },
     ): Promise<AutoPasteExecutionResult> => {
@@ -1998,15 +1997,12 @@ const registerIPC = () => {
 
       const sanitizedText = text.slice(0, 100_000)
       const settings = await loadCurrentSettings()
-      const selectedMode = options?.mode === 'instant' ? 'instant' : settings.autoPasteMode
-      const selectedShortcut = options?.shortcut === 'ctrl-shift-v' ? 'ctrl-shift-v' : settings.autoPasteShortcut
+      const selectedShortcut = options?.shortcut ?? settings.autoPasteShortcut
       const result = performAutoPaste(sanitizedText, backend, {
-        mode: selectedMode,
         shortcut: selectedShortcut,
       })
       logDebug('system-diagnostics', 'Auto-paste execution result', {
         backend,
-        mode: selectedMode,
         shortcut: selectedShortcut,
         success: result.success,
         elapsedMs: result.elapsedMs,

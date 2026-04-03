@@ -3483,11 +3483,6 @@ const FaqSection = () => {
         'Pricing data is cached and reused for performance, then refreshed on demand (Refresh button) or when cache expires. This prevents noisy network calls and improves responsiveness.',
     },
     {
-      question: 'What is the difference between Auto-paste Instant and Streaming?',
-      answer:
-        'Instant updates clipboard and sends a paste shortcut. Streaming injects text progressively with very low delay, preserving spaces/newlines while improving reliability for long inputs.',
-    },
-    {
       question: 'Which paste shortcut should I use?',
       answer:
         'Use Ctrl+V for standard editors. Use Ctrl+Shift+V for terminals and apps that expect plain-text paste. You can switch this in Preferences at any time.',

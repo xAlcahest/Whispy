@@ -8338,130 +8338,68 @@ const ControlPanelScene = () => {
 
               <div className="my-3 h-px bg-border-subtle/80" />
 
-              <div className="space-y-2.5">
+              <div className="space-y-2">
                 <div className="rounded-md border border-border-subtle bg-surface-0 px-2.5 py-2">
-                  <div className="mb-2 flex items-center justify-between gap-2">
+                  <div className="mb-1.5 flex items-center justify-between gap-2">
                     <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-foreground/55">Dictations</p>
                     <button
                       type="button"
                       className="app-no-drag text-[10px] text-primary/90 hover:text-primary disabled:cursor-not-allowed disabled:opacity-45"
                       disabled={usageStatsLoading}
-                      onClick={() => {
-                        void refreshUsageStats(true)
-                      }}
+                      onClick={() => { void refreshUsageStats(true) }}
                     >
                       {usageStatsLoading ? '...' : 'Refresh'}
                     </button>
                   </div>
-                  <div className="space-y-1.5 text-[11px] text-foreground/80">
-                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                      <span className="text-foreground/55">Count</span>
-                      <span className="font-medium tabular-nums whitespace-nowrap">{conversationsTotalLabel}</span>
-                    </div>
+                  <div className="space-y-1 text-[11px] text-foreground/80">
                     <div className="grid grid-cols-[1fr_auto] items-center gap-2">
                       <span className="text-foreground/55">Recorded</span>
                       <span className="font-medium tabular-nums whitespace-nowrap">{formatDurationCompact(dictationAggregate.durationSecondsTotal)}</span>
                     </div>
                     <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                      <span className="text-foreground/55">Minutes / Hours</span>
-                      <span className="font-medium tabular-nums whitespace-nowrap">
-                        {dictationAggregate.durationMinutesTotal}m / {dictationAggregate.durationHoursTotal}h
-                      </span>
+                      <span className="text-foreground/55">Words / Tokens</span>
+                      <span className="font-medium tabular-nums whitespace-nowrap">{formatCount(dictationAggregate.wordsTotal)} / ~{formatCount(dictationAggregate.tokensTotal)}</span>
                     </div>
+                    {dictationAggregate.enhancedCount > 0 && (
+                      <div className="grid grid-cols-[1fr_auto] items-center gap-2">
+                        <span className="text-foreground/55">Enhanced</span>
+                        <span className="font-medium tabular-nums whitespace-nowrap">{formatCount(dictationAggregate.enhancedCount)}</span>
+                      </div>
+                    )}
                     <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                      <span className="text-foreground/55">Words</span>
-                      <span className="font-medium tabular-nums whitespace-nowrap">{formatCount(dictationAggregate.wordsTotal)}</span>
-                    </div>
-                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                      <span className="text-foreground/55">Tokens</span>
-                      <span className="font-medium tabular-nums whitespace-nowrap">~{formatCount(dictationAggregate.tokensTotal)}</span>
-                    </div>
-                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                      <span className="text-foreground/55">Enhanced dictations</span>
-                      <span className="font-medium tabular-nums whitespace-nowrap">{formatCount(dictationAggregate.enhancedCount)}</span>
-                    </div>
-                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                      <span className="text-foreground/55">Enhanced words/tokens</span>
-                      <span className="font-medium tabular-nums whitespace-nowrap">
-                        {formatCount(dictationAggregate.enhancedWordsTotal)} / ~{formatCount(dictationAggregate.enhancedTokensTotal)}
-                      </span>
-                    </div>
-                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                      <span className="text-foreground/55">Dictation estimate</span>
+                      <span className="text-foreground/55">Cost</span>
                       <span className="font-semibold tabular-nums whitespace-nowrap">{formatCurrency(transcriptionEstimate)}</span>
                     </div>
-                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                      <span className="text-foreground/55">Post-processing enhance spent</span>
-                      <span className="font-semibold tabular-nums whitespace-nowrap">{formatCurrency(dictationEnhancementEstimate)}</span>
-                    </div>
                   </div>
-                  <p className="mt-2 text-[10px] text-muted-foreground">Duration prefers measured recording time; fallback is words-per-minute estimation.</p>
                 </div>
 
                 <div className="rounded-md border border-border-subtle bg-surface-0 px-2.5 py-2">
-                  <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-foreground/55">Notes</p>
-                  <div className="space-y-1.5 text-[11px] text-foreground/80">
+                  <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-foreground/55">Notes</p>
+                  <div className="space-y-1 text-[11px] text-foreground/80">
                     <div className="grid grid-cols-[1fr_auto] items-center gap-2">
                       <span className="text-foreground/55">Count</span>
                       <span className="font-medium tabular-nums whitespace-nowrap">{notesTotalLabel}</span>
                     </div>
+                    {notesAggregate.enhancedNotesCount > 0 && (
+                      <div className="grid grid-cols-[1fr_auto] items-center gap-2">
+                        <span className="text-foreground/55">Enhanced</span>
+                        <span className="font-medium tabular-nums whitespace-nowrap">{formatCount(notesAggregate.enhancedNotesCount)}</span>
+                      </div>
+                    )}
                     <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                      <span className="text-foreground/55">Post-processing</span>
-                      <span
-                        className={cn(
-                          'font-medium whitespace-nowrap',
-                          settings.postProcessingEnabled ? 'text-emerald-300' : 'text-amber-300',
-                        )}
-                      >
-                        {settings.postProcessingEnabled ? 'Enabled' : 'Disabled (N/A new runs)'}
-                      </span>
-                    </div>
-                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                      <span className="text-foreground/55">Enhanced notes (post-process)</span>
-                      <span className="font-medium tabular-nums whitespace-nowrap">{formatCount(notesAggregate.enhancedNotesCount)}</span>
-                    </div>
-                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                      <span className="text-foreground/55">Enhanced words</span>
-                      <span className="font-medium tabular-nums whitespace-nowrap">{formatCount(notesAggregate.enhancedWordsTotal)}</span>
-                    </div>
-                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                      <span className="text-foreground/55">Enhanced tokens</span>
-                      <span className="font-medium tabular-nums whitespace-nowrap">~{formatCount(notesAggregate.enhancedTokensTotal)}</span>
-                    </div>
-                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                      <span className="text-foreground/55">Draft-only notes</span>
-                      <span className="font-medium tabular-nums whitespace-nowrap">{formatCount(notesAggregate.draftNotesCount)}</span>
-                    </div>
-                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                      <span className="text-foreground/55">Post-processing enhance spent</span>
+                      <span className="text-foreground/55">Cost</span>
                       <span className="font-semibold tabular-nums whitespace-nowrap">
                         {settings.postProcessingEnabled ? formatCurrency(notesEstimate) : 'N/A'}
                       </span>
                     </div>
-                    {!settings.postProcessingEnabled ? (
-                      <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                        <span className="text-foreground/55">Historical enhanced spent</span>
-                        <span className="font-semibold tabular-nums whitespace-nowrap">{formatCurrency(notesEstimate)}</span>
-                      </div>
-                    ) : null}
                   </div>
-                  <p className="mt-2 text-[10px] text-muted-foreground">Spend counts only notes with Enhanced output, not drafts.</p>
                 </div>
 
-                <div className="rounded-md border border-border-subtle bg-surface-0 px-2.5 py-2">
-                  <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-foreground/55">Cost source</p>
-                  <div className="space-y-1.5 text-[11px] text-foreground/80">
-                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                      <span className="text-foreground/55">Source</span>
-                      <span className={cn('font-semibold whitespace-nowrap', sourceStatusClass)}>{sourceStatusLabel}</span>
-                    </div>
-                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                      <span className="text-foreground/55">Overall $ used</span>
-                      <span className="font-semibold tabular-nums whitespace-nowrap text-foreground">{formatCurrency(overallUsedCost)}</span>
-                    </div>
-                    {usageStats?.litellmError ? <div className="text-[10px] text-red-300/90">{usageStats.litellmError}</div> : null}
-                  </div>
+                <div className="flex items-center justify-between gap-2 rounded-md border border-border-subtle bg-surface-0 px-2.5 py-1.5 text-[11px]">
+                  <span className="text-foreground/55">Total spent</span>
+                  <span className="font-semibold tabular-nums whitespace-nowrap text-foreground">{formatCurrency(overallUsedCost)}</span>
                 </div>
+                {usageStats?.litellmError && <p className="px-1 text-[10px] text-red-300/90">{usageStats.litellmError}</p>}
               </div>
 
               <div className="mt-auto space-y-1.5 border-t border-border-subtle/80 pt-3">

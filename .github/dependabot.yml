@@ -1,0 +1,37 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    reviewers:
+      - xAlcahest
+    labels:
+      - dependencies
+    groups:
+      electron:
+        patterns:
+          - electron*
+          - "@electron*"
+      react:
+        patterns:
+          - react*
+          - "@types/react*"
+      dev-tools:
+        patterns:
+          - eslint*
+          - prettier*
+          - typescript*
+          - vite*
+          - tailwindcss*
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - ci

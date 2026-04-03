@@ -5159,6 +5159,7 @@ const PromptsSection = ({ settings, onChange }: PromptsSectionProps) => {
   const { pushToast } = useToast()
   const [view, setView] = useState<PromptView>('preview')
   const [testInput, setTestInput] = useState('')
+  const [testRoute, setTestRoute] = useState<'auto' | 'normal' | 'translation'>('auto')
   const [testOutput, setTestOutput] = useState('')
   const [testLoading, setTestLoading] = useState(false)
   const [customizeTarget, setCustomizeTarget] = useState<'normal' | 'agent' | 'translation'>('agent')
@@ -5258,11 +5259,18 @@ const PromptsSection = ({ settings, onChange }: PromptsSectionProps) => {
       return
     }
 
+    if (testRoute === 'translation') {
+      setTestOutput(
+        `Route: Translation prompt\n\nSource: ${settings.translationSourceLanguage}\nTarget: ${settings.translationTargetLanguage}\nHotkey: ${translationHotkey}\n\nTemplate:\n${settings.translationPrompt}\n\nInput:\n${testInput}`,
+      )
+      return
+    }
+
     const normalizedAgent = settings.agentName.trim().toLowerCase()
-    const usesAgentRoute = normalizedAgent.length > 0 && testInput.toLowerCase().includes(normalizedAgent)
+    const usesAgentRoute = testRoute === 'auto' && normalizedAgent.length > 0 && testInput.toLowerCase().includes(normalizedAgent)
 
     const usesTranslationRoute =
-      settings.translationModeEnabled && testInput.trim().toLowerCase().startsWith('translate:')
+      testRoute === 'auto' && settings.translationModeEnabled && testInput.trim().toLowerCase().startsWith('translate:')
 
     if (usesTranslationRoute) {
       setTestOutput(
@@ -5403,14 +5411,30 @@ const PromptsSection = ({ settings, onChange }: PromptsSectionProps) => {
               </TabsContent>
 
               <TabsContent value="test" className="space-y-3 p-4">
+                <div className="flex items-center gap-3">
+                  <div className="flex-1 space-y-1.5">
+                    <p className="text-sm font-medium">Test input</p>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-[11px] text-muted-foreground">Route</p>
+                    <select
+                      className="h-7 rounded-md border border-border-subtle bg-surface-0 px-2 text-xs"
+                      value={testRoute}
+                      onChange={(e) => setTestRoute(e.target.value as 'auto' | 'normal' | 'translation')}
+                    >
+                      <option value="auto">Auto-detect</option>
+                      <option value="normal">Normal</option>
+                      <option value="translation">Translation</option>
+                    </select>
+                  </div>
+                </div>
                 <div className="space-y-1.5">
-                  <p className="text-sm font-medium">Test input</p>
                   <Textarea
                     value={testInput}
                     onChange={(event) => {
                       setTestInput(event.target.value)
                     }}
-                    placeholder={`Try text with "${settings.agentName || 'Agent'}" or prefix with "translate:".`}
+                    placeholder={testRoute === 'translation' ? 'Enter text to translate...' : `Try text with "${settings.agentName || 'Agent'}" or prefix with "translate:".`}
                     className="min-h-28"
                   />
                 </div>

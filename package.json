@@ -48,7 +48,7 @@
   "dependencies": {
     "@lobehub/icons-static-svg": "^1.84.0",
     "@uiw/react-markdown-preview": "^5.1.5",
-    "better-sqlite3": "^12.6.2",
+    "better-sqlite3": "^12.8.0",
     "clsx": "^2.1.1",
     "get-windows": "^9.3.0",
     "lucide-react": "^0.475.0",

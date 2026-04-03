@@ -1931,6 +1931,8 @@ const registerIPC = () => {
         mode: selectedMode,
         shortcut: selectedShortcut,
         success: result.success,
+        elapsedMs: result.elapsedMs,
+        textLength: sanitizedText.length,
         details: result.details,
       })
       return result

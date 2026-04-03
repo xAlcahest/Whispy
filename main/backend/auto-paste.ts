@@ -7,6 +7,7 @@ let trackedYdotooldProcess: ChildProcess | null = null
 export interface AutoPasteExecutionResult {
   success: boolean
   details: string
+  elapsedMs?: number
 }
 
 export interface AutoPasteOptions {
@@ -647,36 +648,32 @@ export const performAutoPaste = (
     }
   }
 
+  const startTime = Date.now()
   const normalizedOptions = normalizeAutoPasteOptions(options)
 
+  let result: AutoPasteExecutionResult
+
   if (process.platform === 'linux') {
-    if (normalizedOptions.mode === 'instant') {
-      return runLinuxInstantAutoPaste(text, backend, normalizedOptions.shortcut)
+    result = normalizedOptions.mode === 'instant'
+      ? runLinuxInstantAutoPaste(text, backend, normalizedOptions.shortcut)
+      : runLinuxStreamingPasteViaClipboard(text, backend, normalizedOptions.shortcut)
+  } else if (process.platform === 'darwin') {
+    result = normalizedOptions.mode === 'instant'
+      ? runMacInstantAutoPaste(text, normalizedOptions.shortcut)
+      : runMacStreamingAutoPaste(text)
+  } else if (process.platform === 'win32') {
+    result = normalizedOptions.mode === 'instant'
+      ? runWindowsInstantAutoPaste(text, normalizedOptions.shortcut)
+      : runWindowsStreamingAutoPaste(text)
+  } else {
+    return {
+      success: false,
+      details: `Auto-paste not supported on platform: ${process.platform}`,
     }
-
-    return runLinuxStreamingPasteViaClipboard(text, backend, normalizedOptions.shortcut)
   }
 
-  if (process.platform === 'darwin') {
-    if (normalizedOptions.mode === 'instant') {
-      return runMacInstantAutoPaste(text, normalizedOptions.shortcut)
-    }
-
-    return runMacStreamingAutoPaste(text)
-  }
-
-  if (process.platform === 'win32') {
-    if (normalizedOptions.mode === 'instant') {
-      return runWindowsInstantAutoPaste(text, normalizedOptions.shortcut)
-    }
-
-    return runWindowsStreamingAutoPaste(text)
-  }
-
-  return {
-    success: false,
-    details: `Auto-paste not supported on platform: ${process.platform}`,
-  }
+  result.elapsedMs = Date.now() - startTime
+  return result
 }
 
 export const cleanupYdotoolDaemon = () => {

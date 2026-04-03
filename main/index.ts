@@ -1450,8 +1450,6 @@ const handleGlobalDictationHotkey = () => {
   })()
 }
 
-let portalShortcutActive = false
-
 const hotkeyToPortalTrigger = (hotkey: string) => {
   return hotkey
     .split('+')
@@ -1494,7 +1492,7 @@ const tryRegisterViaPortal = async (hotkey: string): Promise<PortalRegistrationR
     )
 
     if (result.registered) {
-      portalShortcutActive = true
+
       logDebug('system-diagnostics', 'Global hotkey registered via XDG portal', {
         requestedHotkey: hotkey,
         assignedTrigger: result.assignedTrigger,

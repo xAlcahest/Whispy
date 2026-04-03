@@ -1,4 +1,7 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { clipboard } from 'electron'
 import type { AutoPasteBackend, AutoPasteMode, AutoPasteShortcut } from '../../shared/app'
 
@@ -42,9 +45,6 @@ let kwinScriptId: string | null = null
 const getKwinActiveWindowClass = (): string | null => {
   try {
     if (!kwinScriptPath) {
-      const { join } = require('node:path') as typeof import('node:path')
-      const { writeFileSync, mkdirSync } = require('node:fs') as typeof import('node:fs')
-      const { tmpdir } = require('node:os') as typeof import('node:os')
       const dir = join(tmpdir(), 'whispy-kwin')
       mkdirSync(dir, { recursive: true })
       kwinScriptPath = join(dir, 'active-window.js')
@@ -63,7 +63,6 @@ const getKwinActiveWindowClass = (): string | null => {
     }
 
     const marker = `WHISPY_${Date.now()}`
-    const { writeFileSync } = require('node:fs') as typeof import('node:fs')
     writeFileSync(kwinScriptPath, `console.info("${marker}:" + (workspace.activeWindow ? workspace.activeWindow.resourceClass : "unknown"))`)
     kwinScriptId = null
 
@@ -133,11 +132,6 @@ interface LinuxPastePlan {
   setupError: string | null
 }
 
-const STREAM_CLIPBOARD_CHUNK_SIZE = 72
-const STREAM_CLIPBOARD_STEP_DELAY_MS = 8
-const STREAM_CLIPBOARD_YIELD_INTERVAL = 24
-const STREAM_CLIPBOARD_YIELD_DELAY_MS = 16
-const STREAM_CLIPBOARD_CHUNK_RETRIES = 2
 const CLIPBOARD_WRITE_VERIFY_ATTEMPTS = 3
 const CLIPBOARD_WRITE_VERIFY_DELAY_MS = 10
 const LINUX_PASTE_SHORTCUT_DELAY_MS = 40
@@ -298,46 +292,6 @@ const ensureYdotoolDaemonReady = (): YdotoolReadyResult => {
   }
 }
 
-const chunkTextForStreamingPaste = (text: string) => {
-  const tokens = text.split(/(\s+)/)
-  const chunks: string[] = []
-  let currentChunk = ''
-
-  const flushChunk = () => {
-    if (!currentChunk) {
-      return
-    }
-
-    chunks.push(currentChunk)
-    currentChunk = ''
-  }
-
-  for (const token of tokens) {
-    if (!token) {
-      continue
-    }
-
-    if (token.length > STREAM_CLIPBOARD_CHUNK_SIZE) {
-      flushChunk()
-      const characters = Array.from(token)
-      for (let index = 0; index < characters.length; index += STREAM_CLIPBOARD_CHUNK_SIZE) {
-        chunks.push(characters.slice(index, index + STREAM_CLIPBOARD_CHUNK_SIZE).join(''))
-      }
-      continue
-    }
-
-    if (currentChunk.length + token.length > STREAM_CLIPBOARD_CHUNK_SIZE) {
-      flushChunk()
-    }
-
-    currentChunk += token
-  }
-
-  flushChunk()
-
-  return chunks.length > 0 ? chunks : ['']
-}
-
 const runXdotoolPasteShortcut = (shortcut: AutoPasteShortcut) => {
   const keyCombo = shortcut === 'ctrl-shift-v' ? 'ctrl+shift+v' : 'ctrl+v'
   return runCommand('xdotool', ['key', '--clearmodifiers', keyCombo])
@@ -441,105 +395,6 @@ const executeLinuxPasteAttempt = (
   return null
 }
 
-
-const runLinuxStreamingPasteViaClipboard = (
-  text: string,
-  backend: AutoPasteBackend,
-  shortcut: AutoPasteShortcut,
-): AutoPasteExecutionResult => {
-  const manualPasteShortcut = formatManualPasteShortcut(shortcut, 'linux')
-  const previousClipboardText = clipboard.readText()
-
-  if (!writeClipboardReliably(text)) {
-    clipboard.writeText(text)
-    return {
-      success: false,
-      details: `Unable to verify clipboard write for streaming mode. Text was copied to clipboard; paste manually with ${manualPasteShortcut}.`,
-    }
-  }
-
-  const plan = buildLinuxPasteShortcutAttempts(backend, shortcut)
-  const attempts = plan.attempts
-  if (attempts.length === 0) {
-    return {
-      success: false,
-      details:
-        `${plan.setupError ?? 'Streaming paste unavailable for selected backend.'} ` +
-        `Text was copied to clipboard; paste manually with ${manualPasteShortcut}.`,
-    }
-  }
-
-  let selectedAttempt: LinuxPasteAttempt | null = null
-
-  try {
-    const chunks = chunkTextForStreamingPaste(text)
-
-    for (let index = 0; index < chunks.length; index += 1) {
-      const chunk = chunks[index] ?? ''
-      if (!writeClipboardReliably(chunk)) {
-        writeClipboardReliably(text)
-        return {
-          success: false,
-          details: `Streaming paste failed while preparing chunk ${index + 1}/${chunks.length}. Full text remains copied; paste manually with ${manualPasteShortcut}.`,
-        }
-      }
-
-      if (LINUX_PASTE_SHORTCUT_DELAY_MS > 0) {
-        sleepBlocking(LINUX_PASTE_SHORTCUT_DELAY_MS)
-      }
-
-      let successfulAttempt: LinuxPasteAttempt | null = null
-      for (let retryIndex = 0; retryIndex <= STREAM_CLIPBOARD_CHUNK_RETRIES; retryIndex += 1) {
-        successfulAttempt = executeLinuxPasteAttempt(attempts, selectedAttempt)
-        if (successfulAttempt) {
-          break
-        }
-
-        sleepBlocking(2)
-      }
-
-      if (!successfulAttempt) {
-        writeClipboardReliably(text)
-        return {
-          success: false,
-          details:
-            `Streaming paste failed while sending chunk ${index + 1}/${chunks.length}. ` +
-            `Full text remains copied to clipboard; paste manually with ${manualPasteShortcut}.`,
-        }
-      }
-
-      selectedAttempt = successfulAttempt
-
-      if (index < chunks.length - 1) {
-        if (STREAM_CLIPBOARD_STEP_DELAY_MS > 0) {
-          sleepBlocking(STREAM_CLIPBOARD_STEP_DELAY_MS)
-        } else if ((index + 1) % STREAM_CLIPBOARD_YIELD_INTERVAL === 0) {
-          sleepBlocking(STREAM_CLIPBOARD_YIELD_DELAY_MS)
-        }
-      }
-    }
-
-    if (LINUX_CLIPBOARD_RESTORE_DELAY_MS > 0) {
-      sleepBlocking(LINUX_CLIPBOARD_RESTORE_DELAY_MS)
-    }
-
-    writeClipboardReliably(previousClipboardText, 2)
-
-    return {
-      success: true,
-      details: `Text streamed via clipboard chunks and ${selectedAttempt?.backend ?? 'paste shortcut'} (${shortcut === 'ctrl-shift-v' ? 'Ctrl+Shift+V' : 'Ctrl+V'}).`,
-    }
-  } catch (error: unknown) {
-    writeClipboardReliably(text)
-    const reason = error instanceof Error ? error.message : String(error)
-    return {
-      success: false,
-      details:
-        `Streaming paste raised an unexpected error (${reason}). ` +
-        `Text was copied to clipboard; paste manually with ${manualPasteShortcut}.`,
-    }
-  }
-}
 
 const runLinuxInstantAutoPaste = (
   text: string,

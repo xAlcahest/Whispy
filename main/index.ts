@@ -49,7 +49,7 @@ const linuxDesktopIdentity =
   `${process.env.XDG_CURRENT_DESKTOP ?? process.env.XDG_SESSION_DESKTOP ?? process.env.DESKTOP_SESSION ?? ''}`.toLowerCase()
 const linuxWaylandSession = linuxSessionType === 'wayland' || Boolean(process.env.WAYLAND_DISPLAY)
 const linuxForceX11 =
-  process.platform === 'linux' && linuxWaylandSession && (linuxDesktopIdentity.includes('kde') || linuxDesktopIdentity.includes('plasma'))
+  process.platform === 'linux' && linuxWaylandSession && process.env.WHISPY_FORCE_X11?.trim() === '1'
 const linuxRunningInDev = Boolean(process.env.ELECTRON_RENDERER_URL)
 const linuxDisableSandbox = process.platform === 'linux' && linuxRunningInDev && !app.isPackaged
 const linuxForceTmpSharedMemory = process.env.WHISPY_FORCE_TMP_SHM?.trim() === '1'
@@ -89,6 +89,9 @@ if (process.platform === 'linux') {
   if (linuxForceX11) {
     app.commandLine.appendSwitch('ozone-platform-hint', 'x11')
     app.commandLine.appendSwitch('ozone-platform', 'x11')
+  } else if (linuxWaylandSession) {
+    app.commandLine.appendSwitch('enable-features', 'GlobalShortcutsPortal')
+    app.commandLine.appendSwitch('ozone-platform-hint', 'auto')
   }
 }
 
@@ -2083,6 +2086,7 @@ app.whenReady().then(async () => {
     displayServer: getDisplayServer(),
     compositor: getCompositorName(),
     forcedX11OnLinux: linuxForceX11,
+    waylandNativeWithPortal: linuxWaylandSession && !linuxForceX11,
     linuxSandboxDisabled: linuxDisableSandbox,
     linuxUseTmpForSharedMemory,
     linuxForceTmpSharedMemory,

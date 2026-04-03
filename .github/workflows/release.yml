@@ -67,7 +67,7 @@ jobs:
         run: npm run build:linux
 
       - name: Package
-        run: npx electron-builder --linux AppImage rpm deb tar.gz
+        run: npx electron-builder --linux pacman rpm deb
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -76,10 +76,9 @@ jobs:
         with:
           name: linux-builds
           path: |
-            dist/*.AppImage
+            dist/*.pkg.tar.zst
             dist/*.rpm
             dist/*.deb
-            dist/*.tar.gz
 
   build-windows:
     name: Build Windows

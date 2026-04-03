@@ -34,15 +34,16 @@ jobs:
         run: npm run build:linux
 
       - name: Package
-        run: npx electron-builder --linux AppImage tar.gz
+        run: npx electron-builder --linux pacman deb rpm
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: debug-linux-${{ github.sha }}
           path: |
-            dist/*.AppImage
-            dist/*.tar.gz
+            dist/*.pkg.tar.zst
+            dist/*.deb
+            dist/*.rpm
           retention-days: 7
 
   build-windows:

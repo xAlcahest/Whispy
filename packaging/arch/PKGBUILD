@@ -1,0 +1,46 @@
+# Maintainer: Alcahest <packaging@whispy.local>
+pkgname=whispy
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Local dictation UI shell built with Electron and React'
+arch=('x86_64')
+url='https://github.com/xAlcahest/Whispy'
+license=('MIT')
+depends=('gtk3' 'nss' 'libxss' 'libnotify' 'libappindicator-gtk3' 'xclip' 'ydotool')
+makedepends=('npm' 'nodejs>=22' 'git')
+optdepends=(
+  'xdotool: alternative paste backend for X11'
+  'wl-clipboard: clipboard support on Wayland'
+)
+source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "Whispy-${pkgver}"
+  npm ci --legacy-peer-deps
+  npm run build:linux
+  npx electron-builder --linux dir
+}
+
+package() {
+  cd "Whispy-${pkgver}"
+
+  install -dm755 "${pkgdir}/opt/${pkgname}"
+  cp -r dist/linux-unpacked/* "${pkgdir}/opt/${pkgname}/"
+
+  install -dm755 "${pkgdir}/usr/bin"
+  ln -s "/opt/${pkgname}/whispy" "${pkgdir}/usr/bin/whispy"
+
+  install -Dm644 "assets4app/Web/android-chrome-512x512.png" \
+    "${pkgdir}/usr/share/icons/hicolor/512x512/apps/whispy.png"
+
+  install -Dm644 /dev/stdin "${pkgdir}/usr/share/applications/whispy.desktop" <<EOF
+[Desktop Entry]
+Name=Whispy
+Comment=Local dictation UI
+Exec=/opt/whispy/whispy %U
+Icon=whispy
+Type=Application
+Categories=Utility;Audio;
+EOF
+}

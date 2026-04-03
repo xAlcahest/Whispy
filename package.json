@@ -16,7 +16,11 @@
     "linux": {
       "maintainer": "Whispy Team <packaging@whispy.local>",
       "icon": "assets4app/Web/android-chrome-512x512.png",
-      "category": "Utility"
+      "category": "Utility",
+      "target": ["pacman", "deb", "rpm"]
+    },
+    "pacman": {
+      "depends": ["gtk3", "nss", "libxss", "libnotify", "libappindicator-gtk3", "xclip", "ydotool"]
     },
     "extraResources": [
       {
@@ -38,7 +42,7 @@
     "build:linux": "node scripts/prepare-whisper-runtime.mjs --platform=linux --arch=x64 --variants=cpu,cuda && electron-vite build",
     "build:win": "node scripts/prepare-whisper-runtime.mjs --platform=win32 --arch=x64 --variants=cpu,cuda && electron-vite build",
     "build:mac": "node scripts/prepare-whisper-runtime.mjs --platform=darwin --arch=arm64 --variants=cpu,cuda && electron-vite build",
-    "dist:linux": "npm run build && npx electron-builder --linux AppImage rpm deb tar.gz",
+    "dist:linux": "npm run build && npx electron-builder --linux pacman rpm deb",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "doctor": "node scripts/doctor.mjs",

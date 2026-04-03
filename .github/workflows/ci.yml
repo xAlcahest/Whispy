@@ -55,7 +55,7 @@ jobs:
         run: npm run build:linux
 
       - name: Package
-        run: npx electron-builder --linux AppImage tar.gz
+        run: npx electron-builder --linux pacman deb rpm
 
       - name: Upload artifacts
         if: github.event_name == 'pull_request'
@@ -63,8 +63,9 @@ jobs:
         with:
           name: pr-linux-${{ github.event.pull_request.number }}
           path: |
-            dist/*.AppImage
-            dist/*.tar.gz
+            dist/*.pkg.tar.zst
+            dist/*.deb
+            dist/*.rpm
           retention-days: 5
 
   build-windows:

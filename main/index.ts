@@ -33,7 +33,7 @@ import {
   type WhisperRuntimeDiagnosticsPayload,
 } from '../shared/ipc'
 import { detectActiveApp } from './backend/active-app'
-import { performAutoPaste, cleanupYdotoolDaemon } from './backend/auto-paste'
+import { performAutoPaste, cleanupYdotoolDaemon, captureActiveWindowClass } from './backend/auto-paste'
 import { registerPortalShortcut, cleanupPortalShortcut, isPortalAvailable } from './backend/portal-shortcuts'
 import { DebugLogger } from './backend/debug-logger'
 import { DictationPipeline } from './backend/dictation-pipeline'
@@ -1421,6 +1421,7 @@ const tryRegisterGlobalShortcut = (accelerator: string): HotkeyRegisterAttemptRe
 }
 
 const handleGlobalDictationHotkey = () => {
+  captureActiveWindowClass()
   void (async () => {
     logDebug('system-diagnostics', 'Global dictation hotkey pressed', {
       overlayReady: Boolean(overlayWindow),
@@ -1862,11 +1863,13 @@ const registerIPC = () => {
     return scanPromise
   })
 
-  ipcMain.handle(IPCChannels.runPromptTest, async (_event, input: string): Promise<PromptTestResultPayload> => {
+  ipcMain.handle(IPCChannels.runPromptTest, async (_event, input: string, forceRoute?: string): Promise<PromptTestResultPayload> => {
     logDebug('transcript-pipeline', 'Running prompt test', {
       inputLength: input.length,
+      forceRoute,
     })
-    return ensureDictationPipeline().runPromptTest(input)
+    const route = forceRoute === 'normal' || forceRoute === 'translation' ? forceRoute : undefined
+    return ensureDictationPipeline().runPromptTest(input, route)
   })
 
   ipcMain.handle(

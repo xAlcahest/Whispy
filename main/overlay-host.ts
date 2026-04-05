@@ -35,6 +35,14 @@ const OVERLAY_SIZES: Record<OverlaySizeKey, OverlaySize> = {
 /** Channels the overlay renderer actually calls that need the main process. */
 const PROXIED_CHANNELS = new Set([
   IPCChannels.getBackendState,
+  IPCChannels.setBackendSettings,
+  IPCChannels.setBackendHistory,
+  IPCChannels.setBackendModels,
+  IPCChannels.setBackendPostModels,
+  IPCChannels.setBackendOnboardingCompleted,
+  IPCChannels.clearBackendHistory,
+  IPCChannels.getNotesSnapshot,
+  IPCChannels.setNotesSnapshot,
   IPCChannels.getDictationStatus,
   IPCChannels.toggleDictation,
   IPCChannels.cancelDictation,

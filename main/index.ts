@@ -855,6 +855,50 @@ const handleOverlayIPCRequest = async (channel: string, args: unknown[]): Promis
       ensureDebugLogger().logEntry(entry)
       return
     }
+    case IPCChannels.setBackendSettings: {
+      const [incomingSettings] = args as [AppSettings]
+      const stateStore = ensureBackendStateStore()
+      const nextSettings = stripSecretsFromSettings(incomingSettings)
+      stateStore.setSettings(nextSettings)
+      void withTimeout(
+        ensureSecretStore().setSecrets(resolveSecretStorageMode(nextSettings), extractSecretSettings(incomingSettings)),
+        SECRET_IO_TIMEOUT_MS,
+        'Secret settings persistence timed out.',
+      ).catch(() => {})
+      ensureSecretStore().setNonSecretSettings(nextSettings)
+      broadcast(IPCChannels.floatingIconAutoHideChanged, nextSettings.autoHideFloatingIcon)
+      return
+    }
+    case IPCChannels.setBackendHistory: {
+      const [entries] = args as [HistoryEntry[]]
+      ensureBackendStateStore().setHistory(entries)
+      return
+    }
+    case IPCChannels.setBackendModels: {
+      const [models] = args as [ModelState[]]
+      ensureBackendStateStore().setModels(models)
+      return
+    }
+    case IPCChannels.setBackendPostModels: {
+      const [models] = args as [ModelState[]]
+      ensureBackendStateStore().setPostModels(models)
+      return
+    }
+    case IPCChannels.setBackendOnboardingCompleted: {
+      const [value] = args as [boolean]
+      ensureBackendStateStore().setOnboardingCompleted(value)
+      return
+    }
+    case IPCChannels.clearBackendHistory:
+      ensureBackendStateStore().clearHistory()
+      return
+    case IPCChannels.getNotesSnapshot:
+      return ensureNotesStore().getSnapshot()
+    case IPCChannels.setNotesSnapshot: {
+      const [snapshot] = args as [NotesSnapshotPayload]
+      ensureNotesStore().setSnapshot(snapshot)
+      return
+    }
     default:
       logDebug('error-details', `Unhandled overlay IPC channel: ${channel}`, undefined, 'Window')
       return undefined

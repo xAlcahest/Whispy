@@ -206,7 +206,12 @@ const createOverlayWindow = async () => {
   overlayWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   overlayWindow.webContents.on('will-navigate', (event, url) => {
     event.preventDefault()
-    void shell.openExternal(url)
+    try {
+      const parsed = new URL(url)
+      if (['http:', 'https:'].includes(parsed.protocol)) {
+        void shell.openExternal(parsed.toString())
+      }
+    } catch { /* invalid URL */ }
   })
   overlayWindow.on('closed', () => {
     overlayWindow = null

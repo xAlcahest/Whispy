@@ -54,8 +54,8 @@ const electronAPI: ElectronAPI = {
     ipcRenderer.invoke(IPCChannels.getAppUsageStats, forceRefresh) as Promise<AppUsageStatsPayload>,
   scanCustomModels: (baseUrl: string, apiKey: string) =>
     ipcRenderer.invoke(IPCChannels.scanCustomModels, baseUrl, apiKey) as Promise<string[]>,
-  runPromptTest: (input: string) =>
-    ipcRenderer.invoke(IPCChannels.runPromptTest, input) as Promise<PromptTestResultPayload>,
+  runPromptTest: (input: string, forceRoute?: string) =>
+    ipcRenderer.invoke(IPCChannels.runPromptTest, input, forceRoute) as Promise<PromptTestResultPayload>,
   runNoteEnhancement: (input: string, instructions?: string) =>
     ipcRenderer.invoke(IPCChannels.runNoteEnhancement, input, instructions) as Promise<string>,
   downloadLocalModel: (scope: LocalModelScope, modelId: string) =>

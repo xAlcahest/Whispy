@@ -672,10 +672,21 @@ export class DictationPipeline {
     }
   }
 
-  async runPromptTest(input: string): Promise<PromptTestResult> {
+  async runPromptTest(input: string, forceRoute?: 'normal' | 'translation'): Promise<PromptTestResult> {
     const settings = await this.deps.loadSettings()
-    const route = resolvePromptRoute(settings, input)
-    const output = settings.postProcessingEnabled ? await this.runPostProcessing(settings, route.input, route.prompt) : route.input
+    const route = forceRoute === 'translation'
+      ? {
+          route: 'translation' as const,
+          input: input.trim(),
+          prompt: settings.translationPrompt
+            .replace(/\{source_language\}/g, settings.translationSourceLanguage)
+            .replace(/\{target_language\}/g, settings.translationTargetLanguage),
+        }
+      : forceRoute === 'normal'
+        ? { route: 'normal' as const, input: input.trim(), prompt: settings.normalPrompt }
+        : resolvePromptRoute(settings, input)
+    const shouldProcess = route.route === 'translation' || settings.postProcessingEnabled
+    const output = shouldProcess ? await this.runPostProcessing(settings, route.input, route.prompt) : route.input
 
     return {
       route: route.route,

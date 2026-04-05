@@ -36,7 +36,7 @@ export interface ElectronAPI {
   setNotesSnapshot: (snapshot: NotesSnapshotPayload) => Promise<void>
   getAppUsageStats: (forceRefresh?: boolean) => Promise<AppUsageStatsPayload>
   scanCustomModels: (baseUrl: string, apiKey: string) => Promise<string[]>
-  runPromptTest: (input: string) => Promise<PromptTestResultPayload>
+  runPromptTest: (input: string, forceRoute?: string) => Promise<PromptTestResultPayload>
   runNoteEnhancement: (input: string, instructions?: string) => Promise<string>
   downloadLocalModel: (scope: LocalModelScope, modelId: string) => Promise<void>
   cancelLocalModelDownload: (scope: LocalModelScope, modelId: string) => Promise<boolean>

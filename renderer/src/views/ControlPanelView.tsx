@@ -5159,7 +5159,7 @@ const PromptsSection = ({ settings, onChange }: PromptsSectionProps) => {
   const { pushToast } = useToast()
   const [view, setView] = useState<PromptView>('preview')
   const [testInput, setTestInput] = useState('')
-  const [testRoute, setTestRoute] = useState<'auto' | 'normal' | 'translation'>('auto')
+  const [testRoute, setTestRoute] = useState<'normal' | 'translation'>('normal')
   const [testOutput, setTestOutput] = useState('')
   const [testLoading, setTestLoading] = useState(false)
   const [customizeTarget, setCustomizeTarget] = useState<'normal' | 'agent' | 'translation'>('agent')
@@ -5241,7 +5241,7 @@ const PromptsSection = ({ settings, onChange }: PromptsSectionProps) => {
       setTestLoading(true)
 
       try {
-        const result = await electronAPI.runPromptTest(testInput)
+        const result = await electronAPI.runPromptTest(testInput, testRoute)
         const routeLabelById: Record<typeof result.route, string> = {
           normal: 'Normal prompt',
           agent: 'Agent prompt',
@@ -5259,34 +5259,7 @@ const PromptsSection = ({ settings, onChange }: PromptsSectionProps) => {
       return
     }
 
-    if (testRoute === 'translation') {
-      setTestOutput(
-        `Route: Translation prompt\n\nSource: ${settings.translationSourceLanguage}\nTarget: ${settings.translationTargetLanguage}\nHotkey: ${translationHotkey}\n\nTemplate:\n${settings.translationPrompt}\n\nInput:\n${testInput}`,
-      )
-      return
-    }
-
-    const normalizedAgent = settings.agentName.trim().toLowerCase()
-    const usesAgentRoute = testRoute === 'auto' && normalizedAgent.length > 0 && testInput.toLowerCase().includes(normalizedAgent)
-
-    const usesTranslationRoute =
-      testRoute === 'auto' && settings.translationModeEnabled && testInput.trim().toLowerCase().startsWith('translate:')
-
-    if (usesTranslationRoute) {
-      setTestOutput(
-        `Route: Translation prompt\n\nSource: ${settings.translationSourceLanguage}\nTarget: ${settings.translationTargetLanguage}\nHotkey: ${translationHotkey}\n\nTemplate:\n${settings.translationPrompt}\n\nInput:\n${testInput.replace(/^translate:\s*/i, '')}`,
-      )
-      return
-    }
-
-    if (usesAgentRoute) {
-      setTestOutput(
-        `Route: Agent prompt\n\nAgent: ${settings.agentName}\n\nTemplate:\n${settings.agentPrompt}\n\nInput:\n${testInput}`,
-      )
-      return
-    }
-
-    setTestOutput(`Route: Normal prompt\n\nTemplate:\n${settings.normalPrompt}\n\nInput:\n${testInput}`)
+    setTestOutput('Prompt test unavailable outside Electron runtime.')
   }
 
   return (
@@ -5420,9 +5393,8 @@ const PromptsSection = ({ settings, onChange }: PromptsSectionProps) => {
                     <select
                       className="h-7 rounded-md border border-border-subtle bg-surface-0 px-2 text-xs"
                       value={testRoute}
-                      onChange={(e) => setTestRoute(e.target.value as 'auto' | 'normal' | 'translation')}
+                      onChange={(e) => setTestRoute(e.target.value as 'normal' | 'translation')}
                     >
-                      <option value="auto">Auto-detect</option>
                       <option value="normal">Normal</option>
                       <option value="translation">Translation</option>
                     </select>

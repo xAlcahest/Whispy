@@ -10,6 +10,15 @@ import {
 import { STORAGE_KEYS } from '../lib/constants'
 import { loadSettings, saveSettings } from '../lib/storage'
 import enMessages from './locales/en.json'
+import deMessages from './locales/de.json'
+import esMessages from './locales/es.json'
+import frMessages from './locales/fr.json'
+import itMessages from './locales/it.json'
+import jaMessages from './locales/ja.json'
+import ptMessages from './locales/pt.json'
+import ruMessages from './locales/ru.json'
+import zhCNMessages from './locales/zh-CN.json'
+import zhTWMessages from './locales/zh-TW.json'
 
 export type AppLocale =
   | 'en'
@@ -42,15 +51,15 @@ const DEFAULT_LOCALE: AppLocale = 'en'
 
 const translations: Record<AppLocale, Record<string, string>> = {
   en: enMessages as Record<string, string>,
-  de: {},
-  es: {},
-  fr: {},
-  it: {},
-  ja: {},
-  pt: {},
-  ru: {},
-  'zh-CN': {},
-  'zh-TW': {},
+  de: deMessages as Record<string, string>,
+  es: esMessages as Record<string, string>,
+  fr: frMessages as Record<string, string>,
+  it: itMessages as Record<string, string>,
+  ja: jaMessages as Record<string, string>,
+  pt: ptMessages as Record<string, string>,
+  ru: ruMessages as Record<string, string>,
+  'zh-CN': zhCNMessages as Record<string, string>,
+  'zh-TW': zhTWMessages as Record<string, string>,
 }
 
 const formatMessage = (message: string, values?: TranslationValues) => {

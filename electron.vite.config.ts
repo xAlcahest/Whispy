@@ -9,6 +9,7 @@ export default defineConfig({
       rollupOptions: {
         input: {
           index: resolve(__dirname, 'main/index.ts'),
+          'overlay-host': resolve(__dirname, 'main/overlay-host.ts'),
         },
       },
     },

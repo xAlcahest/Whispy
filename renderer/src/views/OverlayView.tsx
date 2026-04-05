@@ -496,10 +496,10 @@ const OverlayScene = () => {
     <div className="h-screen w-screen p-2 app-drag">
       <div
         className={cn(
-          'relative flex h-full w-full items-center justify-center rounded-full border border-white/20 bg-black/20 backdrop-blur-xl transition-all duration-200',
-          hovered ? 'scale-[1.02] border-white/30 shadow-[0_0_30px_-18px_rgba(147,197,253,0.8)]' : 'scale-100',
-          status === 'RECORDING' ? 'bg-primary/85 shadow-[0_0_34px_-8px_rgba(37,99,235,0.95)]' : undefined,
-          status === 'PROCESSING' ? 'bg-accent/85 shadow-[0_0_34px_-8px_rgba(99,102,241,0.95)]' : undefined,
+          'relative flex h-full w-full items-center justify-center rounded-full border border-white/15 bg-gradient-to-b from-white/10 to-black/70 transition-colors duration-200',
+          hovered ? 'border-white/30' : undefined,
+          status === 'RECORDING' ? 'from-primary/70 to-primary/90 border-primary/40' : undefined,
+          status === 'PROCESSING' ? 'from-accent/70 to-accent/90 border-accent/40' : undefined,
         )}
         onMouseEnter={() => {
           setHovered(true)
@@ -515,7 +515,7 @@ const OverlayScene = () => {
         <div className="relative z-10 flex flex-col items-center gap-1">
           <button
             type="button"
-            className="app-no-drag relative z-10 flex h-10 w-10 items-center justify-center rounded-full border border-white/40 bg-black/35 text-white transition-all hover:scale-105"
+            className="app-no-drag relative z-10 flex h-10 w-10 items-center justify-center rounded-full border border-white/25 bg-white/10 text-white/90 transition-colors hover:bg-white/18 hover:text-white"
             onPointerDown={(event) => {
               pointerState.current = {
                 x: event.clientX,

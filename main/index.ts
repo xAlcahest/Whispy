@@ -1,5 +1,5 @@
 import { app, BrowserWindow, Menu, Tray, globalShortcut, ipcMain, nativeImage, screen, shell, systemPreferences } from 'electron'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { accessSync, constants as fsConstants, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { estimateDurationFromTranscript, type AppSettings, type DictationResult, type HistoryEntry, type ModelState } from '../shared/app'
@@ -33,7 +33,7 @@ import {
   type WhisperRuntimeDiagnosticsPayload,
 } from '../shared/ipc'
 import { detectActiveApp } from './backend/active-app'
-import { performAutoPaste, cleanupYdotoolDaemon } from './backend/auto-paste'
+import { performAutoPaste, cleanupYdotoolDaemon, captureActiveWindowClass } from './backend/auto-paste'
 import { registerPortalShortcut, cleanupPortalShortcut, isPortalAvailable } from './backend/portal-shortcuts'
 import { DebugLogger } from './backend/debug-logger'
 import { DictationPipeline } from './backend/dictation-pipeline'
@@ -107,6 +107,9 @@ const OVERLAY_SIZES: Record<OverlaySizeKey, OverlaySize> = {
   EXPANDED: { width: 420, height: 240 },
 }
 
+const useOverlayProcess = process.platform === 'linux' && linuxWaylandSession && !linuxForceX11
+let overlayProcess: ChildProcess | null = null
+let overlayProcessReady = false
 let overlayWindow: BrowserWindow | null = null
 let controlPanelWindow: BrowserWindow | null = null
 let backendStateStore: BackendStateStore | null = null
@@ -568,6 +571,14 @@ const detectAutoPasteBackendSupport = (): AutoPasteBackendSupportPayload => {
   }
 }
 
+const scheduleReload = (win: BrowserWindow | null) => {
+  setTimeout(() => {
+    if (win && !win.isDestroyed()) {
+      win.webContents.reload()
+    }
+  }, 1500)
+}
+
 const createOverlayWindow = async () => {
   const disableWindowSandbox = process.platform === 'linux' && linuxDisableSandbox
   const baseBounds = getOverlayBounds(OVERLAY_SIZES.BASE)
@@ -582,7 +593,7 @@ const createOverlayWindow = async () => {
     skipTaskbar: true,
     alwaysOnTop: true,
     hasShadow: false,
-    backgroundColor: '#00000000',
+    type: 'toolbar',
     show: false,
     webPreferences: {
       preload: preloadPath,
@@ -602,9 +613,11 @@ const createOverlayWindow = async () => {
       errorDescription,
       validatedURL,
     }, 'Window')
+    scheduleReload(overlayWindow)
   })
   overlayWindow.webContents.on('render-process-gone', (_event, details) => {
     logDebug('error-details', 'Overlay renderer process exited', details, 'Window')
+    scheduleReload(overlayWindow)
   })
   overlayWindow.webContents.on('did-finish-load', () => {
     logDebug('system-diagnostics', 'Overlay window loaded', undefined, 'Window')
@@ -612,6 +625,8 @@ const createOverlayWindow = async () => {
   overlayWindow.on('closed', () => {
     overlayWindow = null
   })
+
+  overlayWindow.setShape(buildCircleShape(baseBounds.width))
 
   try {
     await loadRoute(overlayWindow, 'overlay')
@@ -656,9 +671,11 @@ const createControlPanelWindow = async () => {
       errorDescription,
       validatedURL,
     }, 'Window')
+    scheduleReload(controlPanelWindow)
   })
   controlPanelWindow.webContents.on('render-process-gone', (_event, details) => {
     logDebug('error-details', 'Control panel renderer process exited', details, 'Window')
+    scheduleReload(controlPanelWindow)
   })
 
   controlPanelWindow.on('closed', () => {
@@ -713,7 +730,245 @@ const ensureControlPanelWindow = async () => {
   controlPanelWindow?.focus()
 }
 
+const buildCircleShape = (diameter: number): Electron.Rectangle[] => {
+  const r = diameter / 2
+  const rects: Electron.Rectangle[] = []
+  for (let y = 0; y < diameter; y++) {
+    const dy = y - r + 0.5
+    const halfWidth = Math.sqrt(Math.max(0, r * r - dy * dy))
+    const x0 = Math.floor(r - halfWidth)
+    const x1 = Math.ceil(r + halfWidth)
+    if (x1 > x0) {
+      rects.push({ x: x0, y, width: x1 - x0, height: 1 })
+    }
+  }
+  return rects
+}
+
+const sendToOverlayProcess = (message: unknown) => {
+  try {
+    if (overlayProcess && overlayProcess.connected) {
+      overlayProcess.send(message as object)
+    }
+  } catch { /* process disconnected */ }
+}
+
+const spawnOverlayProcess = (): Promise<void> => {
+  return new Promise((resolve, reject) => {
+    const overlayHostPath = join(__dirname, 'overlay-host.js')
+    const args = ['--ozone-platform=x11']
+
+    if (linuxUseTmpForSharedMemory) args.push('--disable-dev-shm-usage')
+    if (linuxDisableSandbox) args.push('--no-sandbox')
+
+    const appIconPath = resolveApplicationIconPath()
+    if (appIconPath) args.push(`--app-icon=${appIconPath}`)
+
+    overlayProcess = spawn(process.execPath, [overlayHostPath, ...args], {
+      stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
+      env: {
+        PATH: process.env.PATH,
+        HOME: process.env.HOME,
+        DISPLAY: process.env.DISPLAY,
+        WAYLAND_DISPLAY: process.env.WAYLAND_DISPLAY,
+        XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR,
+        ELECTRON_RENDERER_URL: process.env.ELECTRON_RENDERER_URL,
+      },
+    })
+
+    overlayProcessReady = false
+
+    overlayProcess.on('message', (message: unknown) => {
+      const msg = message as { type: string; requestId?: string; channel?: string; args?: unknown[]; visible?: boolean }
+
+      if (msg.type === 'ready') {
+        overlayProcessReady = true
+        resolve()
+        return
+      }
+
+      if (msg.type === 'closed') {
+        overlayProcessReady = false
+        return
+      }
+
+      if (msg.type === 'ipc-request') {
+        void (async () => {
+          try {
+            const result = await handleOverlayIPCRequest(msg.channel!, msg.args ?? [])
+            sendToOverlayProcess({ type: 'ipc-response', requestId: msg.requestId, result })
+          } catch (error) {
+            sendToOverlayProcess({
+              type: 'ipc-response',
+              requestId: msg.requestId,
+              error: error instanceof Error ? error.message : String(error),
+            })
+          }
+        })()
+        return
+      }
+    })
+
+    overlayProcess.on('exit', (code) => {
+      logDebug('error-details', 'Overlay process exited', { code }, 'Window')
+      overlayProcess = null
+      overlayProcessReady = false
+    })
+
+    overlayProcess.stderr?.on('data', (data: Buffer) => {
+      const text = data.toString().trim()
+      if (text) logDebug('error-details', `Overlay process stderr: ${text}`, undefined, 'Window')
+    })
+
+    setTimeout(() => {
+      if (!overlayProcessReady) {
+        reject(new Error('Overlay process startup timed out'))
+      }
+    }, 10_000)
+  })
+}
+
+const handleOverlayIPCRequest = async (channel: string, args: unknown[]): Promise<unknown> => {
+  switch (channel) {
+    case IPCChannels.getBackendState: {
+      reconcileModelAvailabilityWithDisk()
+      return getBackendSnapshotWithSecrets()
+    }
+    case IPCChannels.getDictationStatus:
+      return ensureDictationRuntime().getStatus()
+    case IPCChannels.toggleDictation:
+      return ensureDictationRuntime().toggleDictation('full')
+    case IPCChannels.cancelDictation:
+      return ensureDictationRuntime().cancelDictation()
+    case IPCChannels.performAutoPaste: {
+      const [text, backend, options] = args as [string, AppSettings['autoPasteBackend'], { shortcut?: AppSettings['autoPasteShortcut'] } | undefined]
+      const sanitizedText = (typeof text === 'string' ? text : '').slice(0, 100_000)
+      const pasteSettings = await loadCurrentSettings()
+      const selectedShortcut = options?.shortcut ?? pasteSettings.autoPasteShortcut
+      const result = performAutoPaste(sanitizedText, backend, { shortcut: selectedShortcut })
+      logDebug('system-diagnostics', 'Auto-paste execution result', {
+        backend,
+        shortcut: selectedShortcut,
+        success: result.success,
+        elapsedMs: result.elapsedMs,
+        textLength: sanitizedText.length,
+        details: result.details,
+      })
+      return result
+    }
+    case IPCChannels.openControlPanel:
+      await ensureControlPanelWindow()
+      return
+    case IPCChannels.getWhisperRuntimeStatus: {
+      const runtimeSettings = await loadCurrentSettings()
+      return getWhisperRuntimeStatus(runtimeSettings)
+    }
+    case IPCChannels.getWhisperRuntimeDiagnostics: {
+      const diagSettings = await loadCurrentSettings()
+      return ensureWhisperServerManager().getDiagnostics(diagSettings.whisperCppRuntimeVariant)
+    }
+    case IPCChannels.getAutoPasteBackendSupport:
+      return detectAutoPasteBackendSupport()
+    case IPCChannels.getDisplayServer:
+      return getDisplayServer()
+    case IPCChannels.appLog: {
+      const [entry] = args as [RendererLogEntryPayload]
+      ensureDebugLogger().logEntry(entry)
+      return
+    }
+    case IPCChannels.setBackendSettings: {
+      const [incomingSettings] = args as [AppSettings]
+      const stateStore = ensureBackendStateStore()
+      const nextSettings = stripSecretsFromSettings(incomingSettings)
+      stateStore.setSettings(nextSettings)
+      void withTimeout(
+        ensureSecretStore().setSecrets(resolveSecretStorageMode(nextSettings), extractSecretSettings(incomingSettings)),
+        SECRET_IO_TIMEOUT_MS,
+        'Secret settings persistence timed out.',
+      ).catch(() => {})
+      ensureSecretStore().setNonSecretSettings(nextSettings)
+      broadcast(IPCChannels.floatingIconAutoHideChanged, nextSettings.autoHideFloatingIcon)
+      return
+    }
+    case IPCChannels.setBackendHistory: {
+      const [entries] = args as [HistoryEntry[]]
+      ensureBackendStateStore().setHistory(entries)
+      // Sync to control panel so it updates its local view
+      if (controlPanelWindow && !controlPanelWindow.isDestroyed()) {
+        try { controlPanelWindow.webContents.send('overlay:history-synced', entries) } catch { /* frame disposed */ }
+      }
+      return
+    }
+    case IPCChannels.setBackendModels: {
+      const [models] = args as [ModelState[]]
+      ensureBackendStateStore().setModels(models)
+      return
+    }
+    case IPCChannels.setBackendPostModels: {
+      const [models] = args as [ModelState[]]
+      ensureBackendStateStore().setPostModels(models)
+      return
+    }
+    case IPCChannels.setBackendOnboardingCompleted: {
+      const [value] = args as [boolean]
+      ensureBackendStateStore().setOnboardingCompleted(value)
+      return
+    }
+    case IPCChannels.clearBackendHistory:
+      ensureBackendStateStore().clearHistory()
+      return
+    case IPCChannels.getNotesSnapshot:
+      return ensureNotesStore().getSnapshot()
+    case IPCChannels.setNotesSnapshot: {
+      const [snapshot] = args as [NotesSnapshotPayload]
+      ensureNotesStore().setSnapshot(snapshot)
+      return
+    }
+    default:
+      logDebug('error-details', `Unhandled overlay IPC channel: ${channel}`, undefined, 'Window')
+      return undefined
+  }
+}
+
+const ensureOverlay = async () => {
+  if (useOverlayProcess) {
+    if (!overlayProcess || !overlayProcessReady) {
+      await spawnOverlayProcess()
+    }
+  } else {
+    if (!overlayWindow) {
+      await createOverlayWindow()
+    }
+  }
+}
+
+const showOverlay = () => {
+  if (useOverlayProcess) {
+    sendToOverlayProcess({ type: 'command', action: 'show' })
+  } else {
+    overlayWindow?.showInactive()
+  }
+}
+
+const hideOverlay = () => {
+  if (useOverlayProcess) {
+    sendToOverlayProcess({ type: 'command', action: 'hide' })
+  } else {
+    overlayWindow?.hide()
+  }
+}
+
+const isOverlayAvailable = () => {
+  if (useOverlayProcess) return overlayProcessReady
+  return Boolean(overlayWindow)
+}
+
 const setOverlaySize = (sizeKey: OverlaySizeKey) => {
+  if (useOverlayProcess) {
+    sendToOverlayProcess({ type: 'command', action: 'resize', payload: sizeKey })
+    return
+  }
+
   if (!overlayWindow) {
     return
   }
@@ -721,11 +976,23 @@ const setOverlaySize = (sizeKey: OverlaySizeKey) => {
   const targetSize = OVERLAY_SIZES[sizeKey]
   const targetBounds = getOverlayBounds(targetSize)
   overlayWindow.setBounds(targetBounds, true)
+
+  if (sizeKey === 'BASE') {
+    overlayWindow.setShape(buildCircleShape(targetSize.width))
+  } else {
+    overlayWindow.setShape([{ x: 0, y: 0, width: targetSize.width, height: targetSize.height }])
+  }
 }
 
 const broadcast = (channel: string, payload: unknown) => {
-  overlayWindow?.webContents.send(channel, payload)
-  controlPanelWindow?.webContents.send(channel, payload)
+  if (useOverlayProcess) {
+    sendToOverlayProcess({ type: 'broadcast', channel, payload })
+  } else if (overlayWindow && !overlayWindow.isDestroyed()) {
+    try { overlayWindow.webContents.send(channel, payload) } catch { /* frame disposed */ }
+  }
+  if (controlPanelWindow && !controlPanelWindow.isDestroyed()) {
+    try { controlPanelWindow.webContents.send(channel, payload) } catch { /* frame disposed */ }
+  }
 }
 
 const broadcastModelDownloadProgress = (payload: ModelDownloadProgress) => {
@@ -799,12 +1066,8 @@ const ensureTray = () => {
       label: 'Show Floating Overlay',
       click: () => {
         void (async () => {
-          if (!overlayWindow) {
-            await createOverlayWindow()
-          }
-
-          overlayWindow?.show()
-          overlayWindow?.focus()
+          await ensureOverlay()
+          showOverlay()
         })()
       },
     },
@@ -1421,25 +1684,22 @@ const tryRegisterGlobalShortcut = (accelerator: string): HotkeyRegisterAttemptRe
 }
 
 const handleGlobalDictationHotkey = () => {
+  captureActiveWindowClass()
   void (async () => {
     logDebug('system-diagnostics', 'Global dictation hotkey pressed', {
-      overlayReady: Boolean(overlayWindow),
+      overlayReady: isOverlayAvailable(),
     }, 'Hotkey')
 
-    if (!overlayWindow) {
-      try {
-        await createOverlayWindow()
-      } catch (error) {
-        logDebug('error-details', 'Unable to create overlay window from hotkey', {
-          message: error instanceof Error ? error.message : String(error),
-        }, 'Hotkey')
-        return
-      }
+    try {
+      await ensureOverlay()
+    } catch (error) {
+      logDebug('error-details', 'Unable to create overlay from hotkey', {
+        message: error instanceof Error ? error.message : String(error),
+      }, 'Hotkey')
+      return
     }
 
-    if (overlayWindow && !overlayWindow.isDestroyed()) {
-      overlayWindow.showInactive()
-    }
+    showOverlay()
 
     const response = ensureDictationRuntime().toggleDictation('full')
     if (!response.accepted) {
@@ -1862,11 +2122,13 @@ const registerIPC = () => {
     return scanPromise
   })
 
-  ipcMain.handle(IPCChannels.runPromptTest, async (_event, input: string): Promise<PromptTestResultPayload> => {
+  ipcMain.handle(IPCChannels.runPromptTest, async (_event, input: string, forceRoute?: string): Promise<PromptTestResultPayload> => {
     logDebug('transcript-pipeline', 'Running prompt test', {
       inputLength: input.length,
+      forceRoute,
     })
-    return ensureDictationPipeline().runPromptTest(input)
+    const route = forceRoute === 'normal' || forceRoute === 'translation' ? forceRoute : undefined
+    return ensureDictationPipeline().runPromptTest(input, route)
   })
 
   ipcMain.handle(
@@ -1969,8 +2231,8 @@ const registerIPC = () => {
   })
 
   ipcMain.handle(IPCChannels.toggleDictationTranscriptionOnly, async () => {
-    if (overlayWindow && overlayWindow.isVisible()) {
-      overlayWindow.hide()
+    if (isOverlayAvailable()) {
+      hideOverlay()
       logDebug('system-diagnostics', 'Overlay hidden for notes transcription-only mode', undefined, 'Window')
     }
 
@@ -2014,21 +2276,17 @@ const registerIPC = () => {
   )
 
   ipcMain.handle(IPCChannels.showDictationPanel, async () => {
-    if (!overlayWindow) {
-      logDebug('system-diagnostics', 'Overlay missing, creating before show request', undefined, 'Window')
-      try {
-        await createOverlayWindow()
-      } catch (error) {
-        logDebug('error-details', 'Unable to create overlay window from IPC request', {
-          message: error instanceof Error ? error.message : String(error),
-        }, 'Window')
-        return
-      }
+    try {
+      await ensureOverlay()
+    } catch (error) {
+      logDebug('error-details', 'Unable to create overlay from IPC request', {
+        message: error instanceof Error ? error.message : String(error),
+      }, 'Window')
+      return
     }
 
-    overlayWindow?.show()
-    overlayWindow?.focus()
-    logDebug('system-diagnostics', 'Overlay window shown from IPC request', undefined, 'Window')
+    showOverlay()
+    logDebug('system-diagnostics', 'Overlay shown from IPC request', undefined, 'Window')
   })
 
   ipcMain.handle(IPCChannels.hideWindow, (event) => {
@@ -2076,10 +2334,8 @@ const registerIPC = () => {
   })
 
   ipcMain.handle(IPCChannels.setMainWindowInteractivity, (_event, shouldCapture: boolean) => {
-    if (!overlayWindow) {
-      return
-    }
-
+    if (useOverlayProcess) return // handled locally in overlay-host
+    if (!overlayWindow) return
     overlayWindow.setIgnoreMouseEvents(!shouldCapture, { forward: !shouldCapture })
   })
 
@@ -2179,7 +2435,7 @@ app.whenReady().then(async () => {
   controlPanelWindow?.focus()
 
   try {
-    await createOverlayWindow()
+    await ensureOverlay()
   } catch (error) {
     logDebug('error-details', 'Overlay startup creation failed', {
       message: error instanceof Error ? error.message : String(error),
@@ -2262,7 +2518,7 @@ app.whenReady().then(async () => {
 
   app.on('activate', async () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      await createOverlayWindow()
+      await ensureOverlay()
       await createControlPanelWindow()
     }
   })
@@ -2281,6 +2537,9 @@ app.on('before-quit', () => {
 app.on('will-quit', () => {
   trayInstance?.destroy()
   trayInstance = null
+  if (overlayProcess && overlayProcess.connected) {
+    sendToOverlayProcess({ type: 'command', action: 'quit' })
+  }
   void whisperServerManager?.stop()
   cleanupYdotoolDaemon()
   void cleanupPortalShortcut()

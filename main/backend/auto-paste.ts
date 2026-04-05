@@ -1,11 +1,9 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
-import { mkdirSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { clipboard } from 'electron'
 import type { AutoPasteBackend, AutoPasteMode, AutoPasteShortcut } from '../../shared/app'
 
 let trackedYdotooldProcess: ChildProcess | null = null
+let lastActiveWindowClass: string | null = null
 
 export interface AutoPasteExecutionResult {
   success: boolean
@@ -39,65 +37,33 @@ const TERMINAL_HINTS = [
   'tilix', 'hyper', 'tabby', 'contour', 'rio', 'ghostty', 'st-256color',
 ]
 
-let kwinScriptPath: string | null = null
-let kwinScriptId: string | null = null
-
-const getKwinActiveWindowClass = (): string | null => {
+const getActiveWindowClass = (): string | null => {
   try {
-    if (!kwinScriptPath) {
-      const dir = join(tmpdir(), 'whispy-kwin')
-      mkdirSync(dir, { recursive: true })
-      kwinScriptPath = join(dir, 'active-window.js')
-      writeFileSync(kwinScriptPath, 'console.info("WHISPY_ACTIVE:" + (workspace.activeWindow ? workspace.activeWindow.resourceClass : "unknown"))')
-    }
+    const uuid = spawnSync('kdotool', ['getactivewindow'], {
+      encoding: 'utf8', timeout: 300, windowsHide: true,
+    })
+    const windowId = uuid.stdout?.trim()
+    if (!windowId || uuid.status !== 0) return null
 
-    if (!kwinScriptId) {
-      const load = spawnSync('gdbus', [
-        'call', '--session', '--dest', 'org.kde.KWin',
-        '--object-path', '/Scripting',
-        '--method', 'org.kde.kwin.Scripting.loadScript', kwinScriptPath,
-      ], { encoding: 'utf8', timeout: 200, windowsHide: true })
-      const match = load.stdout?.match(/\((\d+),\)/)
-      if (!match) return null
-      kwinScriptId = match[1]
-    }
-
-    const marker = `WHISPY_${Date.now()}`
-    writeFileSync(kwinScriptPath, `console.info("${marker}:" + (workspace.activeWindow ? workspace.activeWindow.resourceClass : "unknown"))`)
-    kwinScriptId = null
-
-    const load = spawnSync('gdbus', [
-      'call', '--session', '--dest', 'org.kde.KWin',
-      '--object-path', '/Scripting',
-      '--method', 'org.kde.kwin.Scripting.loadScript', kwinScriptPath,
-    ], { encoding: 'utf8', timeout: 200, windowsHide: true })
-    const loadMatch = load.stdout?.match(/\((\d+),\)/)
-    if (!loadMatch) return null
-    kwinScriptId = loadMatch[1]
-
-    spawnSync('gdbus', [
-      'call', '--session', '--dest', 'org.kde.KWin',
-      '--object-path', `/Scripting/Script${kwinScriptId}`,
-      '--method', 'org.kde.kwin.Script.run',
-    ], { encoding: 'utf8', timeout: 200, windowsHide: true })
-
-    sleepBlocking(50)
-
-    const journal = spawnSync('journalctl', [
-      '--user', '-t', 'kwin_wayland', '-n', '5', '--no-pager', '-o', 'cat',
-    ], { encoding: 'utf8', timeout: 200, windowsHide: true })
-
-    const line = journal.stdout?.split('\n').reverse().find((l) => l.includes(marker + ':'))
-    return line?.split(marker + ':')[1]?.trim().toLowerCase() ?? null
+    const cls = spawnSync('kdotool', ['getwindowclassname', windowId], {
+      encoding: 'utf8', timeout: 300, windowsHide: true,
+    })
+    return cls.status === 0 ? cls.stdout?.trim().toLowerCase() ?? null : null
   } catch {
     return null
   }
 }
 
+export const captureActiveWindowClass = () => {
+  if (process.platform !== 'linux') return
+  lastActiveWindowClass = getActiveWindowClass()
+}
+
 const detectActiveWindowIsTerminal = (): boolean => {
   if (process.platform !== 'linux') return false
 
-  const windowClass = getKwinActiveWindowClass()
+  const windowClass = lastActiveWindowClass ?? getActiveWindowClass()
+  lastActiveWindowClass = null
   if (windowClass) {
     return TERMINAL_HINTS.some((hint) => windowClass.includes(hint))
   }
@@ -133,8 +99,46 @@ interface LinuxPastePlan {
 const CLIPBOARD_WRITE_VERIFY_ATTEMPTS = 3
 const CLIPBOARD_WRITE_VERIFY_DELAY_MS = 10
 const LINUX_PASTE_SHORTCUT_DELAY_MS = 40
-const LINUX_CLIPBOARD_RESTORE_DELAY_MS = 220
 const MAC_PASTE_SHORTCUT_DELAY_MS = 100
+
+const CLIPBOARD_RESTORE_DELAY: Record<string, number> = {
+  linux: 220,
+  darwin: 450,
+  win32: 100,
+}
+
+interface SavedClipboard {
+  type: 'image' | 'html' | 'text'
+  text?: string
+  html?: string
+  image?: Electron.NativeImage
+}
+
+const saveClipboard = (): SavedClipboard => {
+  const formats = clipboard.availableFormats()
+  if (formats.some((f) => f.startsWith('image/'))) {
+    return { type: 'image', image: clipboard.readImage() }
+  }
+  if (formats.includes('text/html')) {
+    return { type: 'html', text: clipboard.readText(), html: clipboard.readHTML() }
+  }
+  return { type: 'text', text: clipboard.readText() }
+}
+
+const restoreClipboard = (saved: SavedClipboard) => {
+  if (saved.type === 'image' && saved.image && !saved.image.isEmpty()) {
+    clipboard.writeImage(saved.image)
+  } else if (saved.type === 'html' && saved.text && saved.html) {
+    clipboard.write({ text: saved.text, html: saved.html })
+  } else if (saved.text) {
+    clipboard.writeText(saved.text)
+  }
+}
+
+const scheduleClipboardRestore = (saved: SavedClipboard) => {
+  const delay = CLIPBOARD_RESTORE_DELAY[process.platform] ?? 200
+  setTimeout(() => restoreClipboard(saved), delay)
+}
 const WINDOWS_PASTE_SHORTCUT_DELAY_MS = 35
 const YDOTOOL_STARTUP_RETRIES = 16
 const YDOTOOL_STARTUP_DELAY_MS = 80
@@ -400,7 +404,8 @@ const runLinuxInstantAutoPaste = (
   shortcut: AutoPasteShortcut,
 ): AutoPasteExecutionResult => {
   const manualPasteShortcut = formatManualPasteShortcut(shortcut, 'linux')
-  const previousClipboardText = clipboard.readText()
+  const saved = saveClipboard()
+
   if (!writeClipboardReliably(text)) {
     clipboard.writeText(text)
     return {
@@ -426,12 +431,7 @@ const runLinuxInstantAutoPaste = (
 
   const successfulAttempt = executeLinuxPasteAttempt(attempts, null)
   if (successfulAttempt) {
-    if (LINUX_CLIPBOARD_RESTORE_DELAY_MS > 0) {
-      sleepBlocking(LINUX_CLIPBOARD_RESTORE_DELAY_MS)
-    }
-
-    writeClipboardReliably(previousClipboardText, 2)
-
+    scheduleClipboardRestore(saved)
     return {
       success: true,
       details: `Clipboard pasted via ${successfulAttempt.backend} (${shortcut === 'ctrl-shift-v' ? 'Ctrl+Shift+V' : 'Ctrl+V'}).`,
@@ -447,6 +447,7 @@ const runLinuxInstantAutoPaste = (
 
 const runMacInstantAutoPaste = (text: string, shortcut: AutoPasteShortcut): AutoPasteExecutionResult => {
   const manualPasteShortcut = formatManualPasteShortcut(shortcut, 'darwin')
+  const saved = saveClipboard()
 
   if (!writeClipboardReliably(text)) {
     clipboard.writeText(text)
@@ -465,6 +466,7 @@ const runMacInstantAutoPaste = (text: string, shortcut: AutoPasteShortcut): Auto
   const result = runCommand('osascript', ['-e', script])
 
   if (result.status === 0) {
+    scheduleClipboardRestore(saved)
     return {
       success: true,
       details: `Clipboard pasted via ${shortcut === 'ctrl-shift-v' ? 'Cmd+Shift+V' : 'Cmd+V'}.`,
@@ -481,6 +483,7 @@ const runMacInstantAutoPaste = (text: string, shortcut: AutoPasteShortcut): Auto
 
 const runWindowsInstantAutoPaste = (text: string, shortcut: AutoPasteShortcut): AutoPasteExecutionResult => {
   const manualPasteShortcut = formatManualPasteShortcut(shortcut, 'win32')
+  const saved = saveClipboard()
 
   if (!writeClipboardReliably(text)) {
     clipboard.writeText(text)
@@ -502,6 +505,7 @@ const runWindowsInstantAutoPaste = (text: string, shortcut: AutoPasteShortcut): 
 
   const result = runCommand('powershell', ['-NoProfile', '-NonInteractive', '-Command', script])
   if (result.status === 0) {
+    scheduleClipboardRestore(saved)
     return {
       success: true,
       details: `Clipboard pasted via ${shortcut === 'ctrl-shift-v' ? 'Ctrl+Shift+V' : 'Ctrl+V'}.`,

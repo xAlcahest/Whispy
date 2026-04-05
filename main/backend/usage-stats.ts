@@ -32,6 +32,9 @@ const MODEL_LOOKUP_PREFIXES = [
 interface LiteLLMModelPricing {
   input_cost_per_token?: number
   output_cost_per_token?: number
+  input_cost_per_second?: number
+  output_cost_per_second?: number
+  mode?: string
   cache_creation_input_token_cost?: number
   cache_read_input_token_cost?: number
   input_cost_per_token_above_200k_tokens?: number
@@ -70,6 +73,7 @@ interface ModelUsageAccumulator {
   calls: number
   inputTokens: number
   outputTokens: number
+  durationSeconds: number
 }
 
 const normalizeNumeric = (value: unknown): number | null => {
@@ -130,6 +134,7 @@ const isLikelyLiteLLMModelPricing = (value: unknown): value is LiteLLMModelPrici
   return (
     normalizeNumeric(typed.input_cost_per_token) !== null ||
     normalizeNumeric(typed.output_cost_per_token) !== null ||
+    normalizeNumeric(typed.input_cost_per_second) !== null ||
     normalizeNumeric(typed.input_cost_per_token_above_200k_tokens) !== null ||
     normalizeNumeric(typed.output_cost_per_token_above_200k_tokens) !== null ||
     normalizeNumeric(typed.input_cost_per_token_above_128k_tokens) !== null ||
@@ -140,6 +145,9 @@ const isLikelyLiteLLMModelPricing = (value: unknown): value is LiteLLMModelPrici
 const normalizePricingRecord = (value: Record<string, unknown>): LiteLLMModelPricing => ({
   input_cost_per_token: normalizeNumeric(value.input_cost_per_token) ?? undefined,
   output_cost_per_token: normalizeNumeric(value.output_cost_per_token) ?? undefined,
+  input_cost_per_second: normalizeNumeric(value.input_cost_per_second) ?? undefined,
+  output_cost_per_second: normalizeNumeric(value.output_cost_per_second) ?? undefined,
+  mode: typeof value.mode === 'string' ? value.mode : undefined,
   cache_creation_input_token_cost: normalizeNumeric(value.cache_creation_input_token_cost) ?? undefined,
   cache_read_input_token_cost: normalizeNumeric(value.cache_read_input_token_cost) ?? undefined,
   input_cost_per_token_above_200k_tokens: normalizeNumeric(value.input_cost_per_token_above_200k_tokens) ?? undefined,
@@ -251,6 +259,7 @@ const resolvePricingForModel = (
   return null
 }
 
+
 const calculateTieredTokenCost = (
   tokenCount: number,
   basePrice: number | undefined,
@@ -334,7 +343,12 @@ export class UsageStatsService {
         const pricing =
           resolvePricingForModel(baseModelId, pricingCatalog.models, pricingCatalog.modelsLower) ??
           resolvePricingForModel(scopedModelId, pricingCatalog.models, pricingCatalog.modelsLower)
-        const costUSD = pricing ? calculateCostFromPricing(pricing, usage.inputTokens, usage.outputTokens) : 0
+        const isAudioModel = pricing?.mode === 'audio_transcription' || pricing?.input_cost_per_second !== undefined
+        const costUSD = pricing
+          ? isAudioModel && pricing.input_cost_per_second
+            ? pricing.input_cost_per_second * usage.durationSeconds
+            : calculateCostFromPricing(pricing, usage.inputTokens, usage.outputTokens)
+          : 0
 
         modelInputCostPerTokenById[scopedModelId] = pricing?.input_cost_per_token ?? null
         modelOutputCostPerTokenById[scopedModelId] = pricing?.output_cost_per_token ?? null
@@ -404,7 +418,7 @@ export class UsageStatsService {
       const transcriptionModel = entry.model.trim() || 'unknown-model'
       const transcriptionScopedModel = `${transcriptionProvider}/${transcriptionModel}`
       const dictationRawText = entry.rawText?.trim() || entry.text
-      this.accumulateModelUsage(usageMap, transcriptionScopedModel, 'transcription', estimateTokensFromText(dictationRawText), 0)
+      this.accumulateModelUsage(usageMap, transcriptionScopedModel, 'transcription', estimateTokensFromText(dictationRawText), 0, entry.durationSeconds ?? 0)
 
       const postProcessingApplied = Boolean(entry.postProcessingApplied)
       const dictationEnhancedText = entry.enhancedText?.trim() || entry.text
@@ -460,6 +474,7 @@ export class UsageStatsService {
     scope: AppUsageModelBreakdownPayload['scope'],
     inputTokens: number,
     outputTokens: number,
+    durationSeconds = 0,
   ) {
     const current = usageMap.get(modelId) ?? {
       model: modelId,
@@ -467,11 +482,13 @@ export class UsageStatsService {
       calls: 0,
       inputTokens: 0,
       outputTokens: 0,
+      durationSeconds: 0,
     }
 
     current.calls += 1
     current.inputTokens += Math.max(0, inputTokens)
     current.outputTokens += Math.max(0, outputTokens)
+    current.durationSeconds += Math.max(0, durationSeconds)
 
     if (current.scope === 'unknown' && scope !== 'unknown') {
       current.scope = scope

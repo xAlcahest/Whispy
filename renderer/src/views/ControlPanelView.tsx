@@ -877,7 +877,6 @@ const NotesSection = ({
   onForceSaveNote,
   onTrackRawNoteCaret,
 }: NotesSectionProps) => {
-  const { pushToast } = useToast()
   const [isCreatingFolder, setIsCreatingFolder] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
   const [actionsMenuOpen, setActionsMenuOpen] = useState(false)
@@ -1190,9 +1189,6 @@ const NotesSection = ({
   const canRunActions = Boolean(activeNote?.rawText.trim())
   const postProcessingEnabled = settings.postProcessingEnabled
   const activeAction = useMemo(() => actions.find((action) => action.id === lastUsedActionId) ?? actions[0] ?? null, [actions, lastUsedActionId])
-  const postProcessingModelForEstimate =
-    usageStats?.activeEnhancementModel ||
-    (settings.postProcessingRuntime === 'cloud' ? settings.postProcessingCloudModelId : settings.postProcessingLocalModelId)
   const enhancementInputUnitCost = usageStats?.activeEnhancementInputCostPerToken ?? null
   const enhancementOutputUnitCost = usageStats?.activeEnhancementOutputCostPerToken ?? null
   const noteSpentCostUSD =
@@ -1209,13 +1205,13 @@ const NotesSection = ({
       : noteHasEnhancedOutput
         ? null
         : 0
-  const noteComparedWordsLabel = noteHasEnhancedOutput
-    ? `${formatCount(rawNoteWordCount)}/${formatCount(enhancedNoteWordCount)} words`
-    : `${formatCount(rawNoteWordCount)}/-- words`
-  const noteComparedTokensLabel = noteHasEnhancedOutput
-    ? `~${formatCount(noteRawTokenEstimate)}/~${formatCount(noteEnhancedTokenEstimate)} tokens`
-    : `~${formatCount(noteRawTokenEstimate)}/-- tokens`
-  const noteSpentLabel = noteSpentCostUSD === null ? 'n/a now spent' : `~${formatCurrency(noteSpentCostUSD)} now spent`
+  const noteWordsLabel = noteHasEnhancedOutput
+    ? `${formatCount(rawNoteWordCount)} / ${formatCount(enhancedNoteWordCount)} w`
+    : `${formatCount(rawNoteWordCount)} w`
+  const noteTokensLabel = noteHasEnhancedOutput
+    ? `~${formatCount(noteRawTokenEstimate)} / ~${formatCount(noteEnhancedTokenEstimate)} t`
+    : `~${formatCount(noteRawTokenEstimate)} t`
+  const noteCostLabel = noteSpentCostUSD !== null ? formatCurrency(noteSpentCostUSD) : null
 
   useEffect(() => {
     const storedActionId = localStorage.getItem(STORAGE_KEYS.noteLastAction)
@@ -1965,27 +1961,18 @@ const NotesSection = ({
                   </Button>
                 </div>
               </div>
-              <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-foreground/45">
-                <span>Created {formatTimestamp(activeNote.createdAt)}</span>
-                <span>&middot;</span>
-                <span>{noteComparedWordsLabel}</span>
-                <span>&middot;</span>
-                <span>{noteComparedTokensLabel}</span>
-                <span>&middot;</span>
-                <span>{noteSpentLabel}</span>
-                <button
-                  type="button"
-                  className="app-no-drag inline-flex h-4 w-4 items-center justify-center rounded-full border border-border-subtle text-[10px] text-foreground/60 transition-colors hover:bg-surface-2 hover:text-foreground"
-                  title="Cost reflects processed Enhanced output only. Raw draft-only notes are not counted as spent usage."
-                  onClick={() => {
-                    pushToast({
-                      title: 'Enhanced spend summary',
-                      description: `Raw/Enhanced compare uses this note and model ${postProcessingModelForEstimate}. Displayed value counts only processed enhanced text.`,
-                    })
-                  }}
-                >
-                  i
-                </button>
+              <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-foreground/40">
+                <span>{formatTimestamp(activeNote.createdAt)}</span>
+                <span className="text-foreground/20">|</span>
+                <span>{noteWordsLabel}</span>
+                <span className="text-foreground/20">|</span>
+                <span>{noteTokensLabel}</span>
+                {noteCostLabel && (
+                  <>
+                    <span className="text-foreground/20">|</span>
+                    <span className="text-foreground/55">{noteCostLabel}</span>
+                  </>
+                )}
               </div>
 
               <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -5159,6 +5146,7 @@ const PromptsSection = ({ settings, onChange }: PromptsSectionProps) => {
   const { pushToast } = useToast()
   const [view, setView] = useState<PromptView>('preview')
   const [testInput, setTestInput] = useState('')
+  const [testRoute, setTestRoute] = useState<'normal' | 'translation'>('normal')
   const [testOutput, setTestOutput] = useState('')
   const [testLoading, setTestLoading] = useState(false)
   const [customizeTarget, setCustomizeTarget] = useState<'normal' | 'agent' | 'translation'>('agent')
@@ -5240,7 +5228,7 @@ const PromptsSection = ({ settings, onChange }: PromptsSectionProps) => {
       setTestLoading(true)
 
       try {
-        const result = await electronAPI.runPromptTest(testInput)
+        const result = await electronAPI.runPromptTest(testInput, testRoute)
         const routeLabelById: Record<typeof result.route, string> = {
           normal: 'Normal prompt',
           agent: 'Agent prompt',
@@ -5258,27 +5246,7 @@ const PromptsSection = ({ settings, onChange }: PromptsSectionProps) => {
       return
     }
 
-    const normalizedAgent = settings.agentName.trim().toLowerCase()
-    const usesAgentRoute = normalizedAgent.length > 0 && testInput.toLowerCase().includes(normalizedAgent)
-
-    const usesTranslationRoute =
-      settings.translationModeEnabled && testInput.trim().toLowerCase().startsWith('translate:')
-
-    if (usesTranslationRoute) {
-      setTestOutput(
-        `Route: Translation prompt\n\nSource: ${settings.translationSourceLanguage}\nTarget: ${settings.translationTargetLanguage}\nHotkey: ${translationHotkey}\n\nTemplate:\n${settings.translationPrompt}\n\nInput:\n${testInput.replace(/^translate:\s*/i, '')}`,
-      )
-      return
-    }
-
-    if (usesAgentRoute) {
-      setTestOutput(
-        `Route: Agent prompt\n\nAgent: ${settings.agentName}\n\nTemplate:\n${settings.agentPrompt}\n\nInput:\n${testInput}`,
-      )
-      return
-    }
-
-    setTestOutput(`Route: Normal prompt\n\nTemplate:\n${settings.normalPrompt}\n\nInput:\n${testInput}`)
+    setTestOutput('Prompt test unavailable outside Electron runtime.')
   }
 
   return (
@@ -5403,14 +5371,29 @@ const PromptsSection = ({ settings, onChange }: PromptsSectionProps) => {
               </TabsContent>
 
               <TabsContent value="test" className="space-y-3 p-4">
+                <div className="flex items-center gap-3">
+                  <div className="flex-1 space-y-1.5">
+                    <p className="text-sm font-medium">Test input</p>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-[11px] text-muted-foreground">Route</p>
+                    <select
+                      className="h-7 rounded-md border border-border-subtle bg-surface-0 px-2 text-xs"
+                      value={testRoute}
+                      onChange={(e) => setTestRoute(e.target.value as 'normal' | 'translation')}
+                    >
+                      <option value="normal">Normal</option>
+                      <option value="translation">Translation</option>
+                    </select>
+                  </div>
+                </div>
                 <div className="space-y-1.5">
-                  <p className="text-sm font-medium">Test input</p>
                   <Textarea
                     value={testInput}
                     onChange={(event) => {
                       setTestInput(event.target.value)
                     }}
-                    placeholder={`Try text with "${settings.agentName || 'Agent'}" or prefix with "translate:".`}
+                    placeholder={testRoute === 'translation' ? 'Enter text to translate...' : `Try text with "${settings.agentName || 'Agent'}" or prefix with "translate:".`}
                     className="min-h-28"
                   />
                 </div>
@@ -7619,6 +7602,11 @@ const ControlPanelScene = () => {
       handleResult(payload)
     })
 
+    const offHistorySync = electronAPI.onOverlayHistorySynced((entries) => {
+      localStorage.setItem(STORAGE_KEYS.history, JSON.stringify(entries))
+      loadHistoryForSection(historyVisibleCount)
+    })
+
     const offError = electronAPI.onDictationError((message) => {
       setTranscribingNoteId((currentNoteId) => {
         if (!currentNoteId) {
@@ -7644,6 +7632,7 @@ const ControlPanelScene = () => {
 
     return () => {
       offResult()
+      offHistorySync()
       offError()
     }
   }, [emitNotesLog, historyVisibleCount, loadHistoryForSection, pushToast])
@@ -7866,7 +7855,6 @@ const ControlPanelScene = () => {
       : String(historyTotalEntries)
 
   const notesCountLabel = notes.length > 999 ? '999+' : String(notes.length)
-  const conversationsTotalLabel = historyLoading ? '...' : formatCount(historyTotalEntries)
   const notesTotalLabel = formatCount(notes.length)
   const notesEstimateFromState = useMemo(() => {
     const inputRate = usageStats?.activeEnhancementInputCostPerToken
@@ -8187,13 +8175,6 @@ const ControlPanelScene = () => {
     })
   }, [notes, resolveCurrentPostProcessingModelMeta, settings.detailedStatsLoggingEnabled, usageStats])
 
-  const sourceStatusLabel = usageStats?.litellmSource === 'unavailable' ? 'LiteLLM | Unavailable' : 'LiteLLM'
-  const sourceStatusClass =
-    usageStats?.litellmSource === 'live'
-      ? 'text-emerald-400'
-      : usageStats?.litellmSource === 'cache'
-        ? 'text-amber-300'
-        : 'text-red-400'
   const sectionTitle =
     section === 'conversations' ? t('menuConversations') : section === 'notes' ? t('menuNotes') : t('menuSettings')
 
@@ -8338,130 +8319,68 @@ const ControlPanelScene = () => {
 
               <div className="my-3 h-px bg-border-subtle/80" />
 
-              <div className="space-y-2.5">
+              <div className="space-y-2">
                 <div className="rounded-md border border-border-subtle bg-surface-0 px-2.5 py-2">
-                  <div className="mb-2 flex items-center justify-between gap-2">
+                  <div className="mb-1.5 flex items-center justify-between gap-2">
                     <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-foreground/55">Dictations</p>
                     <button
                       type="button"
                       className="app-no-drag text-[10px] text-primary/90 hover:text-primary disabled:cursor-not-allowed disabled:opacity-45"
                       disabled={usageStatsLoading}
-                      onClick={() => {
-                        void refreshUsageStats(true)
-                      }}
+                      onClick={() => { void refreshUsageStats(true) }}
                     >
                       {usageStatsLoading ? '...' : 'Refresh'}
                     </button>
                   </div>
-                  <div className="space-y-1.5 text-[11px] text-foreground/80">
-                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                      <span className="text-foreground/55">Count</span>
-                      <span className="font-medium tabular-nums whitespace-nowrap">{conversationsTotalLabel}</span>
-                    </div>
+                  <div className="space-y-1 text-[11px] text-foreground/80">
                     <div className="grid grid-cols-[1fr_auto] items-center gap-2">
                       <span className="text-foreground/55">Recorded</span>
                       <span className="font-medium tabular-nums whitespace-nowrap">{formatDurationCompact(dictationAggregate.durationSecondsTotal)}</span>
                     </div>
                     <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                      <span className="text-foreground/55">Minutes / Hours</span>
-                      <span className="font-medium tabular-nums whitespace-nowrap">
-                        {dictationAggregate.durationMinutesTotal}m / {dictationAggregate.durationHoursTotal}h
-                      </span>
+                      <span className="text-foreground/55">Words / Tokens</span>
+                      <span className="font-medium tabular-nums whitespace-nowrap">{formatCount(dictationAggregate.wordsTotal)} / ~{formatCount(dictationAggregate.tokensTotal)}</span>
                     </div>
+                    {dictationAggregate.enhancedCount > 0 && (
+                      <div className="grid grid-cols-[1fr_auto] items-center gap-2">
+                        <span className="text-foreground/55">Enhanced</span>
+                        <span className="font-medium tabular-nums whitespace-nowrap">{formatCount(dictationAggregate.enhancedCount)}</span>
+                      </div>
+                    )}
                     <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                      <span className="text-foreground/55">Words</span>
-                      <span className="font-medium tabular-nums whitespace-nowrap">{formatCount(dictationAggregate.wordsTotal)}</span>
-                    </div>
-                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                      <span className="text-foreground/55">Tokens</span>
-                      <span className="font-medium tabular-nums whitespace-nowrap">~{formatCount(dictationAggregate.tokensTotal)}</span>
-                    </div>
-                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                      <span className="text-foreground/55">Enhanced dictations</span>
-                      <span className="font-medium tabular-nums whitespace-nowrap">{formatCount(dictationAggregate.enhancedCount)}</span>
-                    </div>
-                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                      <span className="text-foreground/55">Enhanced words/tokens</span>
-                      <span className="font-medium tabular-nums whitespace-nowrap">
-                        {formatCount(dictationAggregate.enhancedWordsTotal)} / ~{formatCount(dictationAggregate.enhancedTokensTotal)}
-                      </span>
-                    </div>
-                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                      <span className="text-foreground/55">Dictation estimate</span>
+                      <span className="text-foreground/55">Cost</span>
                       <span className="font-semibold tabular-nums whitespace-nowrap">{formatCurrency(transcriptionEstimate)}</span>
                     </div>
-                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                      <span className="text-foreground/55">Post-processing enhance spent</span>
-                      <span className="font-semibold tabular-nums whitespace-nowrap">{formatCurrency(dictationEnhancementEstimate)}</span>
-                    </div>
                   </div>
-                  <p className="mt-2 text-[10px] text-muted-foreground">Duration prefers measured recording time; fallback is words-per-minute estimation.</p>
                 </div>
 
                 <div className="rounded-md border border-border-subtle bg-surface-0 px-2.5 py-2">
-                  <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-foreground/55">Notes</p>
-                  <div className="space-y-1.5 text-[11px] text-foreground/80">
+                  <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-foreground/55">Notes</p>
+                  <div className="space-y-1 text-[11px] text-foreground/80">
                     <div className="grid grid-cols-[1fr_auto] items-center gap-2">
                       <span className="text-foreground/55">Count</span>
                       <span className="font-medium tabular-nums whitespace-nowrap">{notesTotalLabel}</span>
                     </div>
+                    {notesAggregate.enhancedNotesCount > 0 && (
+                      <div className="grid grid-cols-[1fr_auto] items-center gap-2">
+                        <span className="text-foreground/55">Enhanced</span>
+                        <span className="font-medium tabular-nums whitespace-nowrap">{formatCount(notesAggregate.enhancedNotesCount)}</span>
+                      </div>
+                    )}
                     <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                      <span className="text-foreground/55">Post-processing</span>
-                      <span
-                        className={cn(
-                          'font-medium whitespace-nowrap',
-                          settings.postProcessingEnabled ? 'text-emerald-300' : 'text-amber-300',
-                        )}
-                      >
-                        {settings.postProcessingEnabled ? 'Enabled' : 'Disabled (N/A new runs)'}
-                      </span>
-                    </div>
-                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                      <span className="text-foreground/55">Enhanced notes (post-process)</span>
-                      <span className="font-medium tabular-nums whitespace-nowrap">{formatCount(notesAggregate.enhancedNotesCount)}</span>
-                    </div>
-                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                      <span className="text-foreground/55">Enhanced words</span>
-                      <span className="font-medium tabular-nums whitespace-nowrap">{formatCount(notesAggregate.enhancedWordsTotal)}</span>
-                    </div>
-                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                      <span className="text-foreground/55">Enhanced tokens</span>
-                      <span className="font-medium tabular-nums whitespace-nowrap">~{formatCount(notesAggregate.enhancedTokensTotal)}</span>
-                    </div>
-                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                      <span className="text-foreground/55">Draft-only notes</span>
-                      <span className="font-medium tabular-nums whitespace-nowrap">{formatCount(notesAggregate.draftNotesCount)}</span>
-                    </div>
-                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                      <span className="text-foreground/55">Post-processing enhance spent</span>
+                      <span className="text-foreground/55">Cost</span>
                       <span className="font-semibold tabular-nums whitespace-nowrap">
                         {settings.postProcessingEnabled ? formatCurrency(notesEstimate) : 'N/A'}
                       </span>
                     </div>
-                    {!settings.postProcessingEnabled ? (
-                      <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                        <span className="text-foreground/55">Historical enhanced spent</span>
-                        <span className="font-semibold tabular-nums whitespace-nowrap">{formatCurrency(notesEstimate)}</span>
-                      </div>
-                    ) : null}
                   </div>
-                  <p className="mt-2 text-[10px] text-muted-foreground">Spend counts only notes with Enhanced output, not drafts.</p>
                 </div>
 
-                <div className="rounded-md border border-border-subtle bg-surface-0 px-2.5 py-2">
-                  <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-foreground/55">Cost source</p>
-                  <div className="space-y-1.5 text-[11px] text-foreground/80">
-                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                      <span className="text-foreground/55">Source</span>
-                      <span className={cn('font-semibold whitespace-nowrap', sourceStatusClass)}>{sourceStatusLabel}</span>
-                    </div>
-                    <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                      <span className="text-foreground/55">Overall $ used</span>
-                      <span className="font-semibold tabular-nums whitespace-nowrap text-foreground">{formatCurrency(overallUsedCost)}</span>
-                    </div>
-                    {usageStats?.litellmError ? <div className="text-[10px] text-red-300/90">{usageStats.litellmError}</div> : null}
-                  </div>
+                <div className="flex items-center justify-between gap-2 rounded-md border border-border-subtle bg-surface-0 px-2.5 py-1.5 text-[11px]">
+                  <span className="text-foreground/55">Total spent</span>
+                  <span className="font-semibold tabular-nums whitespace-nowrap text-foreground">{formatCurrency(overallUsedCost)}</span>
                 </div>
+                {usageStats?.litellmError && <p className="px-1 text-[10px] text-red-300/90">{usageStats.litellmError}</p>}
               </div>
 
               <div className="mt-auto space-y-1.5 border-t border-border-subtle/80 pt-3">

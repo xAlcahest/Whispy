@@ -18,4 +18,3 @@ resources/bin/whispercpp/
 assets4app/
 subprojects/**/node_modules/
 subprojects/**/dist/
-session-*.md

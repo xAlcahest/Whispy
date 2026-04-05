@@ -7,7 +7,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoPaste: true,
   autoPasteBackend: 'ydotool',
   autoPasteMode: 'instant',
-  autoPasteShortcut: 'ctrl-v',
+  autoPasteShortcut: 'auto',
   microphoneAccess: true,
   autoHideFloatingIcon: false,
   overlayRuntimeBadgeEnabled: true,

@@ -9,26 +9,48 @@ import {
 } from 'react'
 import { STORAGE_KEYS } from '../lib/constants'
 import { loadSettings, saveSettings } from '../lib/storage'
+import enMessages from './locales/en.json'
 
-export type AppLocale = 'en'
+export type AppLocale =
+  | 'en'
+  | 'de'
+  | 'es'
+  | 'fr'
+  | 'it'
+  | 'ja'
+  | 'pt'
+  | 'ru'
+  | 'zh-CN'
+  | 'zh-TW'
+
+export const SUPPORTED_LOCALES: Record<AppLocale, string> = {
+  en: 'English',
+  de: 'Deutsch',
+  es: 'Español',
+  fr: 'Français',
+  it: 'Italiano',
+  ja: '日本語',
+  pt: 'Português',
+  ru: 'Русский',
+  'zh-CN': '简体中文',
+  'zh-TW': '繁體中文',
+}
 
 type TranslationValues = Record<string, string | number>
 
 const DEFAULT_LOCALE: AppLocale = 'en'
 
 const translations: Record<AppLocale, Record<string, string>> = {
-  en: {
-    menuConversations: 'Dictations',
-    menuNotes: 'Notes',
-    menuSettings: 'Settings',
-    settingsGeneralTab: 'General',
-    settingsModelsTab: 'Models',
-    settingsShortcutsTab: 'Shortcuts',
-    settingsInfoTab: 'Info',
-    commonActive: 'Active',
-    commonSelect: 'Select',
-    commonShowAll: 'Show all',
-  },
+  en: enMessages as Record<string, string>,
+  de: {},
+  es: {},
+  fr: {},
+  it: {},
+  ja: {},
+  pt: {},
+  ru: {},
+  'zh-CN': {},
+  'zh-TW': {},
 }
 
 const formatMessage = (message: string, values?: TranslationValues) => {
@@ -42,9 +64,12 @@ const formatMessage = (message: string, values?: TranslationValues) => {
   )
 }
 
+const VALID_LOCALES = new Set<string>(Object.keys(SUPPORTED_LOCALES))
+
 const readLocaleFromSettings = (): AppLocale => {
   const settings = loadSettings()
-  return settings.uiLanguage === 'en' ? 'en' : DEFAULT_LOCALE
+  const lang = settings.uiLanguage
+  return lang && VALID_LOCALES.has(lang) ? (lang as AppLocale) : DEFAULT_LOCALE
 }
 
 interface I18nContextValue {

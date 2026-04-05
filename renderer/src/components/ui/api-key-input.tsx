@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { Check, X, KeyRound } from 'lucide-react'
 import { Input } from './input'
+import { useI18n } from '../../i18n'
 
 interface ApiKeyInputProps {
   apiKey: string
@@ -19,9 +20,11 @@ export function ApiKeyInput({
   apiKey,
   setApiKey,
   className = '',
-  placeholder = 'Enter API key',
+  placeholder,
   label,
 }: ApiKeyInputProps) {
+  const { t } = useI18n()
+  const resolvedPlaceholder = placeholder ?? t('apiKeyInput.placeholder')
   const [isEditing, setIsEditing] = useState(false)
   const [draft, setDraft] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
@@ -85,7 +88,7 @@ export function ApiKeyInput({
             <Input
               ref={inputRef}
               type="text"
-              placeholder={placeholder}
+              placeholder={resolvedPlaceholder}
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={handleKeyDown}
@@ -130,10 +133,10 @@ export function ApiKeyInput({
                 {maskKey(apiKey)}
               </span>
             ) : (
-              <span className="text-muted-foreground/40 text-xs">{placeholder}</span>
+              <span className="text-muted-foreground/40 text-xs">{resolvedPlaceholder}</span>
             )}
             <span className="ml-auto text-muted-foreground/30 text-xs group-hover:text-muted-foreground/60 transition-colors">
-              {hasKey ? 'Edit' : 'Add'}
+              {hasKey ? t('apiKeyInput.editButton') : t('apiKeyInput.addButton')}
             </span>
           </button>
         )}

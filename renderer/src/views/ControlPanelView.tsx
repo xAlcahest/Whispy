@@ -7602,6 +7602,11 @@ const ControlPanelScene = () => {
       handleResult(payload)
     })
 
+    const offHistorySync = electronAPI.onOverlayHistorySynced((entries) => {
+      localStorage.setItem(STORAGE_KEYS.history, JSON.stringify(entries))
+      loadHistoryForSection(historyVisibleCount)
+    })
+
     const offError = electronAPI.onDictationError((message) => {
       setTranscribingNoteId((currentNoteId) => {
         if (!currentNoteId) {
@@ -7627,6 +7632,7 @@ const ControlPanelScene = () => {
 
     return () => {
       offResult()
+      offHistorySync()
       offError()
     }
   }, [emitNotesLog, historyVisibleCount, loadHistoryForSection, pushToast])

@@ -836,8 +836,18 @@ const handleOverlayIPCRequest = async (channel: string, args: unknown[]): Promis
     case IPCChannels.performAutoPaste: {
       const [text, backend, options] = args as [string, AppSettings['autoPasteBackend'], { shortcut?: AppSettings['autoPasteShortcut'] } | undefined]
       const sanitizedText = (typeof text === 'string' ? text : '').slice(0, 100_000)
-      const settings = await loadCurrentSettings()
-      return performAutoPaste(sanitizedText, backend, { shortcut: options?.shortcut ?? settings.autoPasteShortcut })
+      const pasteSettings = await loadCurrentSettings()
+      const selectedShortcut = options?.shortcut ?? pasteSettings.autoPasteShortcut
+      const result = performAutoPaste(sanitizedText, backend, { shortcut: selectedShortcut })
+      logDebug('system-diagnostics', 'Auto-paste execution result', {
+        backend,
+        shortcut: selectedShortcut,
+        success: result.success,
+        elapsedMs: result.elapsedMs,
+        textLength: sanitizedText.length,
+        details: result.details,
+      })
+      return result
     }
     case IPCChannels.openControlPanel:
       await ensureControlPanelWindow()
@@ -876,6 +886,10 @@ const handleOverlayIPCRequest = async (channel: string, args: unknown[]): Promis
     case IPCChannels.setBackendHistory: {
       const [entries] = args as [HistoryEntry[]]
       ensureBackendStateStore().setHistory(entries)
+      // Sync to control panel so it updates its local view
+      if (controlPanelWindow && !controlPanelWindow.isDestroyed()) {
+        try { controlPanelWindow.webContents.send('overlay:history-synced', entries) } catch { /* frame disposed */ }
+      }
       return
     }
     case IPCChannels.setBackendModels: {

@@ -187,6 +187,7 @@ const fallbackElectronAPI: ElectronAPI = {
   onHotkeyRegistrationFailed: () => noopUnsubscribe,
   onHotkeyFallbackUsed: () => noopUnsubscribe,
   onHotkeyEffectiveChanged: () => noopUnsubscribe,
+  onOverlayHistorySynced: () => noopUnsubscribe,
 }
 
 const getRuntimeElectronAPI = (): ElectronAPI | null => {

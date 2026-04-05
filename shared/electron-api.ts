@@ -94,4 +94,5 @@ export interface ElectronAPI {
   ) => () => void
   onHotkeyFallbackUsed: (callback: (payload: HotkeyFallbackUsedPayload) => void) => () => void
   onHotkeyEffectiveChanged: (callback: (newHotkey: string) => void) => () => void
+  onOverlayHistorySynced: (callback: (entries: HistoryEntry[]) => void) => () => void
 }

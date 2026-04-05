@@ -37,21 +37,87 @@ const TERMINAL_HINTS = [
   'tilix', 'hyper', 'tabby', 'contour', 'rio', 'ghostty', 'st-256color',
 ]
 
-const getActiveWindowClass = (): string | null => {
-  try {
-    const uuid = spawnSync('kdotool', ['getactivewindow'], {
-      encoding: 'utf8', timeout: 300, windowsHide: true,
-    })
-    const windowId = uuid.stdout?.trim()
-    if (!windowId || uuid.status !== 0) return null
+const quickSpawn = (command: string, args: string[]) =>
+  spawnSync(command, args, { encoding: 'utf8', timeout: 500, windowsHide: true })
 
-    const cls = spawnSync('kdotool', ['getwindowclassname', windowId], {
-      encoding: 'utf8', timeout: 300, windowsHide: true,
-    })
-    return cls.status === 0 ? cls.stdout?.trim().toLowerCase() ?? null : null
+const getActiveWindowClassKDE = (): string | null => {
+  const win = quickSpawn('kdotool', ['getactivewindow'])
+  const windowId = win.stdout?.trim()
+  if (!windowId || win.status !== 0) return null
+  const cls = quickSpawn('kdotool', ['getwindowclassname', windowId])
+  return cls.status === 0 ? cls.stdout?.trim().toLowerCase() ?? null : null
+}
+
+const getActiveWindowClassHyprland = (): string | null => {
+  const result = quickSpawn('hyprctl', ['activewindow', '-j'])
+  if (result.status !== 0) return null
+  try {
+    const parsed = JSON.parse(result.stdout) as { class?: string }
+    return parsed.class?.toLowerCase() ?? null
   } catch {
     return null
   }
+}
+
+const getActiveWindowClassSway = (): string | null => {
+  const result = quickSpawn('swaymsg', ['-t', 'get_tree'])
+  if (result.status !== 0) return null
+  try {
+    const findFocused = (node: { focused?: boolean; app_id?: string; window_properties?: { class?: string }; nodes?: unknown[]; floating_nodes?: unknown[] }): string | null => {
+      if (node.focused) return (node.app_id ?? node.window_properties?.class ?? null)
+      for (const child of [...(node.nodes ?? []), ...(node.floating_nodes ?? [])] as typeof node[]) {
+        const found = findFocused(child)
+        if (found) return found
+      }
+      return null
+    }
+    const tree = JSON.parse(result.stdout)
+    return findFocused(tree)?.toLowerCase() ?? null
+  } catch {
+    return null
+  }
+}
+
+const getActiveWindowClassGnome = (): string | null => {
+  const result = quickSpawn('gdbus', [
+    'call', '--session', '--dest', 'org.gnome.Shell',
+    '--object-path', '/org/gnome/Shell',
+    '--method', 'org.gnome.Shell.Eval',
+    'global.display.focus_window ? global.display.focus_window.get_wm_class() : ""',
+  ])
+  if (result.status !== 0) return null
+  const match = result.stdout?.match(/\(true,\s*'([^']*)'\)/)
+  if (!match?.[1]) return null
+  const cls = match[1].replace(/^"|"$/g, '').trim()
+  return cls.length > 0 ? cls.toLowerCase() : null
+}
+
+const getActiveWindowClassX11 = (): string | null => {
+  const result = quickSpawn('xdotool', ['getactivewindow', 'getwindowclassname'])
+  return result.status === 0 ? result.stdout?.trim().toLowerCase() ?? null : null
+}
+
+const detectDesktopEnv = () =>
+  (process.env.XDG_CURRENT_DESKTOP ?? process.env.XDG_SESSION_DESKTOP ?? '').toLowerCase()
+
+const isWayland = () =>
+  (process.env.XDG_SESSION_TYPE?.toLowerCase() === 'wayland') || Boolean(process.env.WAYLAND_DISPLAY)
+
+const getActiveWindowClass = (): string | null => {
+  if (process.platform !== 'linux') return null
+
+  if (!isWayland()) return getActiveWindowClassX11()
+
+  const desktop = detectDesktopEnv()
+
+  if (desktop.includes('kde') || desktop.includes('plasma')) return getActiveWindowClassKDE()
+  if (desktop.includes('hyprland')) return getActiveWindowClassHyprland()
+  if (desktop.includes('sway') || desktop.includes('i3')) return getActiveWindowClassSway()
+  if (desktop.includes('gnome') || desktop.includes('ubuntu')) return getActiveWindowClassGnome()
+  if (desktop.includes('cinnamon') || desktop.includes('xfce') || desktop.includes('mate')) return getActiveWindowClassX11()
+
+  // Generic fallback: try hyprctl, swaymsg, xdotool in order
+  return getActiveWindowClassHyprland() ?? getActiveWindowClassSway() ?? getActiveWindowClassX11()
 }
 
 export const captureActiveWindowClass = () => {

@@ -65,7 +65,18 @@ export const LANGUAGE_FLAG_BY_NAME: Record<string, string> = {
   ...Object.fromEntries(LANGUAGE_OPTIONS.map((language) => [language.value, language.flag])),
 }
 
-export const UI_LANGUAGES = [{ id: 'en', label: 'English' }] as const
+export const UI_LANGUAGES = [
+  { id: 'en', label: 'English' },
+  { id: 'de', label: 'Deutsch' },
+  { id: 'es', label: 'Español' },
+  { id: 'fr', label: 'Français' },
+  { id: 'it', label: 'Italiano' },
+  { id: 'ja', label: '日本語' },
+  { id: 'pt', label: 'Português' },
+  { id: 'ru', label: 'Русский' },
+  { id: 'zh-CN', label: '简体中文' },
+  { id: 'zh-TW', label: '繁體中文' },
+] as const
 
 export const PROVIDERS = [
   { id: 'whisper', label: 'Whisper (local)' },

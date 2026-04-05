@@ -764,16 +764,16 @@ const spawnOverlayProcess = (): Promise<void> => {
     const appIconPath = resolveApplicationIconPath()
     if (appIconPath) args.push(`--app-icon=${appIconPath}`)
 
+    const overlayEnv: Record<string, string | undefined> = {}
+    for (const [key, value] of Object.entries(process.env)) {
+      const upper = key.toUpperCase()
+      if (upper.includes('KEY') || upper.includes('SECRET') || upper.includes('TOKEN') || upper.includes('PASSWORD')) continue
+      overlayEnv[key] = value
+    }
+
     overlayProcess = spawn(process.execPath, [overlayHostPath, ...args], {
       stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
-      env: {
-        PATH: process.env.PATH,
-        HOME: process.env.HOME,
-        DISPLAY: process.env.DISPLAY,
-        WAYLAND_DISPLAY: process.env.WAYLAND_DISPLAY,
-        XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR,
-        ELECTRON_RENDERER_URL: process.env.ELECTRON_RENDERER_URL,
-      },
+      env: overlayEnv,
     })
 
     overlayProcessReady = false

@@ -842,10 +842,14 @@ const handleOverlayIPCRequest = async (channel: string, args: unknown[]): Promis
     case IPCChannels.openControlPanel:
       await ensureControlPanelWindow()
       return
-    case IPCChannels.getWhisperRuntimeStatus:
-      return ensureLocalModelStore().getWhisperRuntimeStatus()
-    case IPCChannels.getWhisperRuntimeDiagnostics:
-      return whisperServerManager ? whisperServerManager.getDiagnostics() : null
+    case IPCChannels.getWhisperRuntimeStatus: {
+      const runtimeSettings = await loadCurrentSettings()
+      return getWhisperRuntimeStatus(runtimeSettings)
+    }
+    case IPCChannels.getWhisperRuntimeDiagnostics: {
+      const diagSettings = await loadCurrentSettings()
+      return ensureWhisperServerManager().getDiagnostics(diagSettings.whisperCppRuntimeVariant)
+    }
     case IPCChannels.getAutoPasteBackendSupport:
       return detectAutoPasteBackendSupport()
     case IPCChannels.getDisplayServer:

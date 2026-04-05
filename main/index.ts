@@ -568,6 +568,14 @@ const detectAutoPasteBackendSupport = (): AutoPasteBackendSupportPayload => {
   }
 }
 
+const scheduleReload = (win: BrowserWindow | null) => {
+  setTimeout(() => {
+    if (win && !win.isDestroyed()) {
+      win.webContents.reload()
+    }
+  }, 1500)
+}
+
 const createOverlayWindow = async () => {
   const disableWindowSandbox = process.platform === 'linux' && linuxDisableSandbox
   const baseBounds = getOverlayBounds(OVERLAY_SIZES.BASE)
@@ -582,7 +590,7 @@ const createOverlayWindow = async () => {
     skipTaskbar: true,
     alwaysOnTop: true,
     hasShadow: false,
-    backgroundColor: '#00000000',
+    type: 'toolbar',
     show: false,
     webPreferences: {
       preload: preloadPath,
@@ -602,9 +610,11 @@ const createOverlayWindow = async () => {
       errorDescription,
       validatedURL,
     }, 'Window')
+    scheduleReload(overlayWindow)
   })
   overlayWindow.webContents.on('render-process-gone', (_event, details) => {
     logDebug('error-details', 'Overlay renderer process exited', details, 'Window')
+    scheduleReload(overlayWindow)
   })
   overlayWindow.webContents.on('did-finish-load', () => {
     logDebug('system-diagnostics', 'Overlay window loaded', undefined, 'Window')
@@ -612,6 +622,8 @@ const createOverlayWindow = async () => {
   overlayWindow.on('closed', () => {
     overlayWindow = null
   })
+
+  overlayWindow.setShape(buildCircleShape(baseBounds.width))
 
   try {
     await loadRoute(overlayWindow, 'overlay')
@@ -656,9 +668,11 @@ const createControlPanelWindow = async () => {
       errorDescription,
       validatedURL,
     }, 'Window')
+    scheduleReload(controlPanelWindow)
   })
   controlPanelWindow.webContents.on('render-process-gone', (_event, details) => {
     logDebug('error-details', 'Control panel renderer process exited', details, 'Window')
+    scheduleReload(controlPanelWindow)
   })
 
   controlPanelWindow.on('closed', () => {
@@ -713,6 +727,21 @@ const ensureControlPanelWindow = async () => {
   controlPanelWindow?.focus()
 }
 
+const buildCircleShape = (diameter: number): Electron.Rectangle[] => {
+  const r = diameter / 2
+  const rects: Electron.Rectangle[] = []
+  for (let y = 0; y < diameter; y++) {
+    const dy = y - r + 0.5
+    const halfWidth = Math.sqrt(Math.max(0, r * r - dy * dy))
+    const x0 = Math.floor(r - halfWidth)
+    const x1 = Math.ceil(r + halfWidth)
+    if (x1 > x0) {
+      rects.push({ x: x0, y, width: x1 - x0, height: 1 })
+    }
+  }
+  return rects
+}
+
 const setOverlaySize = (sizeKey: OverlaySizeKey) => {
   if (!overlayWindow) {
     return
@@ -721,6 +750,12 @@ const setOverlaySize = (sizeKey: OverlaySizeKey) => {
   const targetSize = OVERLAY_SIZES[sizeKey]
   const targetBounds = getOverlayBounds(targetSize)
   overlayWindow.setBounds(targetBounds, true)
+
+  if (sizeKey === 'BASE') {
+    overlayWindow.setShape(buildCircleShape(targetSize.width))
+  } else {
+    overlayWindow.setShape([{ x: 0, y: 0, width: targetSize.width, height: targetSize.height }])
+  }
 }
 
 const broadcast = (channel: string, payload: unknown) => {
@@ -803,8 +838,7 @@ const ensureTray = () => {
             await createOverlayWindow()
           }
 
-          overlayWindow?.show()
-          overlayWindow?.focus()
+          overlayWindow?.showInactive()
         })()
       },
     },
@@ -2029,8 +2063,7 @@ const registerIPC = () => {
       }
     }
 
-    overlayWindow?.show()
-    overlayWindow?.focus()
+    overlayWindow?.showInactive()
     logDebug('system-diagnostics', 'Overlay window shown from IPC request', undefined, 'Window')
   })
 

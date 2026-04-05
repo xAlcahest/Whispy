@@ -877,7 +877,6 @@ const NotesSection = ({
   onForceSaveNote,
   onTrackRawNoteCaret,
 }: NotesSectionProps) => {
-  const { pushToast } = useToast()
   const [isCreatingFolder, setIsCreatingFolder] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
   const [actionsMenuOpen, setActionsMenuOpen] = useState(false)
@@ -1190,9 +1189,6 @@ const NotesSection = ({
   const canRunActions = Boolean(activeNote?.rawText.trim())
   const postProcessingEnabled = settings.postProcessingEnabled
   const activeAction = useMemo(() => actions.find((action) => action.id === lastUsedActionId) ?? actions[0] ?? null, [actions, lastUsedActionId])
-  const postProcessingModelForEstimate =
-    usageStats?.activeEnhancementModel ||
-    (settings.postProcessingRuntime === 'cloud' ? settings.postProcessingCloudModelId : settings.postProcessingLocalModelId)
   const enhancementInputUnitCost = usageStats?.activeEnhancementInputCostPerToken ?? null
   const enhancementOutputUnitCost = usageStats?.activeEnhancementOutputCostPerToken ?? null
   const noteSpentCostUSD =
@@ -1209,13 +1205,13 @@ const NotesSection = ({
       : noteHasEnhancedOutput
         ? null
         : 0
-  const noteComparedWordsLabel = noteHasEnhancedOutput
-    ? `${formatCount(rawNoteWordCount)}/${formatCount(enhancedNoteWordCount)} words`
-    : `${formatCount(rawNoteWordCount)}/-- words`
-  const noteComparedTokensLabel = noteHasEnhancedOutput
-    ? `~${formatCount(noteRawTokenEstimate)}/~${formatCount(noteEnhancedTokenEstimate)} tokens`
-    : `~${formatCount(noteRawTokenEstimate)}/-- tokens`
-  const noteSpentLabel = noteSpentCostUSD === null ? 'n/a now spent' : `~${formatCurrency(noteSpentCostUSD)} now spent`
+  const noteWordsLabel = noteHasEnhancedOutput
+    ? `${formatCount(rawNoteWordCount)} / ${formatCount(enhancedNoteWordCount)} w`
+    : `${formatCount(rawNoteWordCount)} w`
+  const noteTokensLabel = noteHasEnhancedOutput
+    ? `~${formatCount(noteRawTokenEstimate)} / ~${formatCount(noteEnhancedTokenEstimate)} t`
+    : `~${formatCount(noteRawTokenEstimate)} t`
+  const noteCostLabel = noteSpentCostUSD !== null ? formatCurrency(noteSpentCostUSD) : null
 
   useEffect(() => {
     const storedActionId = localStorage.getItem(STORAGE_KEYS.noteLastAction)
@@ -1965,27 +1961,18 @@ const NotesSection = ({
                   </Button>
                 </div>
               </div>
-              <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-foreground/45">
-                <span>Created {formatTimestamp(activeNote.createdAt)}</span>
-                <span>&middot;</span>
-                <span>{noteComparedWordsLabel}</span>
-                <span>&middot;</span>
-                <span>{noteComparedTokensLabel}</span>
-                <span>&middot;</span>
-                <span>{noteSpentLabel}</span>
-                <button
-                  type="button"
-                  className="app-no-drag inline-flex h-4 w-4 items-center justify-center rounded-full border border-border-subtle text-[10px] text-foreground/60 transition-colors hover:bg-surface-2 hover:text-foreground"
-                  title="Cost reflects processed Enhanced output only. Raw draft-only notes are not counted as spent usage."
-                  onClick={() => {
-                    pushToast({
-                      title: 'Enhanced spend summary',
-                      description: `Raw/Enhanced compare uses this note and model ${postProcessingModelForEstimate}. Displayed value counts only processed enhanced text.`,
-                    })
-                  }}
-                >
-                  i
-                </button>
+              <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-foreground/40">
+                <span>{formatTimestamp(activeNote.createdAt)}</span>
+                <span className="text-foreground/20">|</span>
+                <span>{noteWordsLabel}</span>
+                <span className="text-foreground/20">|</span>
+                <span>{noteTokensLabel}</span>
+                {noteCostLabel && (
+                  <>
+                    <span className="text-foreground/20">|</span>
+                    <span className="text-foreground/55">{noteCostLabel}</span>
+                  </>
+                )}
               </div>
 
               <div className="mt-2 flex flex-wrap items-center gap-2">

@@ -750,7 +750,7 @@ const sendToOverlayProcess = (message: unknown) => {
     if (overlayProcess && overlayProcess.connected) {
       overlayProcess.send(message as object)
     }
-  } catch {}
+  } catch { /* process disconnected */ }
 }
 
 const spawnOverlayProcess = (): Promise<void> => {
@@ -967,10 +967,10 @@ const broadcast = (channel: string, payload: unknown) => {
   if (useOverlayProcess) {
     sendToOverlayProcess({ type: 'broadcast', channel, payload })
   } else if (overlayWindow && !overlayWindow.isDestroyed()) {
-    try { overlayWindow.webContents.send(channel, payload) } catch {}
+    try { overlayWindow.webContents.send(channel, payload) } catch { /* frame disposed */ }
   }
   if (controlPanelWindow && !controlPanelWindow.isDestroyed()) {
-    try { controlPanelWindow.webContents.send(channel, payload) } catch {}
+    try { controlPanelWindow.webContents.send(channel, payload) } catch { /* frame disposed */ }
   }
 }
 

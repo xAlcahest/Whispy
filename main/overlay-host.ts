@@ -104,7 +104,7 @@ const setOverlaySize = (sizeKey: OverlaySizeKey) => {
 // ── Parent IPC ─────────────────────────────────────────────────────────────
 
 const sendToParent = (msg: unknown) => {
-  try { process.send?.(msg as object) } catch {}
+  try { process.send?.(msg as object) } catch { /* disconnected */ }
 }
 
 const forwardToParent = (channel: string, args: unknown[]): Promise<unknown> => {
@@ -151,7 +151,7 @@ const handleParentMessage = (message: ParentMessage) => {
 
   if (message.type === 'broadcast') {
     if (overlayWindow && !overlayWindow.isDestroyed()) {
-      try { overlayWindow.webContents.send(message.channel, message.payload) } catch {}
+      try { overlayWindow.webContents.send(message.channel, message.payload) } catch { /* frame disposed */ }
     }
     return
   }

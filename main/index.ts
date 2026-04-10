@@ -1,5 +1,6 @@
 import { app, BrowserWindow, Menu, Tray, globalShortcut, ipcMain, nativeImage, screen, shell, systemPreferences } from 'electron'
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
+import { createHmac } from 'node:crypto'
 import { accessSync, constants as fsConstants, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { estimateDurationFromTranscript, type AppSettings, type DictationResult, type HistoryEntry, type ModelState } from '../shared/app'
@@ -7,7 +8,6 @@ import { normalizeSettings } from '../shared/defaults'
 import { CUSTOM_MODEL_FETCH_ERROR } from '../shared/model-discovery'
 import {
   applySecretsToSettings,
-  extractSecretSettings,
   isSecretMasked,
   maskSecretsInSettings,
   resolveApiKeyFromMasked,
@@ -145,7 +145,6 @@ const modelScanCache = new Map<string, ModelScanCacheEntry>()
 const modelScanInFlight = new Map<string, Promise<string[]>>()
 
 const createModelScanCacheKey = (baseUrl: string, apiKey: string) => {
-  const { createHmac } = require('node:crypto') as typeof import('node:crypto')
   const normalizedBaseUrl = baseUrl.trim().toLowerCase().replace(/\/+$/, '')
   const keyDigest = createHmac('sha256', 'whispy-model-scan-cache').update(apiKey.trim()).digest('hex').slice(0, 16)
   return `${normalizedBaseUrl}|${keyDigest}`

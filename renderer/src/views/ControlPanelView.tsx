@@ -75,6 +75,7 @@ import { fakeTranscriptionService } from '../services/fakeTranscriptionService'
 import MarkdownPreview from '@uiw/react-markdown-preview'
 import '@uiw/react-markdown-preview/markdown.css'
 import rehypeRaw from 'rehype-raw'
+import rehypeSanitize from 'rehype-sanitize'
 import remarkGfm from 'remark-gfm'
 import { marked } from 'marked'
 import {
@@ -2085,7 +2086,7 @@ const NotesSection = ({
                       <MarkdownPreview
                         source={activeEditorValue || '*Nothing to preview yet.*'}
                         remarkPlugins={[remarkGfm]}
-                        rehypePlugins={[rehypeRaw]}
+                        rehypePlugins={[rehypeRaw, rehypeSanitize]}
                         wrapperElement={{
                           'data-color-mode': settings.theme === 'dark' ? 'dark' : 'light',
                         }}

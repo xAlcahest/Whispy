@@ -25,11 +25,7 @@ const runCommand = (command: string, args: string[], envOverrides?: NodeJS.Proce
   })
 }
 
-const commandExists = (command: string) => {
-  const lookupCommand = process.platform === 'win32' ? 'where' : 'which'
-  const probe = runCommand(lookupCommand, [command])
-  return probe.status === 0
-}
+import { commandExists } from './command-utils'
 
 const TERMINAL_HINTS = [
   'konsole', 'terminal', 'terminator', 'alacritty', 'kitty', 'wezterm',

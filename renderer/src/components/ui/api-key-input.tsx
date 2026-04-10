@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { Check, X, KeyRound } from 'lucide-react'
 import { Input } from './input'
 import { useI18n } from '../../i18n'
+import { isSecretMasked } from '../../../../shared/secrets'
 
 interface ApiKeyInputProps {
   apiKey: string
@@ -12,6 +13,7 @@ interface ApiKeyInputProps {
 }
 
 function maskKey(key: string): string {
+  if (isSecretMasked(key)) return key
   if (key.length <= 8) return '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022'
   return key.slice(0, 3) + '...' + key.slice(-4)
 }
@@ -41,12 +43,17 @@ export function ApiKeyInput({
   }, [isEditing])
 
   const enterEdit = () => {
-    setDraft(apiKey)
+    setDraft(isSecretMasked(apiKey) ? '' : apiKey)
     setIsEditing(true)
   }
 
   const save = () => {
-    setApiKey(draft.trim())
+    const trimmed = draft.trim()
+    if (!trimmed && isSecretMasked(apiKey)) {
+      setIsEditing(false)
+      return
+    }
+    setApiKey(trimmed)
     setIsEditing(false)
   }
 

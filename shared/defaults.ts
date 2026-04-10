@@ -204,6 +204,24 @@ export const normalizeSettings = (value: Partial<AppSettings>): AppSettings => {
     mergedSettings.agentName = 'Agent'
   }
 
+  const urlFields: Array<'transcriptionCustomBaseUrl' | 'postProcessingCustomBaseUrl'> = [
+    'transcriptionCustomBaseUrl',
+    'postProcessingCustomBaseUrl',
+  ]
+  for (const field of urlFields) {
+    const raw = mergedSettings[field]
+    if (typeof raw === 'string' && raw.trim().length > 0) {
+      try {
+        const parsed = new URL(raw.trim())
+        if (!['http:', 'https:'].includes(parsed.protocol)) {
+          mergedSettings[field] = ''
+        }
+      } catch {
+        mergedSettings[field] = ''
+      }
+    }
+  }
+
   return mergedSettings
 }
 

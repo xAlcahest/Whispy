@@ -138,7 +138,7 @@ const electronAPI: ElectronAPI = {
   onHotkeyEffectiveChanged: (callback) =>
     listen<string>(IPCChannels.hotkeyEffectiveChanged, callback),
   onOverlayHistorySynced: (callback) =>
-    listen<import('../shared/app').HistoryEntry[]>('overlay:history-synced', callback),
+    listen<import('../shared/app').HistoryEntry[]>(IPCChannels.overlayHistorySynced, callback),
 }
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI)

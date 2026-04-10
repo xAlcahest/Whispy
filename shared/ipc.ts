@@ -247,6 +247,7 @@ export const IPCChannels = {
   hotkeyRegistrationFailed: 'ui:event-hotkey-registration-failed',
   hotkeyFallbackUsed: 'ui:event-hotkey-fallback-used',
   hotkeyEffectiveChanged: 'ui:event-hotkey-effective-changed',
+  overlayHistorySynced: 'overlay:history-synced',
 } as const
 
 export type DictationResultPayload = DictationResult

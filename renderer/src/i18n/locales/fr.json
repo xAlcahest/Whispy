@@ -560,7 +560,7 @@
   "settings.about.changelog2": "Panneau de contrôle complet avec intégration",
   "settings.about.changelog3": "Section Modèles avec flux de téléchargement géré par le backend",
   "settings.about.openAppDataButton": "Ouvrir le dossier de données de l'application",
-  "sidebar.workspaceLabel": "Workspace",
+  "sidebar.workspaceLabel": "Espace de travail",
   "sidebar.dictationsNav": "Dictées",
   "sidebar.notesNav": "Notes",
   "sidebar.settingsNav": "Paramètres",

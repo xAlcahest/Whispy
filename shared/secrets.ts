@@ -17,6 +17,58 @@ export type SecretSettingKey = (typeof SECRET_SETTING_KEYS)[number]
 export type SecretSettingsMap = Partial<Record<SecretSettingKey, string>>
 export type SecretStorageMode = 'env' | 'keyring'
 
+const MASKED_SECRET_PREFIX = '\u2022\u2022\u2022\u2022'
+
+export const maskSecretValue = (value: string): string => {
+  if (!value || !value.trim()) return ''
+  const trimmed = value.trim()
+  if (trimmed.length <= 4) return MASKED_SECRET_PREFIX
+  return MASKED_SECRET_PREFIX + trimmed.slice(-4)
+}
+
+export const isSecretMasked = (value: string): boolean => {
+  return typeof value === 'string' && value.startsWith(MASKED_SECRET_PREFIX)
+}
+
+export const maskSecretsInSettings = (settings: AppSettings): AppSettings => {
+  const masked = { ...settings }
+  for (const key of SECRET_SETTING_KEYS) {
+    masked[key] = maskSecretValue(masked[key])
+  }
+  return masked
+}
+
+export const resolveSecretsForPersistence = (
+  incoming: AppSettings,
+  existingSecrets: SecretSettingsMap,
+): { settings: AppSettings; secrets: SecretSettingsMap } => {
+  const resolved = { ...incoming }
+  const updatedSecrets: SecretSettingsMap = {}
+
+  for (const key of SECRET_SETTING_KEYS) {
+    if (isSecretMasked(resolved[key])) {
+      resolved[key] = existingSecrets[key] ?? ''
+    }
+    updatedSecrets[key] = resolved[key]
+  }
+
+  return { settings: resolved, secrets: updatedSecrets }
+}
+
+export const resolveApiKeyFromMasked = (
+  maskedKey: string,
+  settingsWithSecrets: AppSettings,
+): string => {
+  if (!isSecretMasked(maskedKey)) return maskedKey
+  for (const key of SECRET_SETTING_KEYS) {
+    const realValue = settingsWithSecrets[key]
+    if (realValue && maskSecretValue(realValue) === maskedKey) {
+      return realValue
+    }
+  }
+  return ''
+}
+
 export const SECRET_ENV_KEY_BY_SETTING: Record<SecretSettingKey, string> = {
   transcriptionOpenAIApiKey: 'WHISPY_TRANSCRIPTION_OPENAI_API_KEY',
   transcriptionGrokApiKey: 'WHISPY_TRANSCRIPTION_GROK_API_KEY',

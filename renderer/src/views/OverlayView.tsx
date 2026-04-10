@@ -1,6 +1,7 @@
 import { Mic, AudioLines, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Dropdown } from '../components/ui/dropdown'
+import { useI18n } from '../i18n'
 import { emitAppNotification } from '../lib/app-notifications'
 import { cn } from '../lib/cn'
 import { CLOUD_TRANSCRIPTION_CATALOG, MODEL_PRESETS, STORAGE_KEYS } from '../lib/constants'
@@ -48,6 +49,7 @@ const resolveTranscriptionModelLabel = (settings: AppSettings) => {
 }
 
 const OverlayScene = () => {
+  const { t } = useI18n()
   const [status, setStatus] = useState<DictationStatus>('IDLE')
   const [hovered, setHovered] = useState(false)
   const [contextMenuAnchor, setContextMenuAnchor] = useState<{ x: number; y: number } | null>(null)
@@ -149,14 +151,14 @@ const OverlayScene = () => {
 
         if (autoPasteResult.success) {
           emitAppNotification({
-            title: 'Text pasted successfully',
+            title: t('overlay.pasteSuccess'),
             description: autoPasteResult.details,
             variant: 'success',
           })
         } else {
           emitAppNotification({
-            title: 'Auto-paste failed',
-            description: `${autoPasteResult.details} Transcription saved to history.`,
+            title: t('overlay.pasteFailed'),
+            description: t('overlay.pasteFailedDescription', { details: autoPasteResult.details }),
             variant: 'destructive',
           })
         }
@@ -164,27 +166,27 @@ const OverlayScene = () => {
         try {
           await navigator.clipboard.writeText(result.text)
           emitAppNotification({
-            title: 'Text copied and ready to paste',
-            description: 'Ready to paste in the focused input field.',
+            title: t('overlay.textCopied'),
+            description: t('overlay.textCopiedDescription'),
             variant: 'success',
           })
         } catch {
           emitAppNotification({
-            title: 'Clipboard unavailable',
-            description: 'Transcription saved to local history.',
+            title: t('overlay.clipboardUnavailable'),
+            description: t('overlay.clipboardUnavailableDescription'),
             variant: 'destructive',
           })
         }
       }
     } else {
       emitAppNotification({
-        title: 'Transcription completed',
+        title: t('overlay.transcriptionCompleted'),
         description: result.text,
         variant: 'success',
         duration: 3600,
       })
     }
-  }, [])
+  }, [t])
 
   useEffect(() => {
     if (typeof window.electronAPI === 'undefined') {
@@ -241,8 +243,8 @@ const OverlayScene = () => {
 
     const offFailure = electronAPI.onHotkeyRegistrationFailed((payload) => {
       emitAppNotification({
-        title: 'Hotkey registration failed',
-        description: `${payload.requestedHotkey}: ${payload.reason}`,
+        title: t('overlay.hotkeyRegistrationFailed'),
+        description: t('overlay.hotkeyRegistrationFailedDescription', { requestedHotkey: payload.requestedHotkey, reason: payload.reason }),
         variant: 'destructive',
         duration: 4200,
       })
@@ -250,15 +252,15 @@ const OverlayScene = () => {
 
     const offFallback = electronAPI.onHotkeyFallbackUsed((payload) => {
       emitAppNotification({
-        title: 'Fallback hotkey enabled',
-        description: `${payload.reason} ${payload.details}`,
+        title: t('overlay.fallbackHotkeyEnabled'),
+        description: t('overlay.fallbackHotkeyEnabledDescription', { reason: payload.reason, details: payload.details }),
         variant: 'destructive',
       })
     })
 
     const offDictationError = electronAPI.onDictationError((message) => {
       emitAppNotification({
-        title: 'Dictation failed',
+        title: t('overlay.dictationFailed'),
         description: message,
         variant: 'destructive',
         duration: 4600,
@@ -271,7 +273,7 @@ const OverlayScene = () => {
       offFallback()
       offDictationError()
     }
-  }, [])
+  }, [t])
 
   useEffect(() => {
     const onStorage = (event: StorageEvent) => {
@@ -394,8 +396,8 @@ const OverlayScene = () => {
 
       if (!result.accepted) {
         emitAppNotification({
-          title: 'Processing in progress',
-          description: 'Wait for completion before trying again.',
+          title: t('overlay.processingInProgress'),
+          description: t('overlay.processingInProgressDescription'),
         })
       }
 
@@ -407,18 +409,18 @@ const OverlayScene = () => {
       .then((result) => {
         if (!result.accepted) {
           emitAppNotification({
-            title: result.reason === 'unavailable' ? 'Dictation unavailable' : 'Processing in progress',
+            title: result.reason === 'unavailable' ? t('overlay.dictationUnavailable') : t('overlay.processingInProgress'),
             description:
               result.reason === 'unavailable'
-                ? 'Microphone recorder is unavailable. Install recorder dependencies and grant microphone permission.'
-                : 'Wait for completion before trying again.',
+                ? t('overlay.dictationUnavailableDescription')
+                : t('overlay.processingInProgressDescription'),
           })
         }
       })
       .catch(() => {
         emitAppNotification({
-          title: 'Dictation unavailable',
-          description: 'Unable to start dictation in this runtime.',
+          title: t('overlay.dictationUnavailableRuntime'),
+          description: t('overlay.dictationUnavailableRuntimeDescription'),
           variant: 'destructive',
         })
       })
@@ -429,8 +431,8 @@ const OverlayScene = () => {
       void electronAPI.cancelDictation().then((canceled) => {
         if (canceled) {
           emitAppNotification({
-            title: 'Transcription canceled',
-            description: 'Operation stopped manually.',
+            title: t('overlay.transcriptionCanceled'),
+            description: t('overlay.transcriptionCanceledDescription'),
           })
         }
       })
@@ -443,8 +445,8 @@ const OverlayScene = () => {
 
     if (canceled) {
       emitAppNotification({
-        title: 'Transcription canceled',
-        description: 'Operation stopped manually.',
+        title: t('overlay.transcriptionCanceled'),
+        description: t('overlay.transcriptionCanceledDescription'),
       })
     }
   }
@@ -452,18 +454,18 @@ const OverlayScene = () => {
   const contextItems = [
     {
       label:
-        status === 'PROCESSING' ? 'Processing in progress' : status === 'RECORDING' ? 'Stop dictation' : 'Start dictation',
+        status === 'PROCESSING' ? t('overlay.contextMenuProcessing') : status === 'RECORDING' ? t('overlay.contextMenuStopDictation') : t('overlay.contextMenuStartDictation'),
       onSelect: startOrStopDictation,
       disabled: status === 'PROCESSING',
     },
     {
-      label: 'Open Control Panel',
+      label: t('overlay.contextMenuOpenControlPanel'),
       onSelect: () => {
         electronAPI.openControlPanel()
       },
     },
     {
-      label: 'Hide for now',
+      label: t('overlay.contextMenuHide'),
       onSelect: () => {
         electronAPI.hideWindow()
       },

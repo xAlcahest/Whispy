@@ -7,7 +7,10 @@ import { normalizeSettings } from '../shared/defaults'
 import { CUSTOM_MODEL_FETCH_ERROR } from '../shared/model-discovery'
 import {
   applySecretsToSettings,
-  extractSecretSettings,
+  isSecretMasked,
+  maskSecretsInSettings,
+  resolveApiKeyFromMasked,
+  resolveSecretsForPersistence,
   stripSecretsFromSettings,
   type SecretSettingsMap,
   type SecretStorageMode,
@@ -142,7 +145,9 @@ const modelScanInFlight = new Map<string, Promise<string[]>>()
 
 const createModelScanCacheKey = (baseUrl: string, apiKey: string) => {
   const normalizedBaseUrl = baseUrl.trim().toLowerCase().replace(/\/+$/, '')
-  return `${normalizedBaseUrl}|${apiKey.trim()}`
+  const trimmedKey = apiKey.trim()
+  const keyFingerprint = `${trimmedKey.length}:${trimmedKey.slice(-6)}`
+  return `${normalizedBaseUrl}|${keyFingerprint}`
 }
 
 const readCachedModelScan = (cacheKey: string) => {
@@ -384,10 +389,7 @@ const runInternalWindowAction = (targetURL: string, sourceWebContents?: Electron
     const payload = detectAutoPasteBackendSupport()
 
     if (sourceWebContents && !sourceWebContents.isDestroyed()) {
-      const serializedPayload = JSON.stringify(payload).replace(/</g, '\\u003c')
-      void sourceWebContents.executeJavaScript(
-        `window.dispatchEvent(new CustomEvent('whispy-autopaste-support', { detail: ${serializedPayload} }));`,
-      )
+      sourceWebContents.send(IPCChannels.getAutoPasteBackendSupport, payload)
     }
 
     return true
@@ -767,7 +769,7 @@ const spawnOverlayProcess = (): Promise<void> => {
     const overlayEnv: Record<string, string | undefined> = {}
     for (const [key, value] of Object.entries(process.env)) {
       const upper = key.toUpperCase()
-      if (upper.includes('KEY') || upper.includes('SECRET') || upper.includes('TOKEN') || upper.includes('PASSWORD')) continue
+      if (upper.includes('KEY') || upper.includes('SECRET') || upper.includes('TOKEN') || upper.includes('PASSWORD') || upper.includes('CREDENTIAL') || upper.includes('AUTH') || upper.includes('PRIVATE')) continue
       overlayEnv[key] = value
     }
 
@@ -879,15 +881,20 @@ const handleOverlayIPCRequest = async (channel: string, args: unknown[]): Promis
     case IPCChannels.setBackendSettings: {
       const [incomingSettings] = args as [AppSettings]
       const stateStore = ensureBackendStateStore()
-      const nextSettings = stripSecretsFromSettings(incomingSettings)
-      stateStore.setSettings(nextSettings)
+      const existingSecrets = await loadSecretsSafely(resolveSecretStorageMode(stateStore.getSnapshot().settings))
+      const { settings: resolvedSettings, secrets: resolvedSecrets } = resolveSecretsForPersistence(
+        normalizeSettings(incomingSettings),
+        existingSecrets,
+      )
+      const strippedSettings = stripSecretsFromSettings(resolvedSettings)
+      stateStore.setSettings(strippedSettings)
       void withTimeout(
-        ensureSecretStore().setSecrets(resolveSecretStorageMode(nextSettings), extractSecretSettings(incomingSettings)),
+        ensureSecretStore().setSecrets(resolveSecretStorageMode(strippedSettings), resolvedSecrets),
         SECRET_IO_TIMEOUT_MS,
         'Secret settings persistence timed out.',
       ).catch(() => {})
-      ensureSecretStore().setNonSecretSettings(nextSettings)
-      broadcast(IPCChannels.floatingIconAutoHideChanged, nextSettings.autoHideFloatingIcon)
+      ensureSecretStore().setNonSecretSettings(strippedSettings)
+      broadcast(IPCChannels.floatingIconAutoHideChanged, strippedSettings.autoHideFloatingIcon)
       return
     }
     case IPCChannels.setBackendHistory: {
@@ -895,7 +902,7 @@ const handleOverlayIPCRequest = async (channel: string, args: unknown[]): Promis
       ensureBackendStateStore().setHistory(entries)
       // Sync to control panel so it updates its local view
       if (controlPanelWindow && !controlPanelWindow.isDestroyed()) {
-        try { controlPanelWindow.webContents.send('overlay:history-synced', entries) } catch { /* frame disposed */ }
+        try { controlPanelWindow.webContents.send(IPCChannels.overlayHistorySynced, entries) } catch { /* frame disposed */ }
       }
       return
     }
@@ -1482,20 +1489,25 @@ const getBackendSnapshotWithSecrets = async () => {
   }
 
   const secrets = await loadSecretsSafely(resolveSecretStorageMode(snapshot.settings))
+  const settingsWithSecrets = applyNonSecretEnvSettings(applySecretsToSettings(snapshot.settings, secrets))
 
   return {
     ...snapshot,
-    settings: applyNonSecretEnvSettings(applySecretsToSettings(snapshot.settings, secrets)),
+    settings: maskSecretsInSettings(settingsWithSecrets),
   }
 }
 
-const loadCurrentSettings = async (): Promise<AppSettings> => {
-  const snapshot = await getBackendSnapshotWithSecrets()
-  if (snapshot) {
-    return snapshot.settings
+const loadSettingsWithRealSecrets = async (): Promise<AppSettings> => {
+  const snapshot = ensureBackendStateStore().getSnapshotOrNull()
+  if (!snapshot) {
+    return applyNonSecretEnvSettings(ensureBackendStateStore().getSnapshot().settings)
   }
+  const secrets = await loadSecretsSafely(resolveSecretStorageMode(snapshot.settings))
+  return applyNonSecretEnvSettings(applySecretsToSettings(snapshot.settings, secrets))
+}
 
-  return applyNonSecretEnvSettings(ensureBackendStateStore().getSnapshot().settings)
+const loadCurrentSettings = async (): Promise<AppSettings> => {
+  return loadSettingsWithRealSecrets()
 }
 
 const appendHistoryEntryFromDictationResult = async (payload: DictationResult) => {
@@ -1859,25 +1871,35 @@ const registerIPC = () => {
   })
 
   ipcMain.handle(IPCChannels.setBackendSettings, async (_event, settings: AppSettings) => {
+    if (!settings || typeof settings !== 'object') {
+      logDebug('error-details', 'Rejected invalid settings payload from renderer', { type: typeof settings })
+      return
+    }
     const stateStore = ensureBackendStateStore()
     const previousSettings = stateStore.getSnapshot().settings
-    let nextSettings = settings
+
+    const existingSecrets = await loadSecretsSafely(resolveSecretStorageMode(previousSettings))
+    const { settings: resolvedSettings, secrets: resolvedSecrets } = resolveSecretsForPersistence(
+      normalizeSettings(settings),
+      existingSecrets,
+    )
+    let nextSettings = resolvedSettings
 
     logDebug('system-diagnostics', 'Persisting backend settings', {
-      keytarEnabled: settings.keytarEnabled,
-      debugModeEnabled: settings.debugModeEnabled,
-      transcriptionRuntime: settings.transcriptionRuntime,
-      postProcessingRuntime: settings.postProcessingRuntime,
+      keytarEnabled: nextSettings.keytarEnabled,
+      debugModeEnabled: nextSettings.debugModeEnabled,
+      transcriptionRuntime: nextSettings.transcriptionRuntime,
+      postProcessingRuntime: nextSettings.postProcessingRuntime,
     })
 
-    stateStore.setSettings(stripSecretsFromSettings(settings))
-    configureLaunchAtLogin(settings)
-    ensureDebugLogger().setEnabled(settings.debugModeEnabled)
+    stateStore.setSettings(stripSecretsFromSettings(nextSettings))
+    configureLaunchAtLogin(nextSettings)
+    ensureDebugLogger().setEnabled(nextSettings.debugModeEnabled)
 
-    const hotkeyRegistration = await registerGlobalDictationHotkey(settings.hotkey)
-    if (hotkeyRegistration.effectiveHotkey !== settings.hotkey) {
+    const hotkeyRegistration = await registerGlobalDictationHotkey(nextSettings.hotkey)
+    if (hotkeyRegistration.effectiveHotkey !== nextSettings.hotkey) {
       nextSettings = {
-        ...settings,
+        ...nextSettings,
         hotkey: hotkeyRegistration.effectiveHotkey,
       }
       stateStore.setSettings(stripSecretsFromSettings(nextSettings))
@@ -1886,7 +1908,7 @@ const registerIPC = () => {
     ensureSecretStore().setNonSecretSettings(nextSettings)
 
     void withTimeout(
-      ensureSecretStore().setSecrets(resolveSecretStorageMode(nextSettings), extractSecretSettings(nextSettings)),
+      ensureSecretStore().setSecrets(resolveSecretStorageMode(nextSettings), resolvedSecrets),
       SECRET_IO_TIMEOUT_MS,
       'Secret settings persistence timed out.',
     ).catch((error: unknown) => {
@@ -2062,7 +2084,13 @@ const registerIPC = () => {
   })
 
   ipcMain.handle(IPCChannels.scanCustomModels, async (_event, baseUrl: string, apiKey: string) => {
-    const cacheKey = createModelScanCacheKey(baseUrl, apiKey)
+    let resolvedApiKey = apiKey
+    if (isSecretMasked(apiKey)) {
+      const realSettings = await loadSettingsWithRealSecrets()
+      resolvedApiKey = resolveApiKeyFromMasked(apiKey, realSettings)
+    }
+
+    const cacheKey = createModelScanCacheKey(baseUrl, resolvedApiKey)
     const cachedModelIds = readCachedModelScan(cacheKey)
     if (cachedModelIds) {
       return cachedModelIds
@@ -2076,11 +2104,11 @@ const registerIPC = () => {
     const scanPromise = (async () => {
     logDebug('api-request', 'Scanning models endpoint', {
       baseUrl,
-      hasApiKey: Boolean(apiKey.trim()),
+      hasApiKey: Boolean(resolvedApiKey.trim()),
     })
 
     try {
-      const modelIds = await ensureDictationPipeline().scanModels(baseUrl, apiKey)
+      const modelIds = await ensureDictationPipeline().scanModels(baseUrl, resolvedApiKey)
       writeCachedModelScan(cacheKey, modelIds)
       logDebug('api-request', 'Model endpoint scan completed', {
         baseUrl,

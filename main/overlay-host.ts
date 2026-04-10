@@ -107,10 +107,20 @@ const sendToParent = (msg: unknown) => {
   try { process.send?.(msg as object) } catch { /* disconnected */ }
 }
 
+const IPC_REQUEST_TIMEOUT_MS = 30_000
+
 const forwardToParent = (channel: string, args: unknown[]): Promise<unknown> => {
   const requestId = `req-${++requestCounter}`
   return new Promise((resolve, reject) => {
-    pendingRequests.set(requestId, { resolve, reject })
+    const timeout = setTimeout(() => {
+      pendingRequests.delete(requestId)
+      reject(new Error(`IPC request to parent timed out: ${channel}`))
+    }, IPC_REQUEST_TIMEOUT_MS)
+
+    pendingRequests.set(requestId, {
+      resolve: (v: unknown) => { clearTimeout(timeout); resolve(v) },
+      reject: (e: Error) => { clearTimeout(timeout); reject(e) },
+    })
     sendToParent({ type: 'ipc-request', requestId, channel, args })
   })
 }

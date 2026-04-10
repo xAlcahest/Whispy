@@ -54,29 +54,7 @@ const trimRuntimeLine = (line: string) => {
   return `${line.slice(0, MAX_RUNTIME_LINE_LENGTH)}...`
 }
 
-const resolveCommandFromPath = (command: string) => {
-  const lookupCommand = process.platform === 'win32' ? 'where' : 'which'
-  const lookup = spawnSync(lookupCommand, [command], {
-    encoding: 'utf8',
-    timeout: 1200,
-    windowsHide: true,
-  })
-
-  if (lookup.status !== 0) {
-    return null
-  }
-
-  const firstMatch = lookup.stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find((line) => line.length > 0)
-
-  return firstMatch ?? null
-}
-
-const commandExists = (command: string) => {
-  return resolveCommandFromPath(command) !== null
-}
+import { commandExists, resolveCommandPath as resolveCommandFromPath } from './command-utils'
 
 const queryProcessRssMB = (pid: number) => {
   if (!Number.isFinite(pid) || pid <= 0) {

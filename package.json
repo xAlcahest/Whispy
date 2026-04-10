@@ -17,10 +17,22 @@
       "maintainer": "Whispy Team <packaging@whispy.local>",
       "icon": "assets4app/Web/android-chrome-512x512.png",
       "category": "Utility",
-      "target": ["pacman", "deb", "rpm"]
+      "target": [
+        "pacman",
+        "deb",
+        "rpm"
+      ]
     },
     "pacman": {
-      "depends": ["gtk3", "nss", "libxss", "libnotify", "libappindicator-gtk3", "xclip", "ydotool"]
+      "depends": [
+        "gtk3",
+        "nss",
+        "libxss",
+        "libnotify",
+        "libappindicator-gtk3",
+        "xclip",
+        "ydotool"
+      ]
     },
     "extraResources": [
       {
@@ -64,6 +76,7 @@
     "react-dom": "^19.2.4",
     "react-markdown": "^10.1.0",
     "rehype-raw": "^7.0.0",
+    "rehype-sanitize": "^6.0.0",
     "remark-gfm": "^4.0.1",
     "tailwind-merge": "^2.5.5"
   },

@@ -49,6 +49,7 @@ export const Dropdown = ({ open, anchor, onClose, items }: DropdownProps) => {
 
   return (
     <div
+      role="menu"
       className="fixed z-50 w-56 rounded-[var(--radius-premium)] border border-border-subtle bg-surface-1 p-1 app-no-drag"
       style={{
         left: anchor.x,
@@ -69,6 +70,7 @@ export const Dropdown = ({ open, anchor, onClose, items }: DropdownProps) => {
           <button
             key={itemKey}
             type="button"
+            role="menuitem"
             disabled={item.disabled}
             onClick={() => {
               item.onSelect?.()

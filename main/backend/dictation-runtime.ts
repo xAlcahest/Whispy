@@ -1,6 +1,5 @@
 import { createWriteStream, mkdirSync } from 'node:fs'
 import { rm } from 'node:fs/promises'
-import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
 import type { DictationResult, DictationStatus } from '../../shared/app'
@@ -39,16 +38,7 @@ const loadRecorderModule = (): NodeRecordModule => {
   return require('node-record-lpcm16') as NodeRecordModule
 }
 
-const commandExists = (command: string) => {
-  const lookupCommand = process.platform === 'win32' ? 'where' : 'which'
-  const probe = spawnSync(lookupCommand, [command], {
-    encoding: 'utf8',
-    timeout: 1200,
-    windowsHide: true,
-  })
-
-  return probe.status === 0
-}
+import { commandExists } from './command-utils'
 
 const resolveRecorderCommand = () => {
   if (process.platform === 'linux') {

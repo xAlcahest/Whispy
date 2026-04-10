@@ -75,6 +75,7 @@ import { fakeTranscriptionService } from '../services/fakeTranscriptionService'
 import MarkdownPreview from '@uiw/react-markdown-preview'
 import '@uiw/react-markdown-preview/markdown.css'
 import rehypeRaw from 'rehype-raw'
+import rehypeSanitize from 'rehype-sanitize'
 import remarkGfm from 'remark-gfm'
 import { marked } from 'marked'
 import {
@@ -168,12 +169,12 @@ interface DetailedStatsCallRow {
   estimated: boolean
 }
 
-const HISTORY_RETENTION_OPTIONS = [
-  { value: 50, label: '50 entries' },
-  { value: 100, label: '100 entries' },
-  { value: 250, label: '250 entries (lazy load)' },
-  { value: 500, label: '500 entries (lazy load)' },
-  { value: -1, label: 'Unlimited (lazy load)' },
+const getHistoryRetentionOptions = (t: ReturnType<typeof useI18n>['t']) => [
+  { value: 50, label: t('history.retentionOption50') },
+  { value: 100, label: t('history.retentionOption100') },
+  { value: 250, label: t('history.retentionOption250') },
+  { value: 500, label: t('history.retentionOption500') },
+  { value: -1, label: t('history.retentionOptionUnlimited') },
 ]
 
 const HISTORY_LAZY_LOAD_LIMITS = new Set([250, 500, -1])
@@ -440,6 +441,7 @@ interface HotkeyInputProps {
 
 const HotkeyInput = ({ value, onChange }: HotkeyInputProps) => {
   const [focused, setFocused] = useState(false)
+  const { t } = useI18n()
 
   return (
     <div className="space-y-1.5">
@@ -482,7 +484,7 @@ const HotkeyInput = ({ value, onChange }: HotkeyInputProps) => {
         readOnly
       />
       <p className="text-xs text-muted-foreground">
-        {focused ? 'Press a key combination (for example Ctrl+Shift+K)' : 'Click and press a combination'}
+        {focused ? t('settings.preferences.hotkeyFocusedHint') : t('settings.preferences.hotkeyBlurredHint')}
       </p>
     </div>
   )
@@ -516,6 +518,7 @@ const HistorySection = ({
   canShowMore,
 }: HistorySectionProps) => {
   const { pushToast } = useToast()
+  const { t } = useI18n()
   const [expandedEntries, setExpandedEntries] = useState<Record<string, boolean>>({})
 
   if (loading) {
@@ -534,10 +537,9 @@ const HistorySection = ({
         <Card className="py-12">
           <CardContent className="flex flex-col items-center justify-center gap-2 text-center">
             <BookOpen className="h-10 w-10 text-muted-foreground" />
-            <p className="font-medium">No dictations found</p>
+            <p className="font-medium">{t('history.emptyTitle')}</p>
             <p className="max-w-md text-sm text-muted-foreground">
-              Start dictation from the floating panel. Dictations appear here with metadata and
-              quick actions.
+              {t('history.emptyDescription')}
             </p>
           </CardContent>
         </Card>
@@ -600,13 +602,13 @@ const HistorySection = ({
                       <button
                         type="button"
                         className="app-no-drag inline-flex h-4 w-4 items-center justify-center rounded-full border border-border-subtle text-[10px] text-foreground/60 transition-colors hover:bg-surface-2 hover:text-foreground"
-                        title="Estimated dictation cost based on token count and LiteLLM model pricing. Final billed amount may vary by provider tokenization."
+                        title={t('history.costTooltip')}
                         onClick={() => {
                           pushToast({
-                            title: 'Estimated dictation cost',
+                            title: t('history.costToastTitle'),
                             description: hasEnhancedDictation
-                              ? `${entry.provider}/${entry.model}: STT ${formatCurrency(transcriptionCostEstimateUSD)} + post-processing ${formatCurrency(postProcessingCostEstimateUSD)}.`
-                              : `${entry.provider}/${entry.model}: ~${formatCount(rawTokenEstimate)} tokens, estimated ${formatCurrency(transcriptionCostEstimateUSD)}.`,
+                              ? t('history.costToastDescriptionEnhanced', { provider: entry.provider, model: entry.model, sttCost: formatCurrency(transcriptionCostEstimateUSD), postCost: formatCurrency(postProcessingCostEstimateUSD) })
+                              : t('history.costToastDescriptionSimple', { provider: entry.provider, model: entry.model, tokens: formatCount(rawTokenEstimate), cost: formatCurrency(transcriptionCostEstimateUSD) }),
                           })
                         }}
                       >
@@ -624,7 +626,7 @@ const HistorySection = ({
                       }}
                     >
                       <Copy className="h-3.5 w-3.5" />
-                      Copy
+                      {t('history.copyButton')}
                     </Button>
                     <Button
                       variant="ghost"
@@ -635,7 +637,7 @@ const HistorySection = ({
                       }}
                     >
                       <Trash2 className="h-3.5 w-3.5" />
-                      Delete
+                      {t('history.deleteButton')}
                     </Button>
                   </div>
                 </div>
@@ -659,7 +661,7 @@ const HistorySection = ({
                   }}
                   className="app-no-drag mt-1.5 text-xs font-medium text-primary hover:text-primary/80"
                 >
-                  {expanded ? 'Collapse' : 'Expand'}
+                  {expanded ? t('history.collapseButton') : t('history.expandButton')}
                 </button>
               </CardContent>
             </Card>
@@ -670,7 +672,7 @@ const HistorySection = ({
       {canShowMore ? (
         <div className="flex items-center justify-between rounded-[var(--radius-premium)] border border-border-subtle bg-surface-1 px-3 py-2">
           <p className="text-xs text-muted-foreground">
-            Showing {entries.length} of {totalEntries} dictations.
+            {t('history.showingCount', { visible: entries.length, total: totalEntries })}
           </p>
           <Button
             variant="outline"
@@ -680,7 +682,7 @@ const HistorySection = ({
               onShowMore()
             }}
           >
-            Show more
+            {t('history.showMoreButton')}
           </Button>
         </div>
       ) : null}
@@ -693,9 +695,9 @@ const HistorySection = ({
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Confirm clear dictations</DialogTitle>
+            <DialogTitle>{t('history.clearConfirmTitle')}</DialogTitle>
             <DialogDescription>
-              This action removes all dictations saved locally. It cannot be undone.
+              {t('history.clearConfirmDescription')}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -705,7 +707,7 @@ const HistorySection = ({
                 onClearConfirmOpenChange(false)
               }}
             >
-              Cancel
+              {t('history.clearConfirmCancel')}
             </Button>
             <Button
               variant="destructive"
@@ -714,7 +716,7 @@ const HistorySection = ({
                 onClearConfirmOpenChange(false)
               }}
             >
-              Clear
+              {t('history.clearConfirmClear')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -877,6 +879,7 @@ const NotesSection = ({
   onForceSaveNote,
   onTrackRawNoteCaret,
 }: NotesSectionProps) => {
+  const { t } = useI18n()
   const [isCreatingFolder, setIsCreatingFolder] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
   const [actionsMenuOpen, setActionsMenuOpen] = useState(false)
@@ -1266,7 +1269,7 @@ const NotesSection = ({
         separator: true,
       },
       {
-        label: 'Add action...',
+        label: t('notes.addAction'),
         icon: <Plus className="h-3.5 w-3.5" />,
         onSelect: () => {
           resetActionEditor()
@@ -1274,7 +1277,7 @@ const NotesSection = ({
         },
       },
       {
-        label: 'Manage actions',
+        label: t('notes.manageActions'),
         icon: <Settings className="h-3.5 w-3.5" />,
         onSelect: () => {
           setActionManagerOpen(true)
@@ -1289,92 +1292,92 @@ const NotesSection = ({
     {
       id: 'bold',
       icon: <Bold className="h-3.5 w-3.5" />,
-      label: 'Bold',
+      label: t('notes.markdownBold'),
       onClick: () => applyMarkdownWrapper('**'),
     },
     {
       id: 'italic',
       icon: <Italic className="h-3.5 w-3.5" />,
-      label: 'Italic',
+      label: t('notes.markdownItalic'),
       onClick: () => applyMarkdownWrapper('*'),
     },
     {
       id: 'strike',
       icon: <span className="text-[11px] font-semibold">S</span>,
-      label: 'Strikethrough',
+      label: t('notes.markdownStrikethrough'),
       onClick: () => applyMarkdownWrapper('~~'),
     },
     {
       id: 'h1',
       icon: <Heading1 className="h-3.5 w-3.5" />,
-      label: 'Heading 1',
+      label: t('notes.markdownHeading1'),
       onClick: () => applyMarkdownLinePrefix('# '),
     },
     {
       id: 'bullet',
       icon: <List className="h-3.5 w-3.5" />,
-      label: 'Bullet list',
+      label: t('notes.markdownBulletList'),
       onClick: () => applyMarkdownLinePrefix('- '),
     },
     {
       id: 'ordered',
       icon: <ListOrdered className="h-3.5 w-3.5" />,
-      label: 'Numbered list',
+      label: t('notes.markdownNumberedList'),
       onClick: () => applyMarkdownLinePrefix('1. '),
     },
     {
       id: 'task',
       icon: <CheckSquare className="h-3.5 w-3.5" />,
-      label: 'Task list',
+      label: t('notes.markdownTaskList'),
       onClick: () => applyMarkdownLinePrefix('- [ ] '),
     },
     {
       id: 'quote',
       icon: <Quote className="h-3.5 w-3.5" />,
-      label: 'Quote',
+      label: t('notes.markdownQuote'),
       onClick: () => applyMarkdownLinePrefix('> '),
     },
     {
       id: 'code-inline',
       icon: <Code2 className="h-3.5 w-3.5" />,
-      label: 'Inline code',
+      label: t('notes.markdownInlineCode'),
       onClick: () => applyMarkdownWrapper('`'),
     },
     {
       id: 'code-block',
       icon: <span className="text-[11px] font-semibold">```</span>,
-      label: 'Code block',
+      label: t('notes.markdownCodeBlock'),
       onClick: () => insertMarkdownSnippet('```markdown\n{{cursor}}\n```'),
     },
     {
       id: 'link',
       icon: <Link2 className="h-3.5 w-3.5" />,
-      label: 'Link',
+      label: t('notes.markdownLink'),
       onClick: () => applyMarkdownWrapper('[', '](https://example.com)', 'link text'),
     },
     {
       id: 'image',
       icon: <ImagePlus className="h-3.5 w-3.5" />,
-      label: 'Image',
+      label: t('notes.markdownImage'),
       onClick: () => applyMarkdownWrapper('![', '](https://example.com/image.png)', 'alt text'),
     },
     {
       id: 'table',
       icon: <span className="text-[11px] font-semibold">Tbl</span>,
-      label: 'Table',
+      label: t('notes.markdownTable'),
       onClick: () =>
         insertMarkdownSnippet('| Column 1 | Column 2 |\n| --- | --- |\n| {{cursor}} | Value 2 |'),
     },
     {
       id: 'hr',
       icon: <Minus className="h-3.5 w-3.5" />,
-      label: 'Horizontal line',
+      label: t('notes.markdownHorizontalLine'),
       onClick: () => insertMarkdownSnippet('\n---\n{{cursor}}'),
     },
     {
       id: 'video',
       icon: <Video className="h-3.5 w-3.5" />,
-      label: 'Video',
+      label: t('notes.markdownVideo'),
       onClick: () =>
         applyMarkdownWrapper('<video controls src="', '"></video>', 'https://example.com/video.mp4'),
     },
@@ -1382,83 +1385,83 @@ const NotesSection = ({
 
   const markdownMenuItems = [
     {
-      label: 'Heading 2',
+      label: t('notes.markdownHeading2'),
       icon: <span className="text-[11px] font-semibold">H2</span>,
       disabled: markdownCommandsDisabled,
       onSelect: () => applyMarkdownLinePrefix('## '),
     },
     {
-      label: 'Heading 3',
+      label: t('notes.markdownHeading3'),
       icon: <span className="text-[11px] font-semibold">H3</span>,
       disabled: markdownCommandsDisabled,
       onSelect: () => applyMarkdownLinePrefix('### '),
     },
     {
-      label: 'Heading 4',
+      label: t('notes.markdownHeading4'),
       icon: <span className="text-[11px] font-semibold">H4</span>,
       disabled: markdownCommandsDisabled,
       onSelect: () => applyMarkdownLinePrefix('#### '),
     },
     {
-      label: 'Heading 5',
+      label: t('notes.markdownHeading5'),
       icon: <span className="text-[11px] font-semibold">H5</span>,
       disabled: markdownCommandsDisabled,
       onSelect: () => applyMarkdownLinePrefix('##### '),
     },
     {
-      label: 'Heading 6',
+      label: t('notes.markdownHeading6'),
       icon: <span className="text-[11px] font-semibold">H6</span>,
       disabled: markdownCommandsDisabled,
       onSelect: () => applyMarkdownLinePrefix('###### '),
     },
     { separator: true },
     {
-      label: 'Checked task',
+      label: t('notes.markdownCheckedTask'),
       icon: <CheckSquare className="h-3.5 w-3.5" />,
       disabled: markdownCommandsDisabled,
       onSelect: () => applyMarkdownLinePrefix('- [x] '),
     },
     {
-      label: 'Footnote ref',
+      label: t('notes.markdownFootnoteRef'),
       icon: <span className="text-[11px] font-semibold">Fn</span>,
       disabled: markdownCommandsDisabled,
       onSelect: () => insertMarkdownSnippet('[^1]{{cursor}}\n\n[^1]: Footnote text'),
     },
     {
-      label: 'Reference link',
+      label: t('notes.markdownReferenceLink'),
       icon: <Link2 className="h-3.5 w-3.5" />,
       disabled: markdownCommandsDisabled,
       onSelect: () =>
         insertMarkdownSnippet('[link text][ref]{{cursor}}\n\n[ref]: https://example.com "title"'),
     },
     {
-      label: 'Table aligned',
+      label: t('notes.markdownTableAligned'),
       icon: <span className="text-[11px] font-semibold">Tbl+</span>,
       disabled: markdownCommandsDisabled,
       onSelect: () =>
         insertMarkdownSnippet('| Left | Center | Right |\n| :--- | :---: | ---: |\n| {{cursor}} | value | value |'),
     },
     {
-      label: 'Details block',
+      label: t('notes.markdownDetailsBlock'),
       icon: <ChevronDown className="h-3.5 w-3.5" />,
       disabled: markdownCommandsDisabled,
       onSelect: () =>
         insertMarkdownSnippet('<details>\n<summary>More details</summary>\n\n{{cursor}}\n\n</details>'),
     },
     {
-      label: 'Underline (HTML)',
+      label: t('notes.markdownUnderline'),
       icon: <span className="text-[11px] font-semibold">U</span>,
       disabled: markdownCommandsDisabled,
       onSelect: () => applyMarkdownWrapper('<u>', '</u>'),
     },
     {
-      label: 'Superscript (HTML)',
+      label: t('notes.markdownSuperscript'),
       icon: <span className="text-[11px] font-semibold">X2</span>,
       disabled: markdownCommandsDisabled,
       onSelect: () => applyMarkdownWrapper('<sup>', '</sup>'),
     },
     {
-      label: 'Subscript (HTML)',
+      label: t('notes.markdownSubscript'),
       icon: <span className="text-[11px] font-semibold">X0</span>,
       disabled: markdownCommandsDisabled,
       onSelect: () => applyMarkdownWrapper('<sub>', '</sub>'),
@@ -1491,21 +1494,21 @@ const NotesSection = ({
 
   const exportMenuItems = [
     {
-      label: 'Export as TXT',
+      label: t('notes.exportAsTxt'),
       icon: <FileText className="h-3.5 w-3.5" />,
       onSelect: () => {
         void exportActiveNote('txt')
       },
     },
     {
-      label: 'Export as Markdown',
+      label: t('notes.exportAsMarkdown'),
       icon: <FileText className="h-3.5 w-3.5" />,
       onSelect: () => {
         void exportActiveNote('md')
       },
     },
     {
-      label: 'Export as HTML',
+      label: t('notes.exportAsHtml'),
       icon: <Eye className="h-3.5 w-3.5" />,
       onSelect: () => {
         void exportActiveNote('html')
@@ -1550,7 +1553,7 @@ const NotesSection = ({
       <aside className="flex w-64 shrink-0 flex-col border-r border-border-subtle bg-surface-1/90">
         <div className="flex min-h-0 flex-1 flex-col">
           <div className="flex items-center justify-between px-3 py-2">
-            <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-foreground/30">Folders</span>
+            <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-foreground/30">{t('notes.foldersHeader')}</span>
             <div className="flex items-center gap-1">
               <Button
                 variant="ghost"
@@ -1596,7 +1599,7 @@ const NotesSection = ({
                   {activeFolderId === null ? <span className="absolute left-0 h-4 w-0.5 rounded-r-full bg-primary" /> : null}
                   <FolderOpen className={cn('h-3.5 w-3.5', activeFolderId === null ? 'text-primary' : 'text-foreground/35')} />
                   <span className={cn('truncate text-xs', activeFolderId === null ? 'font-medium' : undefined)}>
-                    Uncategorized
+                    {t('notes.uncategorizedFolder')}
                   </span>
                   <span className="ml-auto text-[11px] tabular-nums text-foreground/35">
                     {uncategorizedNotesCount > 0 ? uncategorizedNotesCount : ''}
@@ -1649,7 +1652,7 @@ const NotesSection = ({
                       setFoldersVisibleLimit((current) => current + 20)
                     }}
                   >
-                    Load more folders
+                    {t('notes.loadMoreFolders')}
                   </Button>
                 ) : null}
 
@@ -1672,7 +1675,7 @@ const NotesSection = ({
                       }
                     }}
                     onBlur={commitFolderCreation}
-                    placeholder="Folder name"
+                    placeholder={t('notes.folderNamePlaceholder')}
                   />
                 ) : null}
               </div>
@@ -1698,7 +1701,7 @@ const NotesSection = ({
           )}
 
           <div className="flex items-center justify-between px-3 py-1">
-            <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-foreground/30">Notes</span>
+            <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-foreground/30">{t('notes.notesHeader')}</span>
             <div className="flex items-center gap-1">
               <Button
                 variant="ghost"
@@ -1745,7 +1748,7 @@ const NotesSection = ({
               {displayedNotes.length === 0 ? (
                 <div className="px-3 py-8 text-center">
                   <BookOpen className="mx-auto h-4 w-4 text-foreground/30" />
-                  <p className="mt-2 text-xs text-foreground/35">No notes in this section.</p>
+                  <p className="mt-2 text-xs text-foreground/35">{t('notes.emptyNotes')}</p>
                 </div>
               ) : (
                 displayedNotes.map((entry) => {
@@ -1792,7 +1795,7 @@ const NotesSection = ({
                           />
                         ) : null}
                         <p className={cn('truncate text-xs', isActive ? 'font-medium text-foreground' : 'text-foreground/80')}>
-                          {entry.title || 'Untitled'}
+                          {entry.title || t('notes.untitledNote')}
                         </p>
                         <span className="ml-auto text-[11px] tabular-nums text-foreground/35">
                           {formatRelativeNoteTime(entry.updatedAt)}
@@ -2083,7 +2086,7 @@ const NotesSection = ({
                       <MarkdownPreview
                         source={activeEditorValue || '*Nothing to preview yet.*'}
                         remarkPlugins={[remarkGfm]}
-                        rehypePlugins={[rehypeRaw]}
+                        rehypePlugins={[rehypeRaw, rehypeSanitize]}
                         wrapperElement={{
                           'data-color-mode': settings.theme === 'dark' ? 'dark' : 'light',
                         }}
@@ -8437,7 +8440,7 @@ const ControlPanelScene = () => {
                     ) : null}
                     {section === 'conversations' ? (
                       <label className="inline-flex items-center gap-2 rounded-md border border-border-subtle bg-surface-1 px-2 py-1 text-xs text-muted-foreground">
-                        <span>Retention</span>
+                        <span>{t('history.retentionLabel')}</span>
                         <select
                           className="app-no-drag h-7 rounded border border-border-subtle bg-surface-0 px-2 text-xs text-foreground"
                           value={String(settings.historyRetentionLimit)}
@@ -8447,7 +8450,7 @@ const ControlPanelScene = () => {
                             })
                           }}
                         >
-                          {HISTORY_RETENTION_OPTIONS.map((option) => (
+                          {getHistoryRetentionOptions(t).map((option) => (
                             <option key={option.value} value={option.value}>
                               {option.label}
                             </option>

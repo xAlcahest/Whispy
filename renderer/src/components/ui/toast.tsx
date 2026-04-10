@@ -1,6 +1,7 @@
 import { CheckCircle2, AlertTriangle, Info } from 'lucide-react'
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useMemo,
@@ -67,7 +68,7 @@ export const ToastProvider = ({
     onCountChange?.(toasts.length)
   }, [onCountChange, toasts.length])
 
-  const pushToast = (payload: ToastPayload) => {
+  const pushToast = useCallback((payload: ToastPayload) => {
     const id = crypto.randomUUID()
     const duration = payload.duration ?? 2800
 
@@ -85,19 +86,21 @@ export const ToastProvider = ({
     window.setTimeout(() => {
       setToasts((current) => current.filter((toast) => toast.id !== id))
     }, duration)
-  }
+  }, [])
 
   const contextValue = useMemo(
     () => ({
       pushToast,
     }),
-    [],
+    [pushToast],
   )
 
   return (
     <ToastContext.Provider value={contextValue}>
       {children}
       <div
+        role="status"
+        aria-live="polite"
         className={cn(
           'pointer-events-none fixed z-[90] flex w-full max-w-[360px] flex-col gap-2',
           placement === 'overlay' ? 'bottom-4 right-4' : 'right-6 top-6',

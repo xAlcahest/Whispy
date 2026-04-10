@@ -38,6 +38,8 @@ export const Dialog = ({ open, onOpenChange, children }: DialogProps) => {
   return (
     <DialogContext.Provider value={{ open, onOpenChange }}>
       <div
+        role="dialog"
+        aria-modal="true"
         className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
         onMouseDown={(event) => {
           if (event.target === event.currentTarget) {
@@ -64,6 +66,7 @@ export const DialogContent = ({ className, children, ...props }: PropsWithChildr
     >
       <button
         type="button"
+        aria-label="Close"
         onClick={() => {
           context.onOpenChange(false)
         }}

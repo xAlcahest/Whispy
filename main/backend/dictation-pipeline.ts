@@ -1,5 +1,6 @@
 import { createReadStream, existsSync, readFileSync, rmSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
+import { commandExists } from './command-utils'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import OpenAI from 'openai'
@@ -98,10 +99,14 @@ const normalizeOpenAIBaseURL = (baseUrl: string) => {
   return parsedUrl.toString().replace(/\/+$/, '')
 }
 
+const MAX_DICTIONARY_RULES = 200
+const MAX_DICTIONARY_SOURCE_LENGTH = 500
+
 const applyDictionaryRules = (text: string, rules: AppSettings['postProcessingDictionaryRules']) => {
-  return rules.reduce((currentText, rule) => {
+  const cappedRules = rules.slice(0, MAX_DICTIONARY_RULES)
+  return cappedRules.reduce((currentText, rule) => {
     const source = rule.source.trim()
-    if (!source) {
+    if (!source || source.length > MAX_DICTIONARY_SOURCE_LENGTH) {
       return currentText
     }
 
@@ -383,16 +388,6 @@ const executeWithCloudRetry = async <T>(
   throw lastError instanceof Error ? lastError : new Error(`${operationName} failed after retries.`)
 }
 
-const commandExists = (command: string) => {
-  const lookupCommand = process.platform === 'win32' ? 'where' : 'which'
-  const probe = spawnSync(lookupCommand, [command], {
-    encoding: 'utf8',
-    timeout: 1500,
-    windowsHide: true,
-  })
-
-  return probe.status === 0
-}
 
 const runProcess = (command: string, args: string[], input?: string) => {
   const result = spawnSync(command, args, {
@@ -412,10 +407,17 @@ const runProcess = (command: string, args: string[], input?: string) => {
 
 const shellEscape = (value: string) => {
   if (process.platform === 'win32') {
-    return `"${value.replace(/"/g, '""')}"`
+    // Escape all cmd.exe metacharacters: double quotes, percent signs,
+    // exclamation marks (delayed expansion), caret, ampersand, pipe,
+    // angle brackets, and parentheses. Strip null bytes entirely.
+    const sanitized = value.replace(/\0/g, '')
+    return `"${sanitized.replace(/["%!^&|<>()]/g, '^$&').replace(/"/g, '""')}"`
   }
 
-  return `'${value.replace(/'/g, `'\\''`)}'`
+  // POSIX: wrap in single quotes, escape embedded single quotes.
+  // Strip null bytes to prevent injection via %00.
+  const sanitized = value.replace(/\0/g, '')
+  return `'${sanitized.replace(/'/g, `'\\''`)}'`
 }
 
 const renderCommandTemplate = (template: string, replacements: Record<string, string>) => {

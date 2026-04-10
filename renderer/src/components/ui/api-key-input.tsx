@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 import { Check, X, KeyRound } from 'lucide-react'
 import { Input } from './input'
+import { useI18n } from '../../i18n'
+import { isSecretMasked } from '../../../../shared/secrets'
 
 interface ApiKeyInputProps {
   apiKey: string
@@ -11,6 +13,7 @@ interface ApiKeyInputProps {
 }
 
 function maskKey(key: string): string {
+  if (isSecretMasked(key)) return key
   if (key.length <= 8) return '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022'
   return key.slice(0, 3) + '...' + key.slice(-4)
 }
@@ -19,9 +22,11 @@ export function ApiKeyInput({
   apiKey,
   setApiKey,
   className = '',
-  placeholder = 'Enter API key',
+  placeholder,
   label,
 }: ApiKeyInputProps) {
+  const { t } = useI18n()
+  const resolvedPlaceholder = placeholder ?? t('apiKeyInput.placeholder')
   const [isEditing, setIsEditing] = useState(false)
   const [draft, setDraft] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
@@ -38,12 +43,17 @@ export function ApiKeyInput({
   }, [isEditing])
 
   const enterEdit = () => {
-    setDraft(apiKey)
+    setDraft(isSecretMasked(apiKey) ? '' : apiKey)
     setIsEditing(true)
   }
 
   const save = () => {
-    setApiKey(draft.trim())
+    const trimmed = draft.trim()
+    if (!trimmed && isSecretMasked(apiKey)) {
+      setIsEditing(false)
+      return
+    }
+    setApiKey(trimmed)
     setIsEditing(false)
   }
 
@@ -85,7 +95,7 @@ export function ApiKeyInput({
             <Input
               ref={inputRef}
               type="text"
-              placeholder={placeholder}
+              placeholder={resolvedPlaceholder}
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={handleKeyDown}
@@ -130,10 +140,10 @@ export function ApiKeyInput({
                 {maskKey(apiKey)}
               </span>
             ) : (
-              <span className="text-muted-foreground/40 text-xs">{placeholder}</span>
+              <span className="text-muted-foreground/40 text-xs">{resolvedPlaceholder}</span>
             )}
             <span className="ml-auto text-muted-foreground/30 text-xs group-hover:text-muted-foreground/60 transition-colors">
-              {hasKey ? 'Edit' : 'Add'}
+              {hasKey ? t('apiKeyInput.editButton') : t('apiKeyInput.addButton')}
             </span>
           </button>
         )}

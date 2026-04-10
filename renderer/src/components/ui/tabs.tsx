@@ -37,6 +37,7 @@ export const Tabs = ({ value, onValueChange, className, children }: TabsProps) =
 
 export const TabsList = ({ className, ...props }: HTMLAttributes<HTMLDivElement>) => (
   <div
+    role="tablist"
     className={cn(
       'inline-flex h-8 items-center rounded-[var(--radius-premium)] border border-border-subtle bg-surface-2/80 p-0.5',
       className,
@@ -58,6 +59,8 @@ export const TabsTrigger = ({ value, className, children }: TabsTriggerProps) =>
   return (
     <button
       type="button"
+      role="tab"
+      aria-selected={active}
       onClick={() => {
         context.onValueChange(value)
       }}
@@ -83,7 +86,7 @@ export const TabsContent = ({ value, className, children, ...props }: TabsConten
   }
 
   return (
-    <div className={cn('outline-none', className)} {...props}>
+    <div role="tabpanel" className={cn('outline-none', className)} {...props}>
       {children}
     </div>
   )

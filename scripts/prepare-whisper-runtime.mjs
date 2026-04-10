@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 
 import { spawnSync } from 'node:child_process'
-import {
+import * as fs from 'node:fs'
+
+const {
   createWriteStream,
   existsSync,
   mkdirSync,
@@ -11,7 +13,7 @@ import {
   copyFileSync,
   chmodSync,
   writeFileSync,
-} from 'node:fs'
+} = fs
 import { createHash, randomBytes } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -57,14 +59,17 @@ const OFFICIAL_RUNTIME_CHECKSUMS = {
   },
 }
 
+const computeFileHash = (filePath) => {
+  return createHash('sha256').update(fs.readFileSync(filePath)).digest('hex')
+}
+
 const verifyChecksum = (filePath, expectedSha256) => {
   if (!expectedSha256) {
     console.warn(`[whisper-runtime] checksum verification skipped (no expected hash configured for ${filePath})`)
     return
   }
 
-  const fileBuffer = readFileSync(filePath)
-  const actualHash = createHash('sha256').update(fileBuffer).digest('hex')
+  const actualHash = computeFileHash(filePath)
 
   if (actualHash !== expectedSha256) {
     throw new Error(

@@ -1,6 +1,5 @@
 import { app, BrowserWindow, Menu, Tray, globalShortcut, ipcMain, nativeImage, screen, shell, systemPreferences } from 'electron'
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
-import { createHmac } from 'node:crypto'
 import { accessSync, constants as fsConstants, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { estimateDurationFromTranscript, type AppSettings, type DictationResult, type HistoryEntry, type ModelState } from '../shared/app'
@@ -146,8 +145,9 @@ const modelScanInFlight = new Map<string, Promise<string[]>>()
 
 const createModelScanCacheKey = (baseUrl: string, apiKey: string) => {
   const normalizedBaseUrl = baseUrl.trim().toLowerCase().replace(/\/+$/, '')
-  const keyDigest = createHmac('sha256', 'whispy-model-scan-cache').update(apiKey.trim()).digest('hex').slice(0, 16)
-  return `${normalizedBaseUrl}|${keyDigest}`
+  const trimmedKey = apiKey.trim()
+  const keyFingerprint = `${trimmedKey.length}:${trimmedKey.slice(-6)}`
+  return `${normalizedBaseUrl}|${keyFingerprint}`
 }
 
 const readCachedModelScan = (cacheKey: string) => {

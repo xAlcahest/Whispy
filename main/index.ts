@@ -145,10 +145,10 @@ const modelScanCache = new Map<string, ModelScanCacheEntry>()
 const modelScanInFlight = new Map<string, Promise<string[]>>()
 
 const createModelScanCacheKey = (baseUrl: string, apiKey: string) => {
-  const { createHash } = require('node:crypto') as typeof import('node:crypto')
+  const { createHmac } = require('node:crypto') as typeof import('node:crypto')
   const normalizedBaseUrl = baseUrl.trim().toLowerCase().replace(/\/+$/, '')
-  const keyHash = createHash('sha256').update(apiKey.trim()).digest('hex').slice(0, 16)
-  return `${normalizedBaseUrl}|${keyHash}`
+  const keyDigest = createHmac('sha256', 'whispy-model-scan-cache').update(apiKey.trim()).digest('hex').slice(0, 16)
+  return `${normalizedBaseUrl}|${keyDigest}`
 }
 
 const readCachedModelScan = (cacheKey: string) => {

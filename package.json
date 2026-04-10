@@ -68,7 +68,7 @@
     "clsx": "^2.1.1",
     "dbus-next": "^0.10.2",
     "get-windows": "^9.3.0",
-    "lucide-react": "^0.475.0",
+    "lucide-react": "^1.8.0",
     "marked": "^17.0.3",
     "node-record-lpcm16": "^1.0.1",
     "openai": "^6.33.0",

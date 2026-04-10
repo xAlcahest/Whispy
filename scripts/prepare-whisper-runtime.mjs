@@ -12,7 +12,7 @@ import {
   chmodSync,
   writeFileSync,
 } from 'node:fs'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { Readable } from 'node:stream'
@@ -34,6 +34,46 @@ const OFFICIAL_RUNTIME_ASSETS = {
   'darwin-x64': {
     cpu: 'https://github.com/OpenWhispr/whisper.cpp/releases/download/0.0.6/whisper-server-darwin-x64.zip',
   },
+}
+
+// SHA-256 checksums for official runtime archives.
+// Update these when bumping the whisper-server release version.
+// Generate with: sha256sum whisper-server-*.zip
+// Set to null to skip verification (not recommended for production).
+const OFFICIAL_RUNTIME_CHECKSUMS = {
+  'linux-x64': {
+    cpu: null,
+    cuda: null,
+  },
+  'win32-x64': {
+    cpu: null,
+    cuda: null,
+  },
+  'darwin-arm64': {
+    cpu: null,
+  },
+  'darwin-x64': {
+    cpu: null,
+  },
+}
+
+const verifyChecksum = (filePath, expectedSha256) => {
+  if (!expectedSha256) {
+    console.warn(`[whisper-runtime] checksum verification skipped (no expected hash configured for ${filePath})`)
+    return
+  }
+
+  const fileBuffer = readFileSync(filePath)
+  const actualHash = createHash('sha256').update(fileBuffer).digest('hex')
+
+  if (actualHash !== expectedSha256) {
+    throw new Error(
+      `Checksum mismatch for ${filePath}: expected ${expectedSha256}, got ${actualHash}. ` +
+      'The downloaded file may be corrupted or tampered with. Delete the cache and retry.',
+    )
+  }
+
+  console.log(`[whisper-runtime] checksum verified: ${actualHash.slice(0, 16)}...`)
 }
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -305,6 +345,11 @@ const prepareFromOfficialAsset = async ({
   ensureDirectory(tempDirectory)
 
   await downloadToFile(url, archivePath)
+
+  const platformArchKey = `${platform}-${arch}`
+  const expectedChecksum = OFFICIAL_RUNTIME_CHECKSUMS[platformArchKey]?.[variant] ?? null
+  verifyChecksum(archivePath, expectedChecksum)
+
   extractZip(archivePath, extractDirectory)
 
   return copyRuntimeArtifacts({

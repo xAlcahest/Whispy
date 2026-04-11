@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Local dictation UI shell built with Electron + React",
+  "license": "AGPL-3.0-only",
   "author": {
     "name": "Whispy Team",
     "email": "packaging@whispy.local"

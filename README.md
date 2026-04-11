@@ -81,4 +81,4 @@ Whisper runtime binaries from [OpenWhispr/whisper.cpp](https://github.com/OpenWh
 
 ## License
 
-Private repository. All rights reserved.
+[AGPL-3.0](LICENSE)

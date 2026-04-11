@@ -769,6 +769,7 @@ const spawnOverlayProcess = (): Promise<void> => {
     const overlayEnv: Record<string, string | undefined> = {}
     for (const [key, value] of Object.entries(process.env)) {
       const upper = key.toUpperCase()
+      if (upper === 'XAUTHORITY') { overlayEnv[key] = value; continue }
       if (upper.includes('KEY') || upper.includes('SECRET') || upper.includes('TOKEN') || upper.includes('PASSWORD') || upper.includes('CREDENTIAL') || upper.includes('AUTH') || upper.includes('PRIVATE')) continue
       overlayEnv[key] = value
     }

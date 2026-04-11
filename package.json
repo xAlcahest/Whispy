@@ -1,6 +1,6 @@
 {
   "name": "whispy-ui",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "Local dictation UI shell built with Electron + React",
